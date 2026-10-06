@@ -249,6 +249,36 @@ func handleConnection(
 			},
 		})
 
+	case "session-resume":
+		execution, err := stateDB.ResumeSessionExecution(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			runFakeWorker(ctx, stateDB, execution)
+		}()
+
+		_ = encoder.Encode(ipc.Response{
+			OK: true,
+			Execution: &ipc.Execution{
+				ID:          execution.ID,
+				SessionID:   execution.SessionID,
+				Status:      execution.Status,
+				CurrentStep: execution.CurrentStep,
+				TotalSteps:  execution.TotalSteps,
+			},
+		})
+
 	case "sessions":
 		sessions, err := stateDB.ListSessions(context.Background())
 		if err != nil {
@@ -290,7 +320,9 @@ func runFakeWorker(
 	stateDB *state.Database,
 	execution state.SessionExecution,
 ) {
-	for step := 1; step <= execution.TotalSteps; step++ {
+	currentStep := execution.CurrentStep
+
+	for step := currentStep + 1; step <= execution.TotalSteps; step++ {
 		timer := time.NewTimer(fakeWorkerDelay)
 
 		select {
@@ -301,7 +333,7 @@ func runFakeWorker(
 			fmt.Printf(
 				"Execution %d stopped at %d/%d\n",
 				execution.ID,
-				step-1,
+				currentStep,
 				execution.TotalSteps,
 			)
 			return
@@ -324,10 +356,12 @@ func runFakeWorker(
 			return
 		}
 
+		currentStep = step
+
 		fmt.Printf(
 			"Execution %d progress: %d/%d\n",
 			execution.ID,
-			step,
+			currentStep,
 			execution.TotalSteps,
 		)
 	}

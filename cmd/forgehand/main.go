@@ -93,6 +93,18 @@ func sessionCommand(args []string) error {
 
 		return runSession(sessionID)
 
+	case "resume":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand session resume <id>")
+		}
+
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+
+		return resumeSession(sessionID)
+
 	default:
 		return fmt.Errorf("unknown session command: %s", args[0])
 	}
@@ -132,6 +144,30 @@ func runSession(sessionID int64) error {
 	}
 
 	fmt.Printf("Started session %d\n", response.Execution.SessionID)
+	fmt.Printf("Execution: %d\n", response.Execution.ID)
+	fmt.Printf(
+		"Progress: %d/%d\n",
+		response.Execution.CurrentStep,
+		response.Execution.TotalSteps,
+	)
+
+	return nil
+}
+
+func resumeSession(sessionID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "session-resume",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if response.Execution == nil {
+		return fmt.Errorf("daemon returned no execution")
+	}
+
+	fmt.Printf("Resumed session %d\n", response.Execution.SessionID)
 	fmt.Printf("Execution: %d\n", response.Execution.ID)
 	fmt.Printf(
 		"Progress: %d/%d\n",
@@ -219,5 +255,6 @@ func usage() {
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
 	fmt.Println("  session run <id>                Run a session")
+	fmt.Println("  session resume <id>             Resume an interrupted session")
 	fmt.Println("  sessions                        List sessions")
 }

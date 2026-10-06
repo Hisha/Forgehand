@@ -546,3 +546,194 @@ WHERE id = ?
 
 	return interrupted, nil
 }
+
+func (d *Database) ResumeSessionExecution(
+	ctx context.Context,
+	sessionID int64,
+) (SessionExecution, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return SessionExecution{}, fmt.Errorf("begin execution resume: %w", err)
+	}
+	defer tx.Rollback()
+
+	var (
+		execution     SessionExecution
+		startedAtText string
+	)
+
+	err = tx.QueryRowContext(ctx, `
+SELECT
+	id,
+	session_id,
+	status,
+	current_step,
+	total_steps,
+	started_at
+FROM session_executions
+WHERE session_id = ?
+ORDER BY id DESC
+LIMIT 1
+`,
+		sessionID,
+	).Scan(
+		&execution.ID,
+		&execution.SessionID,
+		&execution.Status,
+		&execution.CurrentStep,
+		&execution.TotalSteps,
+		&startedAtText,
+	)
+
+	if err == sql.ErrNoRows {
+		return SessionExecution{}, fmt.Errorf(
+			"session %d has no execution to resume",
+			sessionID,
+		)
+	}
+	if err != nil {
+		return SessionExecution{}, fmt.Errorf(
+			"read latest execution for session %d: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	if execution.Status != ExecutionStatusInterrupted {
+		return SessionExecution{}, fmt.Errorf(
+			"execution %d is %s, expected %s",
+			execution.ID,
+			execution.Status,
+			ExecutionStatusInterrupted,
+		)
+	}
+
+	startedAt, err := time.Parse(time.RFC3339Nano, startedAtText)
+	if err != nil {
+		return SessionExecution{}, fmt.Errorf(
+			"parse execution %d start time: %w",
+			execution.ID,
+			err,
+		)
+	}
+	execution.StartedAt = startedAt
+
+	var sessionState string
+	err = tx.QueryRowContext(ctx, `
+SELECT state
+FROM sessions
+WHERE id = ?
+`,
+		sessionID,
+	).Scan(&sessionState)
+
+	if err == sql.ErrNoRows {
+		return SessionExecution{}, fmt.Errorf(
+			"session %d does not exist",
+			sessionID,
+		)
+	}
+	if err != nil {
+		return SessionExecution{}, fmt.Errorf(
+			"read session %d: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	if sessionState != SessionStateInterrupted {
+		return SessionExecution{}, fmt.Errorf(
+			"session %d is %s, expected %s",
+			sessionID,
+			sessionState,
+			SessionStateInterrupted,
+		)
+	}
+
+	nowText := time.Now().UTC().Format(time.RFC3339Nano)
+
+	result, err := tx.ExecContext(ctx, `
+UPDATE session_executions
+SET status = ?
+WHERE id = ?
+  AND status = ?
+`,
+		ExecutionStatusRunning,
+		execution.ID,
+		ExecutionStatusInterrupted,
+	)
+	if err != nil {
+		return SessionExecution{}, fmt.Errorf(
+			"resume execution %d: %w",
+			execution.ID,
+			err,
+		)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return SessionExecution{}, fmt.Errorf(
+			"check execution %d resume: %w",
+			execution.ID,
+			err,
+		)
+	}
+
+	if rowsAffected != 1 {
+		return SessionExecution{}, fmt.Errorf(
+			"execution %d could not transition from %s to %s",
+			execution.ID,
+			ExecutionStatusInterrupted,
+			ExecutionStatusRunning,
+		)
+	}
+
+	result, err = tx.ExecContext(ctx, `
+UPDATE sessions
+SET state = ?,
+    updated_at = ?
+WHERE id = ?
+  AND state = ?
+`,
+		SessionStateRunning,
+		nowText,
+		sessionID,
+		SessionStateInterrupted,
+	)
+	if err != nil {
+		return SessionExecution{}, fmt.Errorf(
+			"resume session %d: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	rowsAffected, err = result.RowsAffected()
+	if err != nil {
+		return SessionExecution{}, fmt.Errorf(
+			"check session %d resume: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	if rowsAffected != 1 {
+		return SessionExecution{}, fmt.Errorf(
+			"session %d could not transition from %s to %s",
+			sessionID,
+			SessionStateInterrupted,
+			SessionStateRunning,
+		)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return SessionExecution{}, fmt.Errorf(
+			"commit execution %d resume: %w",
+			execution.ID,
+			err,
+		)
+	}
+
+	execution.Status = ExecutionStatusRunning
+	return execution, nil
+}

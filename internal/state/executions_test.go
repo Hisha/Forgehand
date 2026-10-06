@@ -337,3 +337,94 @@ func TestInterruptRunningExecutionsDoesNothingWithoutRunningWork(t *testing.T) {
 		t.Fatalf("interrupted count = %d, want 0", count)
 	}
 }
+
+func TestResumeSessionExecutionPreservesCheckpoint(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	session, err := db.CreateSession(ctx, "Resume work")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	execution, err := db.StartSessionExecution(ctx, session.ID, 5)
+	if err != nil {
+		t.Fatalf("StartSessionExecution: %v", err)
+	}
+
+	for step := 1; step <= 2; step++ {
+		if err := db.AdvanceSessionExecution(ctx, execution.ID, step); err != nil {
+			t.Fatalf("advance to step %d: %v", step, err)
+		}
+	}
+
+	if _, err := db.InterruptRunningExecutions(ctx); err != nil {
+		t.Fatalf("InterruptRunningExecutions: %v", err)
+	}
+
+	resumed, err := db.ResumeSessionExecution(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("ResumeSessionExecution: %v", err)
+	}
+
+	if resumed.ID != execution.ID {
+		t.Fatalf(
+			"resumed execution ID = %d, want existing ID %d",
+			resumed.ID,
+			execution.ID,
+		)
+	}
+
+	if resumed.Status != ExecutionStatusRunning {
+		t.Fatalf(
+			"resumed status = %q, want %q",
+			resumed.Status,
+			ExecutionStatusRunning,
+		)
+	}
+
+	if resumed.CurrentStep != 2 {
+		t.Fatalf(
+			"resumed current step = %d, want 2",
+			resumed.CurrentStep,
+		)
+	}
+
+	if resumed.TotalSteps != 5 {
+		t.Fatalf(
+			"resumed total steps = %d, want 5",
+			resumed.TotalSteps,
+		)
+	}
+
+	sessions, err := db.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+
+	if sessions[0].State != SessionStateRunning {
+		t.Fatalf(
+			"session state = %q, want %q",
+			sessions[0].State,
+			SessionStateRunning,
+		)
+	}
+}
+
+func TestResumeSessionExecutionRejectsNonInterruptedExecution(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	session, err := db.CreateSession(ctx, "Already running")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	if _, err := db.StartSessionExecution(ctx, session.ID, 5); err != nil {
+		t.Fatalf("StartSessionExecution: %v", err)
+	}
+
+	if _, err := db.ResumeSessionExecution(ctx, session.ID); err == nil {
+		t.Fatal("running execution unexpectedly resumed")
+	}
+}
