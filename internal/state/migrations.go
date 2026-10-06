@@ -25,6 +25,21 @@ CREATE TABLE daemon_runs (
 );
 `,
 	},
+	{
+		version: 2,
+		sql: `
+CREATE TABLE sessions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	title TEXT NOT NULL,
+	state TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_sessions_state
+ON sessions(state);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

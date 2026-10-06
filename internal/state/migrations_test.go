@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestFreshDatabaseMigratesToVersionOne(t *testing.T) {
+func TestFreshDatabaseMigratesToLatestVersion(t *testing.T) {
 	ctx := context.Background()
 	db := openTestDatabase(t)
 
@@ -17,19 +17,23 @@ func TestFreshDatabaseMigratesToVersionOne(t *testing.T) {
 		t.Fatalf("read schema version: %v", err)
 	}
 
-	if version != 1 {
-		t.Fatalf("schema version = %d, want 1", version)
+	if version != 2 {
+		t.Fatalf("schema version = %d, want 2", version)
 	}
 
-	var tableName string
-	if err := db.db.QueryRowContext(
-		ctx,
-		`SELECT name FROM sqlite_master WHERE type='table' AND name='daemon_runs'`,
-	).Scan(&tableName); err != nil {
-		t.Fatalf("daemon_runs table not found: %v", err)
-	}
+	for _, want := range []string{"daemon_runs", "sessions"} {
+		var tableName string
 
-	if tableName != "daemon_runs" {
-		t.Fatalf("table name = %q, want daemon_runs", tableName)
+		if err := db.db.QueryRowContext(
+			ctx,
+			`SELECT name FROM sqlite_master WHERE type='table' AND name=?`,
+			want,
+		).Scan(&tableName); err != nil {
+			t.Fatalf("%s table not found: %v", want, err)
+		}
+
+		if tableName != want {
+			t.Fatalf("table name = %q, want %q", tableName, want)
+		}
 	}
 }

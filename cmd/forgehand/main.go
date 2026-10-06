@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"text/tabwriter"
 
 	"github.com/Hisha/Forgehand/internal/daemon"
 	"github.com/Hisha/Forgehand/internal/ipc"
@@ -29,6 +30,12 @@ func main() {
 	case "status":
 		err = status()
 
+	case "session":
+		err = sessionCommand(os.Args[2:])
+
+	case "sessions":
+		err = listSessions()
+
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		usage()
@@ -42,30 +49,11 @@ func main() {
 }
 
 func status() error {
-	socketPath, err := daemon.SocketPath()
+	response, err := request(ipc.Request{
+		Command: "status",
+	})
 	if err != nil {
 		return err
-	}
-
-	conn, err := net.Dial("unix", socketPath)
-	if err != nil {
-		return fmt.Errorf("daemon is not running")
-	}
-	defer conn.Close()
-
-	if err := json.NewEncoder(conn).Encode(ipc.Request{
-		Command: "status",
-	}); err != nil {
-		return fmt.Errorf("send request: %w", err)
-	}
-
-	var response ipc.Response
-	if err := json.NewDecoder(conn).Decode(&response); err != nil {
-		return fmt.Errorf("read response: %w", err)
-	}
-
-	if !response.OK {
-		return fmt.Errorf("daemon error: %s", response.Message)
 	}
 
 	fmt.Printf("Daemon: %s\n", response.Message)
@@ -75,6 +63,113 @@ func status() error {
 	return nil
 }
 
+func sessionCommand(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: forgehand session start <title>")
+	}
+
+	switch args[0] {
+	case "start":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: forgehand session start <title>")
+		}
+
+		if len(args) > 2 {
+			return fmt.Errorf("session title must be quoted when it contains spaces")
+		}
+
+		return startSession(args[1])
+
+	default:
+		return fmt.Errorf("unknown session command: %s", args[0])
+	}
+}
+
+func startSession(title string) error {
+	response, err := request(ipc.Request{
+		Command: "session-start",
+		Title:   title,
+	})
+	if err != nil {
+		return err
+	}
+
+	if response.Session == nil {
+		return fmt.Errorf("daemon returned no session")
+	}
+
+	fmt.Printf("Created session %d\n", response.Session.ID)
+	fmt.Printf("State: %s\n", response.Session.State)
+	fmt.Printf("Title: %s\n", response.Session.Title)
+
+	return nil
+}
+
+func listSessions() error {
+	response, err := request(ipc.Request{
+		Command: "sessions",
+	})
+	if err != nil {
+		return err
+	}
+
+	if len(response.Sessions) == 0 {
+		fmt.Println("No sessions.")
+		return nil
+	}
+
+	writer := tabwriter.NewWriter(
+		os.Stdout,
+		0,
+		4,
+		2,
+		' ',
+		0,
+	)
+
+	fmt.Fprintln(writer, "ID\tSTATE\tTITLE")
+
+	for _, session := range response.Sessions {
+		fmt.Fprintf(
+			writer,
+			"%d\t%s\t%s\n",
+			session.ID,
+			session.State,
+			session.Title,
+		)
+	}
+
+	return writer.Flush()
+}
+
+func request(req ipc.Request) (ipc.Response, error) {
+	socketPath, err := daemon.SocketPath()
+	if err != nil {
+		return ipc.Response{}, err
+	}
+
+	conn, err := net.Dial("unix", socketPath)
+	if err != nil {
+		return ipc.Response{}, fmt.Errorf("daemon is not running")
+	}
+	defer conn.Close()
+
+	if err := json.NewEncoder(conn).Encode(req); err != nil {
+		return ipc.Response{}, fmt.Errorf("send request: %w", err)
+	}
+
+	var response ipc.Response
+	if err := json.NewDecoder(conn).Decode(&response); err != nil {
+		return ipc.Response{}, fmt.Errorf("read response: %w", err)
+	}
+
+	if !response.OK {
+		return ipc.Response{}, fmt.Errorf("daemon error: %s", response.Message)
+	}
+
+	return response, nil
+}
+
 func usage() {
 	fmt.Println("Forgehand")
 	fmt.Println()
@@ -82,7 +177,9 @@ func usage() {
 	fmt.Println("  forgehand <command>")
 	fmt.Println()
 	fmt.Println("Commands:")
-	fmt.Println("  version    Print Forgehand version")
-	fmt.Println("  daemon     Run the Forgehand daemon")
-	fmt.Println("  status     Query the Forgehand daemon")
+	fmt.Println("  version                         Print Forgehand version")
+	fmt.Println("  daemon                          Run the Forgehand daemon")
+	fmt.Println("  status                          Query the Forgehand daemon")
+	fmt.Println("  session start <title>           Create a session")
+	fmt.Println("  sessions                        List sessions")
 }

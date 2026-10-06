@@ -7,3 +7,6 @@
 
 # Local runtime state
 .forgehand/
+
+# IDE metadata
+.project

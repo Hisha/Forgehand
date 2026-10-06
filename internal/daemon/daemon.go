@@ -137,11 +137,11 @@ func Run() error {
 			return fmt.Errorf("accept connection: %w", err)
 		}
 
-		go handleConnection(conn)
+		go handleConnection(stateDB, conn)
 	}
 }
 
-func handleConnection(conn net.Conn) {
+func handleConnection(stateDB *state.Database, conn net.Conn) {
 	defer conn.Close()
 
 	decoder := json.NewDecoder(conn)
@@ -166,6 +166,56 @@ func handleConnection(conn net.Conn) {
 			Version: version.Version,
 			PID:     os.Getpid(),
 		})
+
+	case "session-start":
+		session, err := stateDB.CreateSession(
+			context.Background(),
+			request.Title,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		_ = encoder.Encode(ipc.Response{
+			OK: true,
+			Session: &ipc.Session{
+				ID:    session.ID,
+				Title: session.Title,
+				State: session.State,
+			},
+		})
+
+	case "sessions":
+		sessions, err := stateDB.ListSessions(context.Background())
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		response := ipc.Response{
+			OK:       true,
+			Sessions: make([]ipc.Session, 0, len(sessions)),
+		}
+
+		for _, session := range sessions {
+			response.Sessions = append(
+				response.Sessions,
+				ipc.Session{
+					ID:    session.ID,
+					Title: session.Title,
+					State: session.State,
+				},
+			)
+		}
+
+		_ = encoder.Encode(response)
 
 	default:
 		_ = encoder.Encode(ipc.Response{
