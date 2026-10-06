@@ -1,0 +1,9 @@
+# Forgehand build output
+/forgehand
+
+# Test/build artifacts
+*.test
+*.out
+
+# Local runtime state
+.forgehand/
