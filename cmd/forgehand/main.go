@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"text/tabwriter"
 
 	"github.com/Hisha/Forgehand/internal/daemon"
@@ -80,6 +81,18 @@ func sessionCommand(args []string) error {
 
 		return startSession(args[1])
 
+	case "run":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand session run <id>")
+		}
+
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+
+		return runSession(sessionID)
+
 	default:
 		return fmt.Errorf("unknown session command: %s", args[0])
 	}
@@ -101,6 +114,30 @@ func startSession(title string) error {
 	fmt.Printf("Created session %d\n", response.Session.ID)
 	fmt.Printf("State: %s\n", response.Session.State)
 	fmt.Printf("Title: %s\n", response.Session.Title)
+
+	return nil
+}
+
+func runSession(sessionID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "session-run",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if response.Execution == nil {
+		return fmt.Errorf("daemon returned no execution")
+	}
+
+	fmt.Printf("Started session %d\n", response.Execution.SessionID)
+	fmt.Printf("Execution: %d\n", response.Execution.ID)
+	fmt.Printf(
+		"Progress: %d/%d\n",
+		response.Execution.CurrentStep,
+		response.Execution.TotalSteps,
+	)
 
 	return nil
 }
@@ -181,5 +218,6 @@ func usage() {
 	fmt.Println("  daemon                          Run the Forgehand daemon")
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
+	fmt.Println("  session run <id>                Run a session")
 	fmt.Println("  sessions                        List sessions")
 }

@@ -10,14 +10,20 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sync"
 	"syscall"
+	"time"
 
 	"github.com/Hisha/Forgehand/internal/ipc"
 	"github.com/Hisha/Forgehand/internal/state"
 	"github.com/Hisha/Forgehand/internal/version"
 )
 
-const socketName = "forgehand.sock"
+const (
+	socketName      = "forgehand.sock"
+	fakeWorkerSteps = 5
+	fakeWorkerDelay = 3 * time.Second
+)
 
 func SocketPath() (string, error) {
 	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
@@ -47,7 +53,8 @@ func Run() error {
 		return err
 	}
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	stateDB, err := state.Open(ctx)
 	if err != nil {
@@ -67,13 +74,12 @@ func Run() error {
 			previousRun.PID,
 		)
 	}
+
 	socketPath, err := SocketPath()
 	if err != nil {
 		return err
 	}
 
-	// A Unix socket file can remain after an unclean shutdown.
-	// Only remove it after confirming nothing is listening there.
 	if conn, err := net.Dial("unix", socketPath); err == nil {
 		conn.Close()
 		return fmt.Errorf("Forgehand daemon is already running")
@@ -104,6 +110,7 @@ func Run() error {
 
 	go func() {
 		<-signals
+		cancel()
 		listener.Close()
 	}()
 
@@ -120,7 +127,12 @@ func Run() error {
 		return fmt.Errorf("record daemon run: %w", err)
 	}
 
+	var workers sync.WaitGroup
+
 	defer func() {
+		cancel()
+		workers.Wait()
+
 		if err := stateDB.FinishDaemonRun(context.Background(), runID); err != nil {
 			fmt.Fprintf(os.Stderr, "forgehand: record clean shutdown: %v\n", err)
 		}
@@ -137,11 +149,16 @@ func Run() error {
 			return fmt.Errorf("accept connection: %w", err)
 		}
 
-		go handleConnection(stateDB, conn)
+		go handleConnection(ctx, stateDB, &workers, conn)
 	}
 }
 
-func handleConnection(stateDB *state.Database, conn net.Conn) {
+func handleConnection(
+	ctx context.Context,
+	stateDB *state.Database,
+	workers *sync.WaitGroup,
+	conn net.Conn,
+) {
 	defer conn.Close()
 
 	decoder := json.NewDecoder(conn)
@@ -189,6 +206,37 @@ func handleConnection(stateDB *state.Database, conn net.Conn) {
 			},
 		})
 
+	case "session-run":
+		execution, err := stateDB.StartSessionExecution(
+			context.Background(),
+			request.SessionID,
+			fakeWorkerSteps,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			runFakeWorker(ctx, stateDB, execution)
+		}()
+
+		_ = encoder.Encode(ipc.Response{
+			OK: true,
+			Execution: &ipc.Execution{
+				ID:          execution.ID,
+				SessionID:   execution.SessionID,
+				Status:      execution.Status,
+				CurrentStep: execution.CurrentStep,
+				TotalSteps:  execution.TotalSteps,
+			},
+		})
+
 	case "sessions":
 		sessions, err := stateDB.ListSessions(context.Background())
 		if err != nil {
@@ -223,4 +271,67 @@ func handleConnection(stateDB *state.Database, conn net.Conn) {
 			Message: "unknown command",
 		})
 	}
+}
+
+func runFakeWorker(
+	ctx context.Context,
+	stateDB *state.Database,
+	execution state.SessionExecution,
+) {
+	for step := 1; step <= execution.TotalSteps; step++ {
+		timer := time.NewTimer(fakeWorkerDelay)
+
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			fmt.Printf(
+				"Execution %d stopped at %d/%d\n",
+				execution.ID,
+				step-1,
+				execution.TotalSteps,
+			)
+			return
+
+		case <-timer.C:
+		}
+
+		if err := stateDB.AdvanceSessionExecution(
+			context.Background(),
+			execution.ID,
+			step,
+		); err != nil {
+			fmt.Fprintf(
+				os.Stderr,
+				"forgehand: execution %d step %d: %v\n",
+				execution.ID,
+				step,
+				err,
+			)
+			return
+		}
+
+		fmt.Printf(
+			"Execution %d progress: %d/%d\n",
+			execution.ID,
+			step,
+			execution.TotalSteps,
+		)
+	}
+
+	if err := stateDB.CompleteSessionExecution(
+		context.Background(),
+		execution.ID,
+	); err != nil {
+		fmt.Fprintf(
+			os.Stderr,
+			"forgehand: complete execution %d: %v\n",
+			execution.ID,
+			err,
+		)
+		return
+	}
+
+	fmt.Printf("Execution %d completed\n", execution.ID)
 }

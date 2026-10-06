@@ -7,7 +7,11 @@ import (
 	"time"
 )
 
-const SessionStateReady = "READY"
+const (
+	SessionStateReady     = "READY"
+	SessionStateRunning   = "RUNNING"
+	SessionStateCompleted = "COMPLETED"
+)
 
 type Session struct {
 	ID        int64
