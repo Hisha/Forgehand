@@ -8,8 +8,9 @@ import (
 )
 
 const (
-	ExecutionStatusRunning   = "RUNNING"
-	ExecutionStatusCompleted = "COMPLETED"
+	ExecutionStatusRunning     = "RUNNING"
+	ExecutionStatusCompleted   = "COMPLETED"
+	ExecutionStatusInterrupted = "INTERRUPTED"
 )
 
 type SessionExecution struct {
@@ -396,4 +397,152 @@ WHERE id = ?
 	}
 
 	return nil
+}
+
+func (d *Database) InterruptRunningExecutions(
+	ctx context.Context,
+) (int64, error) {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin execution interruption: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, `
+SELECT id, session_id
+FROM session_executions
+WHERE status = ?
+ORDER BY id
+`,
+		ExecutionStatusRunning,
+	)
+	if err != nil {
+		return 0, fmt.Errorf("find running executions: %w", err)
+	}
+
+	type runningExecution struct {
+		executionID int64
+		sessionID   int64
+	}
+
+	var running []runningExecution
+
+	for rows.Next() {
+		var item runningExecution
+
+		if err := rows.Scan(
+			&item.executionID,
+			&item.sessionID,
+		); err != nil {
+			rows.Close()
+			return 0, fmt.Errorf("read running execution: %w", err)
+		}
+
+		running = append(running, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, fmt.Errorf("iterate running executions: %w", err)
+	}
+
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close running executions: %w", err)
+	}
+
+	if len(running) == 0 {
+		if err := tx.Commit(); err != nil {
+			return 0, fmt.Errorf("commit empty execution interruption: %w", err)
+		}
+
+		return 0, nil
+	}
+
+	nowText := time.Now().UTC().Format(time.RFC3339Nano)
+
+	var interrupted int64
+
+	for _, item := range running {
+		result, err := tx.ExecContext(ctx, `
+UPDATE session_executions
+SET status = ?
+WHERE id = ?
+  AND status = ?
+`,
+			ExecutionStatusInterrupted,
+			item.executionID,
+			ExecutionStatusRunning,
+		)
+		if err != nil {
+			return 0, fmt.Errorf(
+				"interrupt execution %d: %w",
+				item.executionID,
+				err,
+			)
+		}
+
+		rowsAffected, err := result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf(
+				"check execution %d interruption: %w",
+				item.executionID,
+				err,
+			)
+		}
+
+		if rowsAffected != 1 {
+			return 0, fmt.Errorf(
+				"execution %d could not transition from %s to %s",
+				item.executionID,
+				ExecutionStatusRunning,
+				ExecutionStatusInterrupted,
+			)
+		}
+
+		result, err = tx.ExecContext(ctx, `
+UPDATE sessions
+SET state = ?,
+    updated_at = ?
+WHERE id = ?
+  AND state = ?
+`,
+			SessionStateInterrupted,
+			nowText,
+			item.sessionID,
+			SessionStateRunning,
+		)
+		if err != nil {
+			return 0, fmt.Errorf(
+				"interrupt session %d: %w",
+				item.sessionID,
+				err,
+			)
+		}
+
+		rowsAffected, err = result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf(
+				"check session %d interruption: %w",
+				item.sessionID,
+				err,
+			)
+		}
+
+		if rowsAffected != 1 {
+			return 0, fmt.Errorf(
+				"session %d could not transition from %s to %s",
+				item.sessionID,
+				SessionStateRunning,
+				SessionStateInterrupted,
+			)
+		}
+
+		interrupted++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit execution interruption: %w", err)
+	}
+
+	return interrupted, nil
 }

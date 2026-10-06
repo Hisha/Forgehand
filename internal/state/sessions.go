@@ -8,9 +8,10 @@ import (
 )
 
 const (
-	SessionStateReady     = "READY"
-	SessionStateRunning   = "RUNNING"
-	SessionStateCompleted = "COMPLETED"
+	SessionStateReady       = "READY"
+	SessionStateRunning     = "RUNNING"
+	SessionStateCompleted   = "COMPLETED"
+	SessionStateInterrupted = "INTERRUPTED"
 )
 
 type Session struct {

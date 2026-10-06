@@ -62,19 +62,6 @@ func Run() error {
 	}
 	defer stateDB.Close()
 
-	previousRun, err := stateDB.LastDaemonRun(ctx)
-	if err != nil {
-		return fmt.Errorf("read previous daemon run: %w", err)
-	}
-
-	if previousRun != nil && !previousRun.ShutdownClean {
-		fmt.Printf(
-			"Previous daemon run %d (PID %d) did not shut down cleanly\n",
-			previousRun.ID,
-			previousRun.PID,
-		)
-	}
-
 	socketPath, err := SocketPath()
 	if err != nil {
 		return err
@@ -102,6 +89,31 @@ func Run() error {
 
 	if err := os.Chmod(socketPath, 0600); err != nil {
 		return fmt.Errorf("secure socket: %w", err)
+	}
+
+	previousRun, err := stateDB.LastDaemonRun(ctx)
+	if err != nil {
+		return fmt.Errorf("read previous daemon run: %w", err)
+	}
+
+	if previousRun != nil && !previousRun.ShutdownClean {
+		fmt.Printf(
+			"Previous daemon run %d (PID %d) did not shut down cleanly\n",
+			previousRun.ID,
+			previousRun.PID,
+		)
+	}
+
+	interrupted, err := stateDB.InterruptRunningExecutions(ctx)
+	if err != nil {
+		return fmt.Errorf("reconcile interrupted executions: %w", err)
+	}
+
+	if interrupted > 0 {
+		fmt.Printf(
+			"Marked %d orphaned execution(s) as interrupted\n",
+			interrupted,
+		)
 	}
 
 	signals := make(chan os.Signal, 1)

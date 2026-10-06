@@ -238,3 +238,102 @@ func TestExecutionCannotCompleteEarly(t *testing.T) {
 		t.Fatal("execution completed before all steps finished")
 	}
 }
+
+func TestInterruptRunningExecutions(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	session, err := db.CreateSession(ctx, "Interrupted work")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	execution, err := db.StartSessionExecution(ctx, session.ID, 5)
+	if err != nil {
+		t.Fatalf("StartSessionExecution: %v", err)
+	}
+
+	if err := db.AdvanceSessionExecution(ctx, execution.ID, 1); err != nil {
+		t.Fatalf("advance to step 1: %v", err)
+	}
+
+	if err := db.AdvanceSessionExecution(ctx, execution.ID, 2); err != nil {
+		t.Fatalf("advance to step 2: %v", err)
+	}
+
+	count, err := db.InterruptRunningExecutions(ctx)
+	if err != nil {
+		t.Fatalf("InterruptRunningExecutions: %v", err)
+	}
+
+	if count != 1 {
+		t.Fatalf("interrupted count = %d, want 1", count)
+	}
+
+	var (
+		status      string
+		currentStep int
+		totalSteps  int
+	)
+
+	if err := db.db.QueryRowContext(ctx, `
+SELECT status, current_step, total_steps
+FROM session_executions
+WHERE id = ?
+`,
+		execution.ID,
+	).Scan(
+		&status,
+		&currentStep,
+		&totalSteps,
+	); err != nil {
+		t.Fatalf("read interrupted execution: %v", err)
+	}
+
+	if status != ExecutionStatusInterrupted {
+		t.Fatalf(
+			"execution status = %q, want %q",
+			status,
+			ExecutionStatusInterrupted,
+		)
+	}
+
+	if currentStep != 2 {
+		t.Fatalf("current step = %d, want 2", currentStep)
+	}
+
+	if totalSteps != 5 {
+		t.Fatalf("total steps = %d, want 5", totalSteps)
+	}
+
+	sessions, err := db.ListSessions(ctx)
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+
+	if sessions[0].State != SessionStateInterrupted {
+		t.Fatalf(
+			"session state = %q, want %q",
+			sessions[0].State,
+			SessionStateInterrupted,
+		)
+	}
+}
+
+func TestInterruptRunningExecutionsDoesNothingWithoutRunningWork(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	if _, err := db.CreateSession(ctx, "Still ready"); err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	count, err := db.InterruptRunningExecutions(ctx)
+	if err != nil {
+		t.Fatalf("InterruptRunningExecutions: %v", err)
+	}
+
+	if count != 0 {
+		t.Fatalf("interrupted count = %d, want 0", count)
+	}
+}
