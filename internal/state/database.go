@@ -23,6 +23,10 @@ type DaemonRun struct {
 }
 
 func Open(ctx context.Context) (*Database, error) {
+	if err := EnsureDir(); err != nil {
+		return nil, err
+	}
+
 	path, err := DatabasePath()
 	if err != nil {
 		return nil, err

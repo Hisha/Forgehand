@@ -25,15 +25,28 @@ func SocketPath() (string, error) {
 		return "", errors.New("XDG_RUNTIME_DIR is not set")
 	}
 
-	dir := filepath.Join(runtimeDir, "forgehand")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", fmt.Errorf("create runtime directory: %w", err)
+	return filepath.Join(runtimeDir, "forgehand", socketName), nil
+}
+
+func ensureRuntimeDir() error {
+	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
+	if runtimeDir == "" {
+		return errors.New("XDG_RUNTIME_DIR is not set")
 	}
 
-	return filepath.Join(dir, socketName), nil
+	dir := filepath.Join(runtimeDir, "forgehand")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create runtime directory: %w", err)
+	}
+
+	return nil
 }
 
 func Run() error {
+	if err := ensureRuntimeDir(); err != nil {
+		return err
+	}
+
 	ctx := context.Background()
 
 	stateDB, err := state.Open(ctx)

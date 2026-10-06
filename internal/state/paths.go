@@ -29,9 +29,18 @@ func DatabasePath() (string, error) {
 		return "", err
 	}
 
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return "", fmt.Errorf("create state directory: %w", err)
+	return filepath.Join(dir, "forgehand.db"), nil
+}
+
+func EnsureDir() error {
+	dir, err := Dir()
+	if err != nil {
+		return err
 	}
 
-	return filepath.Join(dir, "forgehand.db"), nil
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return fmt.Errorf("create state directory: %w", err)
+	}
+
+	return nil
 }
