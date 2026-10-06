@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"syscall"
 
 	"github.com/Hisha/Forgehand/internal/ipc"
+	"github.com/Hisha/Forgehand/internal/state"
 	"github.com/Hisha/Forgehand/internal/version"
 )
 
@@ -32,6 +34,26 @@ func SocketPath() (string, error) {
 }
 
 func Run() error {
+	ctx := context.Background()
+
+	stateDB, err := state.Open(ctx)
+	if err != nil {
+		return fmt.Errorf("open persistent state: %w", err)
+	}
+	defer stateDB.Close()
+
+	previousRun, err := stateDB.LastDaemonRun(ctx)
+	if err != nil {
+		return fmt.Errorf("read previous daemon run: %w", err)
+	}
+
+	if previousRun != nil && !previousRun.ShutdownClean {
+		fmt.Printf(
+			"Previous daemon run %d (PID %d) did not shut down cleanly\n",
+			previousRun.ID,
+			previousRun.PID,
+		)
+	}
 	socketPath, err := SocketPath()
 	if err != nil {
 		return err
@@ -75,6 +97,21 @@ func Run() error {
 	fmt.Printf("Forgehand daemon running\n")
 	fmt.Printf("Socket: %s\n", socketPath)
 	fmt.Printf("PID: %d\n", os.Getpid())
+
+	runID, err := stateDB.StartDaemonRun(
+		ctx,
+		os.Getpid(),
+		version.Version,
+	)
+	if err != nil {
+		return fmt.Errorf("record daemon run: %w", err)
+	}
+
+	defer func() {
+		if err := stateDB.FinishDaemonRun(context.Background(), runID); err != nil {
+			fmt.Fprintf(os.Stderr, "forgehand: record clean shutdown: %v\n", err)
+		}
+	}()
 
 	for {
 		conn, err := listener.Accept()
