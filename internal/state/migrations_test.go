@@ -17,11 +17,11 @@ func TestFreshDatabaseMigratesToLatestVersion(t *testing.T) {
 		t.Fatalf("read schema version: %v", err)
 	}
 
-	if version != 2 {
-		t.Fatalf("schema version = %d, want 2", version)
+	if version != 3 {
+		t.Fatalf("schema version = %d, want 3", version)
 	}
 
-	for _, want := range []string{"daemon_runs", "sessions"} {
+	for _, want := range []string{"daemon_runs", "sessions", "session_executions"} {
 		var tableName string
 
 		if err := db.db.QueryRowContext(

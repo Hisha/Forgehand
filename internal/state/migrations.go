@@ -40,6 +40,24 @@ CREATE INDEX idx_sessions_state
 ON sessions(state);
 `,
 	},
+	{
+		version: 3,
+		sql: `
+CREATE TABLE session_executions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id INTEGER NOT NULL,
+	status TEXT NOT NULL,
+	current_step INTEGER NOT NULL DEFAULT 0,
+	total_steps INTEGER NOT NULL,
+	started_at TEXT NOT NULL,
+	completed_at TEXT,
+	FOREIGN KEY(session_id) REFERENCES sessions(id)
+);
+
+CREATE INDEX idx_session_executions_session_id
+ON session_executions(session_id);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {
