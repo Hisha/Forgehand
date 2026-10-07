@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Hisha/Forgehand/internal/ipc"
+	"github.com/Hisha/Forgehand/internal/repository"
 	"github.com/Hisha/Forgehand/internal/state"
 	"github.com/Hisha/Forgehand/internal/version"
 )
@@ -188,6 +189,67 @@ func handleConnection(
 	}
 
 	switch request.Command {
+
+	case "project-add":
+		discovered, err := repository.Discover(
+			context.Background(),
+			request.Path,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		project, err := stateDB.CreateProject(
+			context.Background(),
+			discovered.Name,
+			discovered.RootPath,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		_ = encoder.Encode(ipc.Response{
+			OK: true,
+			Project: &ipc.Project{
+				ID:       project.ID,
+				Name:     project.Name,
+				RootPath: project.RootPath,
+			},
+		})
+
+	case "projects":
+		projects, err := stateDB.ListProjects(context.Background())
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		responseProjects := make([]ipc.Project, 0, len(projects))
+
+		for _, project := range projects {
+			responseProjects = append(responseProjects, ipc.Project{
+				ID:       project.ID,
+				Name:     project.Name,
+				RootPath: project.RootPath,
+			})
+		}
+
+		_ = encoder.Encode(ipc.Response{
+			OK:       true,
+			Projects: responseProjects,
+		})
+
 	case "status":
 		_ = encoder.Encode(ipc.Response{
 			OK:      true,

@@ -17,11 +17,16 @@ func TestFreshDatabaseMigratesToLatestVersion(t *testing.T) {
 		t.Fatalf("read schema version: %v", err)
 	}
 
-	if version != 3 {
-		t.Fatalf("schema version = %d, want 3", version)
+	if version != 4 {
+		t.Fatalf("schema version = %d, want 4", version)
 	}
 
-	for _, want := range []string{"daemon_runs", "sessions", "session_executions"} {
+	for _, want := range []string{
+		"daemon_runs",
+		"sessions",
+		"session_executions",
+		"projects",
+	} {
 		var tableName string
 
 		if err := db.db.QueryRowContext(
@@ -35,5 +40,47 @@ func TestFreshDatabaseMigratesToLatestVersion(t *testing.T) {
 		if tableName != want {
 			t.Fatalf("table name = %q, want %q", tableName, want)
 		}
+	}
+}
+
+func TestProjectsRootPathIsUnique(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	_, err := db.db.ExecContext(ctx, `
+INSERT INTO projects (
+	name,
+	root_path,
+	created_at,
+	updated_at
+)
+VALUES (?, ?, ?, ?)
+`,
+		"Forgehand",
+		"/tmp/forgehand",
+		"2026-10-06T00:00:00Z",
+		"2026-10-06T00:00:00Z",
+	)
+	if err != nil {
+		t.Fatalf("insert first project: %v", err)
+	}
+
+	_, err = db.db.ExecContext(ctx, `
+INSERT INTO projects (
+	name,
+	root_path,
+	created_at,
+	updated_at
+)
+VALUES (?, ?, ?, ?)
+`,
+		"Duplicate Forgehand",
+		"/tmp/forgehand",
+		"2026-10-06T00:00:00Z",
+		"2026-10-06T00:00:00Z",
+	)
+
+	if err == nil {
+		t.Fatal("duplicate project root unexpectedly succeeded")
 	}
 }

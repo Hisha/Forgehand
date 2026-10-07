@@ -58,6 +58,18 @@ CREATE INDEX idx_session_executions_session_id
 ON session_executions(session_id);
 `,
 	},
+	{
+		version: 4,
+		sql: `
+CREATE TABLE projects (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	name TEXT NOT NULL,
+	root_path TEXT NOT NULL UNIQUE,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL
+);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

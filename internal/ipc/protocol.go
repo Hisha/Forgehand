@@ -4,6 +4,7 @@ type Request struct {
 	Command   string `json:"command"`
 	Title     string `json:"title,omitempty"`
 	SessionID int64  `json:"session_id,omitempty"`
+	Path      string `json:"path,omitempty"`
 }
 
 type Session struct {
@@ -28,4 +29,12 @@ type Response struct {
 	Session   *Session   `json:"session,omitempty"`
 	Sessions  []Session  `json:"sessions,omitempty"`
 	Execution *Execution `json:"execution,omitempty"`
+	Project   *Project   `json:"project,omitempty"`
+	Projects  []Project  `json:"projects,omitempty"`
+}
+
+type Project struct {
+	ID       int64  `json:"id"`
+	Name     string `json:"name"`
+	RootPath string `json:"root_path"`
 }

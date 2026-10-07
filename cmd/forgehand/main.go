@@ -28,6 +28,12 @@ func main() {
 	case "daemon":
 		err = daemon.Run()
 
+	case "project":
+		err = projectCommand(os.Args[2:])
+
+	case "projects":
+		err = listProjects()
+
 	case "status":
 		err = status()
 
@@ -243,6 +249,71 @@ func request(req ipc.Request) (ipc.Response, error) {
 	return response, nil
 }
 
+func projectCommand(args []string) error {
+	if len(args) == 0 {
+		return fmt.Errorf("usage: forgehand project add <path>")
+	}
+
+	switch args[0] {
+	case "add":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand project add <path>")
+		}
+
+		return addProject(args[1])
+
+	default:
+		return fmt.Errorf("unknown project command: %s", args[0])
+	}
+}
+
+func addProject(path string) error {
+	response, err := request(ipc.Request{
+		Command: "project-add",
+		Path:    path,
+	})
+	if err != nil {
+		return err
+	}
+
+	if response.Project == nil {
+		return fmt.Errorf("daemon returned no project")
+	}
+
+	fmt.Printf("Added project %d\n", response.Project.ID)
+	fmt.Printf("Name: %s\n", response.Project.Name)
+	fmt.Printf("Root: %s\n", response.Project.RootPath)
+
+	return nil
+}
+
+func listProjects() error {
+	response, err := request(ipc.Request{
+		Command: "projects",
+	})
+	if err != nil {
+		return err
+	}
+
+	if len(response.Projects) == 0 {
+		fmt.Println("No projects")
+		return nil
+	}
+
+	fmt.Println("ID  NAME  ROOT")
+
+	for _, project := range response.Projects {
+		fmt.Printf(
+			"%d   %s  %s\n",
+			project.ID,
+			project.Name,
+			project.RootPath,
+		)
+	}
+
+	return nil
+}
+
 func usage() {
 	fmt.Println("Forgehand")
 	fmt.Println()
@@ -252,6 +323,8 @@ func usage() {
 	fmt.Println("Commands:")
 	fmt.Println("  version                         Print Forgehand version")
 	fmt.Println("  daemon                          Run the Forgehand daemon")
+	fmt.Println("  project add <path>              Add a Git project")
+	fmt.Println("  projects                        List projects")
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
 	fmt.Println("  session run <id>                Run a session")
