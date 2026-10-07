@@ -262,6 +262,18 @@ func projectCommand(args []string) error {
 
 		return addProject(args[1])
 
+	case "observe":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand project observe <id>")
+		}
+
+		projectID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || projectID <= 0 {
+			return fmt.Errorf("invalid project ID: %s", args[1])
+		}
+
+		return observeProject(projectID)
+
 	default:
 		return fmt.Errorf("unknown project command: %s", args[0])
 	}
@@ -283,6 +295,51 @@ func addProject(path string) error {
 	fmt.Printf("Added project %d\n", response.Project.ID)
 	fmt.Printf("Name: %s\n", response.Project.Name)
 	fmt.Printf("Root: %s\n", response.Project.RootPath)
+
+	return nil
+}
+
+func observeProject(projectID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "project-observe",
+		ProjectID: projectID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if response.Snapshot == nil {
+		return fmt.Errorf("daemon returned no repository snapshot")
+	}
+
+	snapshot := response.Snapshot
+
+	fmt.Printf("Observed project %d\n", snapshot.ProjectID)
+	fmt.Printf("Snapshot: %d\n", snapshot.ID)
+
+	if snapshot.HeadCommit == "" {
+		fmt.Println("HEAD: none")
+	} else {
+		fmt.Printf("HEAD: %s\n", snapshot.HeadCommit)
+	}
+
+	switch {
+	case snapshot.Detached:
+		fmt.Println("Branch: detached HEAD")
+	case snapshot.Branch == "":
+		fmt.Println("Branch: unborn")
+	default:
+		fmt.Printf("Branch: %s\n", snapshot.Branch)
+	}
+
+	if snapshot.Dirty {
+		fmt.Println("Dirty: yes")
+	} else {
+		fmt.Println("Dirty: no")
+	}
+
+	fmt.Printf("Tracked files: %d\n", snapshot.TrackedFiles)
+	fmt.Printf("Untracked files: %d\n", snapshot.UntrackedFiles)
 
 	return nil
 }
@@ -325,6 +382,7 @@ func usage() {
 	fmt.Println("  daemon                          Run the Forgehand daemon")
 	fmt.Println("  project add <path>              Add a Git project")
 	fmt.Println("  projects                        List projects")
+	fmt.Println("  project observe <id>            Observe a project's Git state")
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
 	fmt.Println("  session run <id>                Run a session")

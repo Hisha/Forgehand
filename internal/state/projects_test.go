@@ -140,3 +140,46 @@ func TestListProjects(t *testing.T) {
 		)
 	}
 }
+
+func TestGetProject(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	created, err := db.CreateProject(
+		ctx,
+		"Forgehand",
+		"/tmp/forgehand",
+	)
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+
+	project, err := db.GetProject(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("get project: %v", err)
+	}
+
+	if project.ID != created.ID {
+		t.Fatalf("project ID = %d, want %d", project.ID, created.ID)
+	}
+
+	if project.Name != "Forgehand" {
+		t.Fatalf("project name = %q, want Forgehand", project.Name)
+	}
+
+	if project.RootPath != "/tmp/forgehand" {
+		t.Fatalf(
+			"project root = %q, want /tmp/forgehand",
+			project.RootPath,
+		)
+	}
+}
+
+func TestGetProjectRejectsMissingProject(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	if _, err := db.GetProject(ctx, 999999); err == nil {
+		t.Fatal("missing project unexpectedly found")
+	}
+}

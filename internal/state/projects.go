@@ -127,3 +127,60 @@ ORDER BY id
 
 	return projects, nil
 }
+
+func (d *Database) GetProject(
+	ctx context.Context,
+	id int64,
+) (Project, error) {
+	if id <= 0 {
+		return Project{}, fmt.Errorf("project ID must be positive")
+	}
+
+	var (
+		project   Project
+		createdAt string
+		updatedAt string
+	)
+
+	err := d.db.QueryRowContext(ctx, `
+SELECT
+	id,
+	name,
+	root_path,
+	created_at,
+	updated_at
+FROM projects
+WHERE id = ?
+`,
+		id,
+	).Scan(
+		&project.ID,
+		&project.Name,
+		&project.RootPath,
+		&createdAt,
+		&updatedAt,
+	)
+	if err != nil {
+		return Project{}, fmt.Errorf("get project %d: %w", id, err)
+	}
+
+	project.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return Project{}, fmt.Errorf(
+			"parse project %d created_at: %w",
+			project.ID,
+			err,
+		)
+	}
+
+	project.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return Project{}, fmt.Errorf(
+			"parse project %d updated_at: %w",
+			project.ID,
+			err,
+		)
+	}
+
+	return project, nil
+}

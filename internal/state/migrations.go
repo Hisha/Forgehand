@@ -70,6 +70,26 @@ CREATE TABLE projects (
 );
 `,
 	},
+	{
+		version: 5,
+		sql: `
+CREATE TABLE repository_snapshots (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	project_id INTEGER NOT NULL,
+	head_commit TEXT,
+	branch TEXT,
+	is_detached INTEGER NOT NULL,
+	is_dirty INTEGER NOT NULL,
+	tracked_files INTEGER NOT NULL,
+	untracked_files INTEGER NOT NULL,
+	observed_at TEXT NOT NULL,
+	FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+CREATE INDEX idx_repository_snapshots_project_id
+ON repository_snapshots(project_id);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

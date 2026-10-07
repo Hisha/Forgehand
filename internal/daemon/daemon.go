@@ -225,6 +225,65 @@ func handleConnection(
 			},
 		})
 
+	case "project-observe":
+		project, err := stateDB.GetProject(
+			context.Background(),
+			request.ProjectID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		observed, err := repository.Observe(
+			context.Background(),
+			project.RootPath,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		snapshot, err := stateDB.CreateRepositorySnapshot(
+			context.Background(),
+			state.RepositorySnapshot{
+				ProjectID:      project.ID,
+				HeadCommit:     observed.HeadCommit,
+				Branch:         observed.Branch,
+				Detached:       observed.Detached,
+				Dirty:          observed.Dirty,
+				TrackedFiles:   observed.TrackedFiles,
+				UntrackedFiles: observed.UntrackedFiles,
+			},
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		_ = encoder.Encode(ipc.Response{
+			OK: true,
+			Snapshot: &ipc.RepositorySnapshot{
+				ID:             snapshot.ID,
+				ProjectID:      snapshot.ProjectID,
+				HeadCommit:     snapshot.HeadCommit,
+				Branch:         snapshot.Branch,
+				Detached:       snapshot.Detached,
+				Dirty:          snapshot.Dirty,
+				TrackedFiles:   snapshot.TrackedFiles,
+				UntrackedFiles: snapshot.UntrackedFiles,
+			},
+		})
+
 	case "projects":
 		projects, err := stateDB.ListProjects(context.Background())
 		if err != nil {

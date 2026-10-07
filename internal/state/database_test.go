@@ -137,3 +137,21 @@ func TestUncleanRunRemainsDetectable(t *testing.T) {
 		t.Fatal("interrupted-style run unexpectedly has stopped_at")
 	}
 }
+
+func TestForeignKeysAreEnabled(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	var enabled int
+
+	if err := db.db.QueryRowContext(
+		ctx,
+		`PRAGMA foreign_keys`,
+	).Scan(&enabled); err != nil {
+		t.Fatalf("read foreign_keys pragma: %v", err)
+	}
+
+	if enabled != 1 {
+		t.Fatalf("foreign_keys = %d, want 1", enabled)
+	}
+}

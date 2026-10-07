@@ -428,3 +428,29 @@ func TestResumeSessionExecutionRejectsNonInterruptedExecution(t *testing.T) {
 		t.Fatal("running execution unexpectedly resumed")
 	}
 }
+
+func TestSessionExecutionForeignKeyIsEnforced(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	_, err := db.db.ExecContext(ctx, `
+INSERT INTO session_executions (
+	session_id,
+	status,
+	current_step,
+	total_steps,
+	started_at
+)
+VALUES (?, ?, ?, ?, ?)
+`,
+		999999,
+		ExecutionStatusRunning,
+		0,
+		5,
+		"2026-10-06T00:00:00Z",
+	)
+
+	if err == nil {
+		t.Fatal("execution for nonexistent session unexpectedly succeeded")
+	}
+}

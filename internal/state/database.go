@@ -32,7 +32,9 @@ func Open(ctx context.Context) (*Database, error) {
 		return nil, err
 	}
 
-	db, err := sql.Open("sqlite", path)
+	dsn := path + "?_pragma=foreign_keys(1)"
+
+	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open state database: %w", err)
 	}
