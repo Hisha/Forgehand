@@ -149,6 +149,27 @@ Git repository
  verification
 ```
 
+### Project intake checkpoint
+
+Before registering an existing project, the daemon requires a clean Git working
+tree. A clean repository is registered without creating a commit. For a dirty
+repository, clients present the daemon's structured change list and ask the user
+to commit the current state, discard it, or cancel. The daemon alone performs
+the selected Git operation, verifies that the result is clean, and registers the
+project only after that verification succeeds.
+
+The intake response includes an opaque expected-state fingerprint covering
+HEAD, staged content, tracked working-tree content, and untracked paths and
+content. The daemon checks it immediately before a commit or discard so that a
+decision based on stale inspection data is rejected. This is optimistic
+concurrency control, not filesystem locking: another process can still modify
+the repository after verification and while the Git operation is running. The
+post-operation cleanliness check detects many such races, but it cannot make a
+multi-command Git operation atomic.
+
+This checkpoint establishes a known source-control starting point. It does not
+show that the project builds, passes tests, or is otherwise healthy.
+
 ## New-project bootstrap
 
 ```text

@@ -191,10 +191,53 @@ func handleConnection(
 	switch request.Command {
 
 	case "project-add":
-		project, err := addProject(
+		intake, err := inspectProjectIntake(
+			context.Background(),
+			request.Path,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		if len(intake.Changes) != 0 {
+			changes := make(
+				[]ipc.WorkingTreeChange,
+				0,
+				len(intake.Changes),
+			)
+
+			for _, change := range intake.Changes {
+				changes = append(
+					changes,
+					ipc.WorkingTreeChange{
+						Path:         change.Path,
+						OriginalPath: change.OriginalPath,
+						IndexStatus:  change.IndexStatus,
+						WorkStatus:   change.WorkStatus,
+						Untracked:    change.Untracked,
+					},
+				)
+			}
+
+			_ = encoder.Encode(ipc.Response{
+				OK: true,
+				Intake: &ipc.ProjectIntake{
+					RootPath:      intake.Repository.RootPath,
+					Changes:       changes,
+					ExpectedState: intake.Fingerprint,
+				},
+			})
+			return
+		}
+
+		project, err := admitProject(
 			context.Background(),
 			stateDB,
-			request.Path,
+			intake,
 		)
 		if err != nil {
 			_ = encoder.Encode(ipc.Response{
@@ -213,6 +256,22 @@ func handleConnection(
 			},
 		})
 
+	case "project-resolve-intake":
+		project, err := resolveProjectIntake(
+			context.Background(),
+			stateDB,
+			request.Path,
+			request.Action,
+			request.ExpectedState,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		if request.Action == projectIntakeCancel {
+			_ = encoder.Encode(ipc.Response{OK: true})
+			return
+		}
 		_ = encoder.Encode(ipc.Response{
 			OK: true,
 			Project: &ipc.Project{

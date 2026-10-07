@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"net"
 	"os"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/Hisha/Forgehand/internal/daemon"
@@ -288,8 +290,65 @@ func addProject(path string) error {
 		return err
 	}
 
+	if response.Intake != nil {
+		fmt.Println("Forgehand found uncommitted changes:")
+		fmt.Println()
+
+		for _, change := range response.Intake.Changes {
+			status, path := formatWorkingTreeChange(change)
+			fmt.Printf("%s  %s\n", status, path)
+		}
+
+		fmt.Println()
+		fmt.Println("Choose how to establish the Forgehand source-control baseline:")
+		fmt.Println("  1. Commit the current state")
+		fmt.Println("  2. Discard ALL uncommitted changes and untracked files")
+		fmt.Println("  3. Cancel without changing the repository")
+		fmt.Print("Choice [1/2/3]: ")
+
+		reader := bufio.NewReader(os.Stdin)
+		choice, err := reader.ReadString('\n')
+		if err != nil {
+			return fmt.Errorf("read project intake choice: %w", err)
+		}
+		choice = strings.TrimSpace(choice)
+
+		action := ""
+		switch choice {
+		case "1":
+			action = "commit"
+		case "2":
+			fmt.Println("WARNING: This permanently deletes all uncommitted changes and untracked files.")
+			fmt.Print("Type DISCARD to confirm: ")
+			confirmation, err := reader.ReadString('\n')
+			if err != nil {
+				return fmt.Errorf("read discard confirmation: %w", err)
+			}
+			if strings.TrimSpace(confirmation) != "DISCARD" {
+				fmt.Println("Cancelled; the repository was not changed.")
+				return nil
+			}
+			action = "discard"
+		case "3":
+			fmt.Println("Cancelled; the repository was not changed.")
+			return nil
+		default:
+			return fmt.Errorf("invalid choice; project was not changed")
+		}
+
+		response, err = request(ipc.Request{
+			Command:       "project-resolve-intake",
+			Path:          response.Intake.RootPath,
+			Action:        action,
+			ExpectedState: response.Intake.ExpectedState,
+		})
+		if err != nil {
+			return err
+		}
+	}
+
 	if response.Project == nil {
-		return fmt.Errorf("daemon returned no project")
+		return fmt.Errorf("daemon returned neither project nor intake result")
 	}
 
 	fmt.Printf("Added project %d\n", response.Project.ID)
@@ -297,6 +356,20 @@ func addProject(path string) error {
 	fmt.Printf("Root: %s\n", response.Project.RootPath)
 
 	return nil
+}
+
+func formatWorkingTreeChange(change ipc.WorkingTreeChange) (string, string) {
+	status := strings.ReplaceAll(change.IndexStatus+change.WorkStatus, ".", " ")
+	if change.Untracked {
+		status = "??"
+	}
+
+	path := change.Path
+	if change.OriginalPath != "" {
+		path = change.OriginalPath + " -> " + change.Path
+	}
+
+	return status, path
 }
 
 func observeProject(projectID int64) error {
