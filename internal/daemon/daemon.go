@@ -191,8 +191,9 @@ func handleConnection(
 	switch request.Command {
 
 	case "project-add":
-		discovered, err := repository.Discover(
+		project, err := addProject(
 			context.Background(),
+			stateDB,
 			request.Path,
 		)
 		if err != nil {
@@ -203,18 +204,14 @@ func handleConnection(
 			return
 		}
 
-		project, err := stateDB.CreateProject(
-			context.Background(),
-			discovered.Name,
-			discovered.RootPath,
-		)
-		if err != nil {
-			_ = encoder.Encode(ipc.Response{
-				OK:      false,
-				Message: err.Error(),
-			})
-			return
-		}
+		_ = encoder.Encode(ipc.Response{
+			OK: true,
+			Project: &ipc.Project{
+				ID:       project.ID,
+				Name:     project.Name,
+				RootPath: project.RootPath,
+			},
+		})
 
 		_ = encoder.Encode(ipc.Response{
 			OK: true,
