@@ -30,6 +30,21 @@ Initial architecture. Component boundaries are conceptual and intentionally do n
 
 The core rule is that client presentation does not own engineering state.
 
+### Linux service and identity boundary
+
+The daemon may run directly for development or as an unprivileged systemd
+system service. It refuses root before creating directories, locking state,
+opening SQLite, or creating a socket. One daemon owns a configured state
+directory through a lifetime advisory lock, independent of socket selection.
+
+Local Unix clients are identified at the transport boundary with kernel peer
+credentials. The current socket owner/group permissions authorize daemon
+access; peer identity is recorded as context but does not yet authorize
+individual projects. Project ownership is unimplemented, and execution uses
+the service account's filesystem identity. These boundaries intentionally keep
+future project authorization, remote authentication, and isolated execution
+separate. See [Linux system-service foundation](SYSTEM-SERVICE.md).
+
 ## Major conceptual components
 
 ### Session Engine

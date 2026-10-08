@@ -8,6 +8,7 @@ import (
 func openTestDatabase(t *testing.T) *Database {
 	t.Helper()
 
+	t.Setenv("FORGEHAND_STATE_DIR", "")
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	db, err := Open(context.Background())

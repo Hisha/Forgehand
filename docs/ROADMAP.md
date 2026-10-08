@@ -71,6 +71,16 @@ This is the first deterministic layer of project knowledge. Phase 3 remains in
 progress: semantic cataloging, durable Git-friendly knowledge, broader
 provenance, and staleness/update behavior are not yet complete.
 
+Infrastructure foundation implemented alongside the prototype:
+
+- non-root Linux daemon invariant and capability-free service execution;
+- explicit service state/socket configuration and single-daemon state locking;
+- local Unix peer identity capture and a non-installed systemd service
+  template.
+
+This foundation does not implement multi-user authorization, project ACLs,
+remote APIs, or isolated workers, and does not complete Phase 2 or Phase 3.
+
 ## Phase 4 — Investigation
 
 Introduce the first reasoning worker.

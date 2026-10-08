@@ -2,6 +2,11 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -15,6 +20,56 @@ func TestFormatWorkingTreeChangeUntracked(t *testing.T) {
 	})
 	if status != "??" || path != "new.txt" {
 		t.Fatalf("formatted untracked change = %q %q", status, path)
+	}
+}
+
+func TestRequestUsesConfiguredSocketPath(t *testing.T) {
+	dir, err := os.MkdirTemp(".", ".fh-cli-sock-")
+	if err != nil {
+		t.Fatalf("create socket directory: %v", err)
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("resolve socket directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(abs) })
+	socketPath := filepath.Join(abs, "forgehand.sock")
+	t.Setenv("FORGEHAND_SOCKET_PATH", socketPath)
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+	serverErr := make(chan error, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			serverErr <- err
+			return
+		}
+		defer conn.Close()
+		var request ipc.Request
+		if err := json.NewDecoder(conn).Decode(&request); err != nil {
+			serverErr <- err
+			return
+		}
+		if request.Command != "status" {
+			serverErr <- fmt.Errorf("command = %q, want status", request.Command)
+			return
+		}
+		serverErr <- json.NewEncoder(conn).Encode(ipc.Response{OK: true, Message: "configured"})
+	}()
+
+	response, err := request(ipc.Request{Command: "status"})
+	if err != nil {
+		t.Fatalf("request configured socket: %v", err)
+	}
+	if err := <-serverErr; err != nil {
+		t.Fatalf("configured socket server: %v", err)
+	}
+	if response.Message != "configured" {
+		t.Fatalf("response message = %q", response.Message)
 	}
 }
 

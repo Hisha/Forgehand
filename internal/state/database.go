@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"path/filepath"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -23,14 +24,19 @@ type DaemonRun struct {
 }
 
 func Open(ctx context.Context) (*Database, error) {
-	if err := EnsureDir(); err != nil {
-		return nil, err
-	}
-
-	path, err := DatabasePath()
+	dir, err := Dir()
 	if err != nil {
 		return nil, err
 	}
+	return OpenAt(ctx, dir)
+}
+
+func OpenAt(ctx context.Context, dir string) (*Database, error) {
+	if err := EnsureDirAt(dir); err != nil {
+		return nil, err
+	}
+
+	path := filepath.Join(filepath.Clean(dir), "forgehand.db")
 
 	dsn := path + "?_pragma=foreign_keys(1)"
 

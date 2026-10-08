@@ -21,6 +21,7 @@ The system will maintain durable project knowledge, coordinate specialized worke
 - [Terminology](docs/TERMINOLOGY.md)
 - [Research Agenda](docs/RESEARCH.md)
 - [Roadmap](docs/ROADMAP.md)
+- [Linux system-service foundation](docs/SYSTEM-SERVICE.md)
 
 ## License
 

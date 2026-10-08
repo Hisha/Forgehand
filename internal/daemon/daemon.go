@@ -9,11 +9,11 @@ import (
 	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/Hisha/Forgehand/internal/config"
 	"github.com/Hisha/Forgehand/internal/ipc"
 	"github.com/Hisha/Forgehand/internal/repository"
 	"github.com/Hisha/Forgehand/internal/state"
@@ -21,74 +21,104 @@ import (
 )
 
 const (
-	socketName      = "forgehand.sock"
 	fakeWorkerSteps = 5
 	fakeWorkerDelay = 3 * time.Second
 )
 
 func SocketPath() (string, error) {
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		return "", errors.New("XDG_RUNTIME_DIR is not set")
-	}
-
-	return filepath.Join(runtimeDir, "forgehand", socketName), nil
+	return config.SocketPath()
 }
 
-func ensureRuntimeDir() error {
-	runtimeDir := os.Getenv("XDG_RUNTIME_DIR")
-	if runtimeDir == "" {
-		return errors.New("XDG_RUNTIME_DIR is not set")
-	}
+type Config struct {
+	StateDir   string
+	SocketPath string
+	SocketMode os.FileMode
+}
 
-	dir := filepath.Join(runtimeDir, "forgehand")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("create runtime directory: %w", err)
+func LoadConfig() (Config, error) {
+	stateDir, err := config.StateDir()
+	if err != nil {
+		return Config{}, err
 	}
-
-	return nil
+	socketPath, err := config.SocketPath()
+	if err != nil {
+		return Config{}, err
+	}
+	socketMode, err := config.SocketMode()
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{StateDir: stateDir, SocketPath: socketPath, SocketMode: socketMode}, nil
 }
 
 func Run() error {
-	if err := ensureRuntimeDir(); err != nil {
+	realUID := os.Getuid()
+	effectiveUID := os.Geteuid()
+	if realUID == 0 || effectiveUID == 0 {
+		return validateDaemonIdentity(realUID, effectiveUID, 0)
+	}
+	capabilities, err := effectiveCapabilities()
+	if err != nil {
 		return err
 	}
+	return runWithIdentity(realUID, effectiveUID, capabilities)
+}
+
+func runWithIdentity(realUID, effectiveUID int, capabilities uint64) error {
+	if err := validateDaemonIdentity(realUID, effectiveUID, capabilities); err != nil {
+		return err
+	}
+	configured, err := LoadConfig()
+	if err != nil {
+		return fmt.Errorf("load daemon configuration: %w", err)
+	}
+	return runConfigured(configured)
+}
+
+func runConfigured(config Config) error {
+	if err := state.EnsureDirAt(config.StateDir); err != nil {
+		return err
+	}
+	ownership, err := acquireStateOwnership(config.StateDir)
+	if err != nil {
+		return err
+	}
+	defer ownership.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stateDB, err := state.Open(ctx)
+	stateDB, err := state.OpenAt(ctx, config.StateDir)
 	if err != nil {
 		return fmt.Errorf("open persistent state: %w", err)
 	}
 	defer stateDB.Close()
 
-	socketPath, err := SocketPath()
-	if err != nil {
+	if err := ensureRuntimeDir(config.SocketPath, config.SocketMode); err != nil {
 		return err
 	}
 
-	if conn, err := net.Dial("unix", socketPath); err == nil {
+	if conn, err := net.Dial("unix", config.SocketPath); err == nil {
 		conn.Close()
 		return fmt.Errorf("Forgehand daemon is already running")
 	}
 
-	if err := os.Remove(socketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(config.SocketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove stale socket: %w", err)
 	}
 
-	listener, err := net.Listen("unix", socketPath)
+	listener, err := net.Listen("unix", config.SocketPath)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", socketPath, err)
+		return fmt.Errorf("listen on %s: %w", config.SocketPath, err)
 	}
 
 	cleanup := func() {
 		listener.Close()
-		os.Remove(socketPath)
+		os.Remove(config.SocketPath)
 	}
 	defer cleanup()
 
-	if err := os.Chmod(socketPath, 0600); err != nil {
+	if err := os.Chmod(config.SocketPath, config.SocketMode); err != nil {
 		return fmt.Errorf("secure socket: %w", err)
 	}
 
@@ -128,7 +158,7 @@ func Run() error {
 	}()
 
 	fmt.Printf("Forgehand daemon running\n")
-	fmt.Printf("Socket: %s\n", socketPath)
+	fmt.Printf("Socket: %s\n", config.SocketPath)
 	fmt.Printf("PID: %d\n", os.Getpid())
 
 	runID, err := stateDB.StartDaemonRun(
@@ -162,7 +192,14 @@ func Run() error {
 			return fmt.Errorf("accept connection: %w", err)
 		}
 
-		go handleConnection(ctx, stateDB, &workers, conn)
+		client, err := captureClientIdentity(conn)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "forgehand: identify local client: %v\n", err)
+			conn.Close()
+			continue
+		}
+
+		go handleConnection(ctx, stateDB, &workers, conn, client)
 	}
 }
 
@@ -171,6 +208,7 @@ func handleConnection(
 	stateDB *state.Database,
 	workers *sync.WaitGroup,
 	conn net.Conn,
+	client ClientIdentity,
 ) {
 	defer conn.Close()
 

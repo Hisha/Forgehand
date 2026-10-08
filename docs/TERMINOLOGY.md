@@ -18,6 +18,26 @@ A durable engineering objective and its history/state. A session exists independ
 
 A user-facing interface to Forgehand. The initial client is a TUI.
 
+## Service identity
+
+The non-root operating-system account running the Forgehand daemon.
+
+## Client identity
+
+Transport-authenticated identity associated with a client connection. Local
+Unix sockets currently provide Linux peer credentials; remote transports will
+require a different authentication mechanism.
+
+## Project ownership
+
+The future authorization relationship between clients and projects. It is not
+implemented by the current group-based local socket boundary.
+
+## Execution identity
+
+The operating-system identity used for repository operations and workers. It is
+currently the service identity but remains architecturally distinct.
+
 ## Worker
 
 A bounded executor used by Forgehand. A worker may use an LLM, deterministic tooling, or both.

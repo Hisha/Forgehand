@@ -1,26 +1,15 @@
 package state
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/Hisha/Forgehand/internal/config"
 )
 
 func Dir() (string, error) {
-	if stateHome := os.Getenv("XDG_STATE_HOME"); stateHome != "" {
-		return filepath.Join(stateHome, "forgehand"), nil
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("determine home directory: %w", err)
-	}
-	if home == "" {
-		return "", errors.New("home directory is empty")
-	}
-
-	return filepath.Join(home, ".local", "state", "forgehand"), nil
+	return config.StateDir()
 }
 
 func DatabasePath() (string, error) {
@@ -38,9 +27,15 @@ func EnsureDir() error {
 		return err
 	}
 
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	return EnsureDirAt(dir)
+}
+
+func EnsureDirAt(dir string) error {
+	if !filepath.IsAbs(dir) || filepath.Clean(dir) == string(filepath.Separator) {
+		return fmt.Errorf("state directory must be an absolute path other than root")
+	}
+	if err := os.MkdirAll(filepath.Clean(dir), 0700); err != nil {
 		return fmt.Errorf("create state directory: %w", err)
 	}
-
 	return nil
 }

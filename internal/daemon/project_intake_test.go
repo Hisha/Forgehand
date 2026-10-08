@@ -536,6 +536,7 @@ func openProjectIntakeTestDatabase(
 ) *state.Database {
 	t.Helper()
 
+	t.Setenv("FORGEHAND_STATE_DIR", "")
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 
 	db, err := state.Open(context.Background())

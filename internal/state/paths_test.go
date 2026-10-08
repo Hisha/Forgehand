@@ -8,6 +8,7 @@ import (
 
 func TestDirUsesXDGStateHome(t *testing.T) {
 	temp := t.TempDir()
+	t.Setenv("FORGEHAND_STATE_DIR", "")
 	t.Setenv("XDG_STATE_HOME", temp)
 
 	got, err := Dir()
@@ -21,8 +22,23 @@ func TestDirUsesXDGStateHome(t *testing.T) {
 	}
 }
 
+func TestDirUsesConfiguredStateDirectory(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "configured-state")
+	t.Setenv("FORGEHAND_STATE_DIR", want)
+	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "ignored"))
+
+	got, err := Dir()
+	if err != nil {
+		t.Fatalf("Dir() returned error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("Dir() = %q, want %q", got, want)
+	}
+}
+
 func TestDatabasePathDoesNotCreateStateDirectory(t *testing.T) {
 	temp := t.TempDir()
+	t.Setenv("FORGEHAND_STATE_DIR", "")
 	t.Setenv("XDG_STATE_HOME", temp)
 
 	got, err := DatabasePath()

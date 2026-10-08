@@ -1,0 +1,31 @@
+[Unit]
+Description=Forgehand persistent engineering daemon (%i)
+Documentation=file:/usr/share/doc/forgehand/SYSTEM-SERVICE.md
+After=local-fs.target
+
+[Service]
+Type=simple
+User=%i
+Group=forgehand
+ExecStart=/usr/bin/forgehand daemon
+Environment=FORGEHAND_STATE_DIR=/var/lib/forgehand
+Environment=FORGEHAND_SOCKET_PATH=/run/forgehand/forgehand.sock
+Environment=FORGEHAND_SOCKET_MODE=0660
+StateDirectory=forgehand
+StateDirectoryMode=0700
+RuntimeDirectory=forgehand
+RuntimeDirectoryMode=0770
+UMask=0007
+Restart=on-failure
+RestartSec=2s
+KillSignal=SIGTERM
+TimeoutStopSec=90s
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=full
+ProtectHome=no
+PrivateTmp=no
+
+[Install]
+WantedBy=multi-user.target
