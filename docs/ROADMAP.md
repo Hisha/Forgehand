@@ -58,6 +58,19 @@ Add an initial cataloger for a deliberately limited project type.
 
 **Exit condition:** Forgehand can answer useful project questions from its maintained knowledge and show where those answers came from.
 
+Incremental implementation status:
+
+- deterministic committed-tree discovery is implemented for registered
+  projects;
+- discovery records exact commit provenance, aggregate language counts, and
+  evidence paths for a limited set of build-system indicators;
+- historical discovery observations are retained in SQLite without copying the
+  full Git file inventory.
+
+This is the first deterministic layer of project knowledge. Phase 3 remains in
+progress: semantic cataloging, durable Git-friendly knowledge, broader
+provenance, and staleness/update behavior are not yet complete.
+
 ## Phase 4 — Investigation
 
 Introduce the first reasoning worker.

@@ -340,6 +340,52 @@ func handleConnection(
 			},
 		})
 
+	case "project-discover":
+		result, err := discoverRegisteredProject(
+			context.Background(),
+			stateDB,
+			request.ProjectID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+
+		summary := result.Observation.Summary
+		languages := make([]ipc.LanguageCount, 0, len(summary.Languages))
+		for _, language := range summary.Languages {
+			languages = append(languages, ipc.LanguageCount{
+				Language: language.Language,
+				Count:    language.Count,
+			})
+		}
+		buildSystems := make([]ipc.BuildSystemIndicator, 0, len(summary.BuildSystems))
+		for _, indicator := range summary.BuildSystems {
+			buildSystems = append(buildSystems, ipc.BuildSystemIndicator{
+				Name: indicator.Name,
+				Evidence: ipc.EvidenceReference{
+					Path: indicator.Evidence.Path,
+				},
+			})
+		}
+
+		_ = encoder.Encode(ipc.Response{
+			OK: true,
+			Discovery: &ipc.ProjectDiscovery{
+				ObservationID: result.Observation.ID,
+				Project: ipc.Project{
+					ID:       result.Project.ID,
+					Name:     result.Project.Name,
+					RootPath: result.Project.RootPath,
+				},
+				CommitHash:        summary.CommitHash,
+				TrackedFiles:      summary.TrackedFiles,
+				UnclassifiedFiles: summary.UnclassifiedFiles,
+				Languages:         languages,
+				BuildSystems:      buildSystems,
+			},
+		})
+
 	case "projects":
 		projects, err := stateDB.ListProjects(context.Background())
 		if err != nil {

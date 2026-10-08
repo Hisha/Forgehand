@@ -36,6 +36,7 @@ type Response struct {
 	Projects  []Project           `json:"projects,omitempty"`
 	Snapshot  *RepositorySnapshot `json:"snapshot,omitempty"`
 	Intake    *ProjectIntake      `json:"intake,omitempty"`
+	Discovery *ProjectDiscovery   `json:"discovery,omitempty"`
 }
 
 type Project struct {
@@ -67,4 +68,28 @@ type WorkingTreeChange struct {
 	IndexStatus  string `json:"index_status,omitempty"`
 	WorkStatus   string `json:"work_status,omitempty"`
 	Untracked    bool   `json:"untracked"`
+}
+
+type ProjectDiscovery struct {
+	ObservationID     int64                  `json:"observation_id"`
+	Project           Project                `json:"project"`
+	CommitHash        string                 `json:"commit_hash"`
+	TrackedFiles      int                    `json:"tracked_files"`
+	UnclassifiedFiles int                    `json:"unclassified_files"`
+	Languages         []LanguageCount        `json:"languages"`
+	BuildSystems      []BuildSystemIndicator `json:"build_systems"`
+}
+
+type LanguageCount struct {
+	Language string `json:"language"`
+	Count    int    `json:"count"`
+}
+
+type EvidenceReference struct {
+	Path string `json:"path"`
+}
+
+type BuildSystemIndicator struct {
+	Name     string            `json:"name"`
+	Evidence EvidenceReference `json:"evidence"`
 }

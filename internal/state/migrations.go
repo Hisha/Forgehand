@@ -90,6 +90,22 @@ CREATE INDEX idx_repository_snapshots_project_id
 ON repository_snapshots(project_id);
 `,
 	},
+	{
+		version: 6,
+		sql: `
+CREATE TABLE discovery_observations (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	project_id INTEGER NOT NULL,
+	commit_hash TEXT NOT NULL,
+	summary_json TEXT NOT NULL,
+	observed_at TEXT NOT NULL,
+	FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+CREATE INDEX idx_discovery_observations_project_id
+ON discovery_observations(project_id);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

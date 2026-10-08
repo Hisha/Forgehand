@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strconv"
@@ -276,6 +277,18 @@ func projectCommand(args []string) error {
 
 		return observeProject(projectID)
 
+	case "discover":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand project discover <id>")
+		}
+
+		projectID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || projectID <= 0 {
+			return fmt.Errorf("invalid project ID: %s", args[1])
+		}
+
+		return discoverProject(projectID)
+
 	default:
 		return fmt.Errorf("unknown project command: %s", args[0])
 	}
@@ -417,6 +430,52 @@ func observeProject(projectID int64) error {
 	return nil
 }
 
+func discoverProject(projectID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "project-discover",
+		ProjectID: projectID,
+	})
+	if err != nil {
+		return err
+	}
+	if response.Discovery == nil {
+		return fmt.Errorf("daemon returned no project discovery")
+	}
+	return formatProjectDiscovery(os.Stdout, *response.Discovery)
+}
+
+func formatProjectDiscovery(writer io.Writer, result ipc.ProjectDiscovery) error {
+	var output strings.Builder
+	fmt.Fprintf(&output, "Discovered project %d\n", result.Project.ID)
+	fmt.Fprintf(&output, "Observation: %d\n", result.ObservationID)
+	fmt.Fprintf(&output, "Name: %s\n", result.Project.Name)
+	fmt.Fprintf(&output, "Root: %s\n", result.Project.RootPath)
+	fmt.Fprintf(&output, "Commit: %s\n", result.CommitHash)
+	fmt.Fprintf(&output, "Tracked files: %d\n", result.TrackedFiles)
+	fmt.Fprintf(&output, "Unclassified files: %d\n", result.UnclassifiedFiles)
+
+	fmt.Fprintln(&output, "Languages:")
+	if len(result.Languages) == 0 {
+		fmt.Fprintln(&output, "  none")
+	} else {
+		for _, language := range result.Languages {
+			fmt.Fprintf(&output, "  %s: %d\n", language.Language, language.Count)
+		}
+	}
+
+	fmt.Fprintln(&output, "Build-system indicators:")
+	if len(result.BuildSystems) == 0 {
+		fmt.Fprintln(&output, "  none")
+	} else {
+		for _, indicator := range result.BuildSystems {
+			fmt.Fprintf(&output, "  %s: %s\n", indicator.Name, indicator.Evidence.Path)
+		}
+	}
+	fmt.Fprintln(&output, "Build indicators report committed files only; no builds or tests were run.")
+	_, err := io.WriteString(writer, output.String())
+	return err
+}
+
 func listProjects() error {
 	response, err := request(ipc.Request{
 		Command: "projects",
@@ -456,6 +515,7 @@ func usage() {
 	fmt.Println("  project add <path>              Add a Git project")
 	fmt.Println("  projects                        List projects")
 	fmt.Println("  project observe <id>            Observe a project's Git state")
+	fmt.Println("  project discover <id>           Discover a committed project tree")
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
 	fmt.Println("  session run <id>                Run a session")

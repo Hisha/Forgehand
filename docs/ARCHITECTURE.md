@@ -170,6 +170,27 @@ multi-command Git operation atomic.
 This checkpoint establishes a known source-control starting point. It does not
 show that the project builds, passes tests, or is otherwise healthy.
 
+### Deterministic repository discovery
+
+The first implemented project-knowledge layer is deterministic discovery of a
+specific committed Git tree. The daemon resolves a registered project ID to its
+persisted repository root, captures the exact current HEAD commit, and asks the
+discovery component to inspect that commit through Git tree primitives. The
+live working directory is not used as the source inventory.
+
+A discovery observation records aggregate tracked-file and language counts,
+the number of files that remain unclassified, and build-system indicators with
+their committed source paths as evidence. The classifier is an explicit,
+limited table; ambiguous files such as `.h` remain unclassified rather than
+being guessed. Indicator detection establishes only that a file exists. It does
+not execute a build or establish that the indicated build system works.
+
+Observations are stored historically in SQLite as one structured summary per
+project and commit, rather than duplicating Git's complete file inventory as
+database rows. This is deterministic observed evidence, not semantic analysis
+or interpreted project knowledge. Semantic cataloging and a Git-friendly
+durable knowledge format remain later work.
+
 ## New-project bootstrap
 
 ```text

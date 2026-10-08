@@ -17,8 +17,8 @@ func TestFreshDatabaseMigratesToLatestVersion(t *testing.T) {
 		t.Fatalf("read schema version: %v", err)
 	}
 
-	if version != 5 {
-		t.Fatalf("schema version = %d, want 5", version)
+	if version != 6 {
+		t.Fatalf("schema version = %d, want 6", version)
 	}
 
 	for _, want := range []string{
@@ -27,6 +27,7 @@ func TestFreshDatabaseMigratesToLatestVersion(t *testing.T) {
 		"session_executions",
 		"projects",
 		"repository_snapshots",
+		"discovery_observations",
 	} {
 		var tableName string
 
