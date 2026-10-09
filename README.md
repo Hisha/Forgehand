@@ -18,10 +18,15 @@ The system will maintain durable project knowledge, coordinate specialized worke
 
 - [Architecture](docs/ARCHITECTURE.md)
 - [Design Principles](docs/DESIGN-PRINCIPLES.md)
+- [Security Principles](docs/SECURITY-PRINCIPLES.md)
 - [Terminology](docs/TERMINOLOGY.md)
 - [Research Agenda](docs/RESEARCH.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Linux system-service foundation](docs/SYSTEM-SERVICE.md)
+
+## Security
+
+Forgehand treats security as a core architectural requirement. All generated and externally supplied code is untrusted until verified; security verification is separate from functional verification and operates under a fail-closed model. See [Security Principles](docs/SECURITY-PRINCIPLES.md) for details. Planned security capabilities (scanning, authorization, sandboxing, etc.) are documented there as future work, not current implementations.
 
 ## License
 

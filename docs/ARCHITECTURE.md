@@ -1,5 +1,7 @@
 # Forgehand Architecture
 
+**Related:** [Security Principles](SECURITY-PRINCIPLES.md)
+
 ## Status
 
 Initial architecture. Component boundaries are conceptual and intentionally do not prescribe an implementation language, TUI framework, IPC mechanism, model provider, or structured-data format.
@@ -43,7 +45,8 @@ access; peer identity is recorded as context but does not yet authorize
 individual projects. Project ownership is unimplemented, and execution uses
 the service account's filesystem identity. These boundaries intentionally keep
 future project authorization, remote authentication, and isolated execution
-separate. See [Linux system-service foundation](SYSTEM-SERVICE.md).
+separate. See [Linux system-service foundation](SYSTEM-SERVICE.md) and
+[Security Principles](SECURITY-PRINCIPLES.md).
 
 ## Major conceptual components
 
@@ -142,7 +145,11 @@ Forgehand assumes coding itself can be delegated to suitable local models once t
 
 Evaluates whether completed work satisfies the plan and project requirements.
 
-Verification should prefer executable evidence—tests, builds, static checks, diffs, and reproduction steps—over model confidence.
+Functional verification should prefer executable evidence—tests, builds, static checks, diffs, and reproduction steps—over model confidence.
+
+### Security Verifier (planned)
+
+Provides independent security verification of changes before promotion. Security verification is a separate dimension from functional verification, produces evidence-backed findings, and operates under a fail-closed promotion policy. See [Security Principles](SECURITY-PRINCIPLES.md).
 
 ## Existing-project bootstrap
 
@@ -161,7 +168,11 @@ Git repository
       |
  implementation
       |
- verification
+  functional verification
+       |
+  security verification
+       |
+  promotion decision
 ```
 
 ### Project intake checkpoint
@@ -219,9 +230,13 @@ User intent
     |
  implementation
     |
- verification
-    |
- observed project knowledge
+  functional verification
+     |
+  security verification
+     |
+  promotion decision
+     |
+  observed project knowledge
 ```
 
 The two paths should converge onto the same ongoing project-knowledge model.

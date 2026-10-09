@@ -2,6 +2,8 @@
 
 These terms provide a common vocabulary. Names may change as prototypes reveal better abstractions.
 
+**Related:** [Security Principles](SECURITY-PRINCIPLES.md)
+
 ## Project
 
 A Git repository managed by Forgehand.

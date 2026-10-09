@@ -2,6 +2,8 @@
 
 This document records the architectural invariants accepted during Forgehand's initial design. These are intended to remain stable unless implementation evidence demonstrates that one should change.
 
+**Related:** [Security Principles](SECURITY-PRINCIPLES.md)
+
 ## 1. Git is required
 
 Every Forgehand-managed project is a Git repository.
@@ -149,3 +151,7 @@ A larger model may be usable, but the architecture must not depend on one.
 When Forgehand cannot establish enough evidence to make a safe engineering decision, it should expose the uncertainty rather than manufacture confidence.
 
 The objective is not maximum autonomy. The objective is reliable long-horizon engineering.
+
+## 14. Security is non-negotiable
+
+Security is an architectural requirement, not an optional add-on. Generated and externally supplied code is untrusted until verified. Security considerations must inform investigation, planning, coding, and verification. See [Security Principles](SECURITY-PRINCIPLES.md) for the full security contract.

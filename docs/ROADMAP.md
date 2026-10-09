@@ -2,6 +2,8 @@
 
 This roadmap is intentionally short. Later phases should be created from evidence gathered in earlier ones.
 
+**Related:** [Security Principles](SECURITY-PRINCIPLES.md)
+
 ## Phase 0 — Design baseline
 
 - Record architectural invariants.
@@ -91,9 +93,9 @@ Given a specific engineering question, it should retrieve relevant project knowl
 
 ## Phase 5 — Implementation and verification
 
-Connect bounded coding and verification workers.
+Connect bounded coding and verification workers, including functional and security verification.
 
-**Exit condition:** Forgehand can carry one real change from user objective through investigation, plan, implementation, verification, and completion while preserving a durable session history.
+**Exit condition:** Forgehand can carry one real change from user objective through investigation, plan, implementation, functional verification, security verification, and promotion decision while preserving a durable session history.
 
 ## Beyond
 
@@ -105,3 +107,5 @@ Only after the above works should Forgehand consider:
 - desktop GUI;
 - broad cross-platform support;
 - more autonomous project planning.
+- security verification engine (scanners, evidence, findings, fail-closed promotion gate).
+- project authorization, worker isolation, remote authentication, and audit logging.
