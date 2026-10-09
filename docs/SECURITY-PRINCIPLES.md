@@ -65,6 +65,10 @@ Mandatory security verification is a separate dimension from functional verifica
 
 Checks must be selected based on the project language, build system, dependencies, and actual changes. Irrelevant scanners should not be required for every project.
 
+### Pre-execution security assessment
+
+Before executing newly generated or modified build scripts, test harnesses, installation scripts, or other potentially dangerous code, Forgehand must apply a pre-execution security assessment and an appropriate execution policy. This assessment is separate from final security verification. It evaluates the risks of executing the proposed code (including command injection, privilege escalation, unexpected network access, destructive file operations, and unauthorized persistence) and determines whether execution is permitted, requires constrained execution, or must be blocked. Final security verification still occurs before promotion. Forgehand must not blindly execute such code without applying this execution policy.
+
 ## 6. Evidence-backed findings
 
 Security findings must identify:
@@ -82,7 +86,7 @@ Confirmed findings must be separated from suspected risks. Model-generated expla
 
 ## 7. Fail-closed promotion policy
 
-Future promotion gates must follow a fail-closed model. Critical unresolved findings must block automatic promotion. Mandatory checks that fail to execute must not be represented as passing. Explicit states must include: Passed, Failed, Blocked, Not run, Not applicable.
+Future promotion gates must follow a fail-closed model. Critical unresolved findings must block automatic promotion. Mandatory checks that fail to execute or produce an indeterminate result must not be represented as passing, and must block automatic promotion unless a separately authorized and auditable exception exists. Explicit states must include: Passed, Failed, Blocked, Not run, Not applicable.
 
 The absence of reported findings does not prove code is secure. A controlled human exception process may exist, but workers must not approve their own exceptions. Any exception must be authorized by a separate actor.
 
