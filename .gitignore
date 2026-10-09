@@ -10,3 +10,7 @@
 
 # IDE metadata
 .project
+
+# Forgehand generated binaries
+/packaging/linux/forgehand-installer
+/forgehand-upgrade-test
