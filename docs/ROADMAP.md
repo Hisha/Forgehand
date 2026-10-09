@@ -109,3 +109,4 @@ Only after the above works should Forgehand consider:
 - more autonomous project planning.
 - security verification engine (scanners, evidence, findings, fail-closed promotion gate).
 - project authorization, worker isolation, remote authentication, and audit logging.
+- Linux installer/upgrade workflow (implemented in this milestone) extended to additional packaging targets (Debian/RPM/container) as future work.

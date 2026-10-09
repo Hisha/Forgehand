@@ -23,6 +23,7 @@ The system will maintain durable project knowledge, coordinate specialized worke
 - [Research Agenda](docs/RESEARCH.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Linux system-service foundation](docs/SYSTEM-SERVICE.md)
+- [Linux Installation Guide](docs/LINUX-INSTALLATION.md)
 
 ## Security
 

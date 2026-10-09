@@ -165,3 +165,7 @@ preserve these boundaries:
 - remote clients require transport-appropriate authentication and cannot rely
   on Unix group membership;
 - no public TCP or HTTP listener is provided.
+
+## Installation and upgrades
+
+A supported Linux installer is available in `packaging/linux/` with commands `install`, `upgrade`, `status`, and `uninstall`. See [Linux Installation Guide](LINUX-INSTALLATION.md) for details. The installer preserves existing state (`/var/lib/forgehand`), supports personal and dedicated deployments, validates readiness, and provides rollback on upgrade failure. These capabilities build on the existing systemd template and non-root daemon.
