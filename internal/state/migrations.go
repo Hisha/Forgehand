@@ -106,6 +106,42 @@ CREATE INDEX idx_discovery_observations_project_id
 ON discovery_observations(project_id);
 `,
 	},
+	{
+		version: 7,
+		sql: `
+CREATE TABLE project_inventories (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	project_id INTEGER NOT NULL,
+	commit_hash TEXT NOT NULL,
+	head_commit TEXT NOT NULL,
+	is_dirty INTEGER NOT NULL DEFAULT 0,
+	engine_version INTEGER NOT NULL,
+	tracked_files INTEGER NOT NULL,
+	truncated INTEGER NOT NULL DEFAULT 0,
+	summary_json TEXT NOT NULL,
+	observed_at TEXT NOT NULL,
+	FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+CREATE INDEX idx_project_inventories_project_id
+ON project_inventories(project_id);
+
+CREATE TABLE inventory_files (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	inventory_id INTEGER NOT NULL,
+	path TEXT NOT NULL,
+	blob_hash TEXT NOT NULL,
+	mode TEXT NOT NULL,
+	size INTEGER NOT NULL,
+	language TEXT NOT NULL DEFAULT '',
+	category TEXT NOT NULL,
+	FOREIGN KEY(inventory_id) REFERENCES project_inventories(id)
+);
+
+CREATE INDEX idx_inventory_files_inventory_id
+ON inventory_files(inventory_id);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

@@ -122,3 +122,147 @@ func TestFormatWorkingTreeChangeUsesShortStatusAndRename(t *testing.T) {
 		t.Fatalf("formatted rename = %q %q", status, path)
 	}
 }
+
+func TestFormatProjectInspectionCurrent(t *testing.T) {
+	inspection := ipc.Inspection{
+		Status: "current",
+		Head:   "abc123",
+		Dirty:  false,
+		Inventory: &ipc.Inventory{
+			ID:            5,
+			ProjectID:     3,
+			CommitHash:    "abc123",
+			HeadCommit:    "abc123",
+			IsDirty:       false,
+			EngineVersion: 1,
+			TrackedFiles:  2,
+			ObservedAt:    "2026-01-01T00:00:00Z",
+			Summary: ipc.InventorySummary{
+				TrackedFiles:      2,
+				UnclassifiedFiles: 0,
+				Languages:         []ipc.InventoryLanguage{{Language: "Go", Count: 2}},
+				BuildSystems: []ipc.InventoryBuildSystem{
+					{Name: "Go modules", Evidence: ipc.EvidenceReference{Path: "go.mod"}},
+				},
+				Categories: []ipc.InventoryCategory{
+					{Category: "source", Count: 2},
+				},
+				Directories: []ipc.InventoryDirectory{
+					{Path: "cmd", Files: 1},
+				},
+			},
+		},
+	}
+	var output bytes.Buffer
+	if err := formatProjectInspection(&output, inspection, false); err != nil {
+		t.Fatalf("format current inspection: %v", err)
+	}
+	for _, want := range []string{
+		"Inspected project 3",
+		"Status: current",
+		"Commit analyzed: abc123",
+		"HEAD now: abc123",
+		"Working tree dirty (now): no",
+		"Go: 2",
+		"Go modules: go.mod",
+		"source: 2",
+		"cmd: 1",
+		"no builds or tests were run",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("current inspection missing %q:\n%s", want, output.String())
+		}
+	}
+	if strings.Contains(output.String(), "Evidence files:") {
+		t.Fatalf("current inspection unexpectedly contained evidence:\n%s", output.String())
+	}
+}
+
+func TestFormatProjectInspectionStale(t *testing.T) {
+	inspection := ipc.Inspection{
+		Status: "stale",
+		Head:   "def456",
+		Dirty:  true,
+		Inventory: &ipc.Inventory{
+			ID:         5,
+			ProjectID:  3,
+			CommitHash: "abc123",
+			HeadCommit: "abc123",
+			IsDirty:    true,
+			ObservedAt: "2026-01-01T00:00:00Z",
+			Summary: ipc.InventorySummary{
+				TrackedFiles: 0,
+			},
+		},
+	}
+	var output bytes.Buffer
+	if err := formatProjectInspection(&output, inspection, false); err != nil {
+		t.Fatalf("format stale inspection: %v", err)
+	}
+	for _, want := range []string{
+		"Status: stale",
+		"HEAD now: def456",
+		"Working tree dirty (now): yes",
+		"has advanced to def456",
+		"forgehand project inventory 3",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("stale inspection missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestFormatProjectInspectionEvidence(t *testing.T) {
+	inspection := ipc.Inspection{
+		Status: "current",
+		Head:   "abc123",
+		Inventory: &ipc.Inventory{
+			ID:           5,
+			ProjectID:    3,
+			CommitHash:   "abc123",
+			HeadCommit:   "abc123",
+			TrackedFiles: 1,
+			ObservedAt:   "2026-01-01T00:00:00Z",
+			Summary:      ipc.InventorySummary{TrackedFiles: 1},
+			Files: []ipc.InventoryFile{
+				{Path: "main.go", BlobHash: "blob", Mode: "100644", Size: 10, Language: "Go", Category: "source"},
+			},
+		},
+	}
+	var output bytes.Buffer
+	if err := formatProjectInspection(&output, inspection, true); err != nil {
+		t.Fatalf("format evidence inspection: %v", err)
+	}
+	for _, want := range []string{
+		"Evidence files:",
+		"main.go\tsource\tGo\t10\tblob",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("evidence inspection missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestFormatProjectInventory(t *testing.T) {
+	summary := ipc.InventorySummary{
+		TrackedFiles:      1,
+		UnclassifiedFiles: 1,
+		Languages:         []ipc.InventoryLanguage{{Language: "Go", Count: 1}},
+		Categories:        []ipc.InventoryCategory{{Category: "source", Count: 1}},
+	}
+	var output bytes.Buffer
+	if err := formatInventorySummary(&output, summary); err != nil {
+		t.Fatalf("format inventory summary: %v", err)
+	}
+	for _, want := range []string{
+		"Unclassified files: 1",
+		"Languages:",
+		"Go: 1",
+		"File classifications:",
+		"source: 1",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("inventory summary missing %q:\n%s", want, output.String())
+		}
+	}
+}

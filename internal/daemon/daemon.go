@@ -424,6 +424,59 @@ func handleConnection(
 			},
 		})
 
+	case "project-inventory":
+		result, err := inventoryRegisteredProject(
+			context.Background(),
+			stateDB,
+			request.ProjectID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+
+		record := result.Inventory
+		if request.IncludeFiles {
+			loaded, err := stateDB.GetProjectInventory(
+				context.Background(),
+				record.ID,
+				true,
+			)
+			if err != nil {
+				_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+				return
+			}
+			if loaded != nil {
+				record = *loaded
+			}
+		}
+
+		inv := inventoryToIPC(record)
+		_ = encoder.Encode(ipc.Response{OK: true, Inventory: &inv})
+
+	case "project-inspect":
+		inspection, err := inspectRegisteredProject(
+			context.Background(),
+			stateDB,
+			request.ProjectID,
+			request.IncludeFiles,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+
+		inv := inventoryToIPC(*inspection.Inventory)
+		_ = encoder.Encode(ipc.Response{
+			OK: true,
+			Inspection: &ipc.Inspection{
+				Inventory: &inv,
+				Status:    inspection.Status,
+				Head:      inspection.Head,
+				Dirty:     inspection.Dirty,
+			},
+		})
+
 	case "projects":
 		projects, err := stateDB.ListProjects(context.Background())
 		if err != nil {

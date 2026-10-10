@@ -100,13 +100,13 @@ func Discover(
 	unclassified := 0
 
 	for _, file := range files {
-		if language, ok := classifyLanguage(file.Path); ok {
+		if language, ok := ClassifyLanguage(file.Path); ok {
 			languageTotals[language]++
 		} else {
 			unclassified++
 		}
 
-		if name, ok := classifyBuildSystem(file.Path); ok {
+		if name, ok := ClassifyBuildSystem(file.Path); ok {
 			indicators = append(indicators, BuildSystemIndicator{
 				Name:     name,
 				Evidence: EvidenceReference{Path: file.Path},
@@ -140,7 +140,7 @@ func Discover(
 	}, nil
 }
 
-func classifyLanguage(filePath string) (string, bool) {
+func ClassifyLanguage(filePath string) (string, bool) {
 	base := strings.ToLower(path.Base(filePath))
 	if language, ok := filenameLanguages[base]; ok {
 		return language, true
@@ -154,7 +154,7 @@ func classifyLanguage(filePath string) (string, bool) {
 	return language, ok
 }
 
-func classifyBuildSystem(filePath string) (string, bool) {
+func ClassifyBuildSystem(filePath string) (string, bool) {
 	base := path.Base(filePath)
 	lower := strings.ToLower(base)
 

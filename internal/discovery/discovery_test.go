@@ -37,25 +37,25 @@ func TestLanguageClassification(t *testing.T) {
 
 	for filePath, want := range tests {
 		t.Run(filePath, func(t *testing.T) {
-			got, ok := classifyLanguage(filePath)
+			got, ok := ClassifyLanguage(filePath)
 			if !ok || got != want {
-				t.Fatalf("classifyLanguage(%q) = %q, %v; want %q, true", filePath, got, ok, want)
+				t.Fatalf("ClassifyLanguage(%q) = %q, %v; want %q, true", filePath, got, ok, want)
 			}
 		})
 	}
 }
 
 func TestAmbiguousHeaderRemainsUnclassified(t *testing.T) {
-	if language, ok := classifyLanguage("include/shared.h"); ok {
+	if language, ok := ClassifyLanguage("include/shared.h"); ok {
 		t.Fatalf("ambiguous .h classified as %q", language)
 	}
-	if language, ok := classifyLanguage("include/shared.hpp"); !ok || language != "C++" {
+	if language, ok := ClassifyLanguage("include/shared.hpp"); !ok || language != "C++" {
 		t.Fatalf("explicit C++ header classified as %q, %v", language, ok)
 	}
 }
 
 func TestUnknownFileRemainsUnclassified(t *testing.T) {
-	if language, ok := classifyLanguage("assets/archive.weird"); ok {
+	if language, ok := ClassifyLanguage("assets/archive.weird"); ok {
 		t.Fatalf("unknown file classified as %q", language)
 	}
 }
@@ -78,9 +78,9 @@ func TestBuildSystemDetectionIncludesNestedEvidence(t *testing.T) {
 	}
 
 	for filePath, want := range tests {
-		got, ok := classifyBuildSystem(filePath)
+		got, ok := ClassifyBuildSystem(filePath)
 		if !ok || got != want {
-			t.Fatalf("classifyBuildSystem(%q) = %q, %v; want %q, true", filePath, got, ok, want)
+			t.Fatalf("ClassifyBuildSystem(%q) = %q, %v; want %q, true", filePath, got, ok, want)
 		}
 	}
 }

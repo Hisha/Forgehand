@@ -37,6 +37,9 @@ func main() {
 	case "projects":
 		err = listProjects()
 
+	case "inspect":
+		err = inspectProject(os.Args[2:])
+
 	case "status":
 		err = status()
 
@@ -289,6 +292,18 @@ func projectCommand(args []string) error {
 
 		return discoverProject(projectID)
 
+	case "inventory":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand project inventory <id>")
+		}
+
+		projectID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || projectID <= 0 {
+			return fmt.Errorf("invalid project ID: %s", args[1])
+		}
+
+		return inventoryProject(projectID)
+
 	default:
 		return fmt.Errorf("unknown project command: %s", args[0])
 	}
@@ -476,6 +491,223 @@ func formatProjectDiscovery(writer io.Writer, result ipc.ProjectDiscovery) error
 	return err
 }
 
+func inventoryProject(projectID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "project-inventory",
+		ProjectID: projectID,
+	})
+	if err != nil {
+		return err
+	}
+	if response.Inventory == nil {
+		return fmt.Errorf("daemon returned no project inventory")
+	}
+
+	fmt.Printf("Inventoried project %d\n", response.Inventory.ProjectID)
+	fmt.Printf("Inventory: %d\n", response.Inventory.ID)
+	fmt.Printf("Commit: %s\n", response.Inventory.CommitHash)
+	fmt.Printf("Head at inventory: %s\n", response.Inventory.HeadCommit)
+	if response.Inventory.IsDirty {
+		fmt.Println("Dirty at inventory: yes")
+	} else {
+		fmt.Println("Dirty at inventory: no")
+	}
+	fmt.Printf("Engine version: %d\n", response.Inventory.EngineVersion)
+	fmt.Printf("Tracked files: %d\n", response.Inventory.TrackedFiles)
+	if response.Inventory.Truncated {
+		fmt.Println("Truncated: yes (file budget reached)")
+	} else {
+		fmt.Println("Truncated: no")
+	}
+
+	if err := formatInventorySummary(os.Stdout, response.Inventory.Summary); err != nil {
+		return err
+	}
+
+	fmt.Println("Inventory reports committed files only; no builds or tests were run.")
+	return nil
+}
+
+func inspectProject(args []string) error {
+	if len(args) < 1 || len(args) > 2 {
+		return fmt.Errorf("usage: forgehand inspect <id> [--evidence]")
+	}
+
+	includeFiles := false
+	if len(args) == 2 {
+		if args[1] != "--evidence" {
+			return fmt.Errorf("unknown inspect option: %s", args[1])
+		}
+		includeFiles = true
+	}
+
+	projectID, err := strconv.ParseInt(args[0], 10, 64)
+	if err != nil || projectID <= 0 {
+		return fmt.Errorf("invalid project ID: %s", args[0])
+	}
+
+	response, err := request(ipc.Request{
+		Command:      "project-inspect",
+		ProjectID:    projectID,
+		IncludeFiles: includeFiles,
+	})
+	if err != nil {
+		return err
+	}
+	if response.Inspection == nil || response.Inspection.Inventory == nil {
+		return fmt.Errorf("daemon returned no project inspection")
+	}
+
+	return formatProjectInspection(os.Stdout, *response.Inspection, includeFiles)
+}
+
+func formatProjectInspection(
+	writer io.Writer,
+	inspection ipc.Inspection,
+	includeFiles bool,
+) error {
+	inv := inspection.Inventory
+
+	var output strings.Builder
+	fmt.Fprintf(&output, "Inspected project %d\n", inv.ProjectID)
+	fmt.Fprintf(&output, "Status: %s\n", inspection.Status)
+	fmt.Fprintf(&output, "Inventory: %d\n", inv.ID)
+	fmt.Fprintf(&output, "Commit analyzed: %s\n", inv.CommitHash)
+	fmt.Fprintf(&output, "HEAD now: %s\n", inspection.Head)
+	if inspection.Dirty {
+		fmt.Fprintln(&output, "Working tree dirty (now): yes")
+	} else {
+		fmt.Fprintln(&output, "Working tree dirty (now): no")
+	}
+	if inv.IsDirty {
+		fmt.Fprintln(&output, "Dirty at inventory: yes")
+	} else {
+		fmt.Fprintln(&output, "Dirty at inventory: no")
+	}
+	fmt.Fprintf(&output, "Observed at: %s\n", inv.ObservedAt)
+	fmt.Fprintf(&output, "Engine version: %d\n", inv.EngineVersion)
+	fmt.Fprintf(&output, "Tracked files: %d\n", inv.TrackedFiles)
+	if inv.Truncated {
+		fmt.Fprintln(&output, "Truncated: yes (file budget reached)")
+	} else {
+		fmt.Fprintln(&output, "Truncated: no")
+	}
+
+	switch inspection.Status {
+	case "stale":
+		fmt.Fprintf(
+			&output,
+			"This inventory describes commit %s; HEAD has advanced to %s.\n",
+			inv.CommitHash,
+			inspection.Head,
+		)
+		fmt.Fprintf(
+			&output,
+			"Run `forgehand project inventory %d` to refresh.\n",
+			inv.ProjectID,
+		)
+	case "unavailable":
+		fmt.Fprintln(
+			&output,
+			"Unable to verify the current repository HEAD (unborn HEAD or missing repository).",
+		)
+	}
+
+	if err := appendInventorySummary(&output, inv.Summary); err != nil {
+		return err
+	}
+
+	if includeFiles {
+		fmt.Fprintln(&output)
+		fmt.Fprintln(&output, "Evidence files:")
+		fmt.Fprintln(&output, "PATH\tCATEGORY\tLANGUAGE\tSIZE\tBLOB")
+		for _, file := range inv.Files {
+			fmt.Fprintf(
+				&output,
+				"%s\t%s\t%s\t%d\t%s\n",
+				file.Path,
+				file.Category,
+				file.Language,
+				file.Size,
+				file.BlobHash,
+			)
+		}
+	}
+
+	fmt.Fprintln(&output, "Inventory reports committed files only; no builds or tests were run.")
+	_, err := io.WriteString(writer, output.String())
+	return err
+}
+
+func formatInventorySummary(writer io.Writer, summary ipc.InventorySummary) error {
+	var output strings.Builder
+	if err := appendInventorySummary(&output, summary); err != nil {
+		return err
+	}
+	_, err := io.WriteString(writer, output.String())
+	return err
+}
+
+func appendInventorySummary(
+	output *strings.Builder,
+	summary ipc.InventorySummary,
+) error {
+	fmt.Fprintln(output, "Unclassified files:", summary.UnclassifiedFiles)
+
+	fmt.Fprintln(output, "Languages:")
+	if len(summary.Languages) == 0 {
+		fmt.Fprintln(output, "  none")
+	} else {
+		for _, language := range summary.Languages {
+			fmt.Fprintf(output, "  %s: %d\n", language.Language, language.Count)
+		}
+	}
+
+	fmt.Fprintln(output, "Build-system indicators:")
+	if len(summary.BuildSystems) == 0 {
+		fmt.Fprintln(output, "  none")
+	} else {
+		for _, indicator := range summary.BuildSystems {
+			fmt.Fprintf(
+				output,
+				"  %s: %s\n",
+				indicator.Name,
+				indicator.Evidence.Path,
+			)
+		}
+	}
+
+	fmt.Fprintln(output, "File classifications:")
+	if len(summary.Categories) == 0 {
+		fmt.Fprintln(output, "  none")
+	} else {
+		for _, category := range summary.Categories {
+			fmt.Fprintf(
+				output,
+				"  %s: %d\n",
+				category.Category,
+				category.Count,
+			)
+		}
+	}
+
+	fmt.Fprintln(output, "Directories:")
+	if len(summary.Directories) == 0 {
+		fmt.Fprintln(output, "  none")
+	} else {
+		for _, directory := range summary.Directories {
+			fmt.Fprintf(
+				output,
+				"  %s: %d\n",
+				directory.Path,
+				directory.Files,
+			)
+		}
+	}
+
+	return nil
+}
+
 func listProjects() error {
 	response, err := request(ipc.Request{
 		Command: "projects",
@@ -516,6 +748,8 @@ func usage() {
 	fmt.Println("  projects                        List projects")
 	fmt.Println("  project observe <id>            Observe a project's Git state")
 	fmt.Println("  project discover <id>           Discover a committed project tree")
+	fmt.Println("  project inventory <id>          Build a committed-tree inventory")
+	fmt.Println("  inspect <id> [--evidence]       Show the latest project inventory")
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
 	fmt.Println("  session run <id>                Run a session")

@@ -69,6 +69,24 @@ func Observe(ctx context.Context, rootPath string) (Snapshot, error) {
 
 	untrackedFiles := countNonEmptyLines(untrackedOutput)
 
+	dirty, err := IsDirty(ctx, rootPath)
+	if err != nil {
+		return Snapshot{}, err
+	}
+
+	return Snapshot{
+		HeadCommit:     headCommit,
+		Branch:         branch,
+		Detached:       detached,
+		Dirty:          dirty,
+		TrackedFiles:   trackedFiles,
+		UntrackedFiles: untrackedFiles,
+	}, nil
+}
+
+// IsDirty reports whether the working tree differs from HEAD. It is read-only
+// and never executes repository-provided code.
+func IsDirty(ctx context.Context, rootPath string) (bool, error) {
 	statusOutput, err := gitOutput(
 		ctx,
 		rootPath,
@@ -77,17 +95,10 @@ func Observe(ctx context.Context, rootPath string) (Snapshot, error) {
 		"--untracked-files=normal",
 	)
 	if err != nil {
-		return Snapshot{}, fmt.Errorf("read repository status: %w", err)
+		return false, fmt.Errorf("read repository status: %w", err)
 	}
 
-	return Snapshot{
-		HeadCommit:     headCommit,
-		Branch:         branch,
-		Detached:       detached,
-		Dirty:          strings.TrimSpace(statusOutput) != "",
-		TrackedFiles:   trackedFiles,
-		UntrackedFiles: untrackedFiles,
-	}, nil
+	return strings.TrimSpace(statusOutput) != "", nil
 }
 
 func gitOutput(

@@ -94,6 +94,37 @@ func TestObserveDirtyRepository(t *testing.T) {
 	}
 }
 
+func TestIsDirtyReadOnlyCleanRepository(t *testing.T) {
+	ctx := context.Background()
+	root := newCommittedRepository(t)
+
+	dirty, err := IsDirty(ctx, root)
+	if err != nil {
+		t.Fatalf("IsDirty(): %v", err)
+	}
+	if dirty {
+		t.Fatal("clean repository reported dirty")
+	}
+}
+
+func TestIsDirtyDetectsWorkingTreeChanges(t *testing.T) {
+	ctx := context.Background()
+	root := newCommittedRepository(t)
+
+	trackedPath := filepath.Join(root, "tracked.txt")
+	if err := os.WriteFile(trackedPath, []byte("changed\n"), 0o644); err != nil {
+		t.Fatalf("modify tracked file: %v", err)
+	}
+
+	dirty, err := IsDirty(ctx, root)
+	if err != nil {
+		t.Fatalf("IsDirty(): %v", err)
+	}
+	if !dirty {
+		t.Fatal("modified repository reported clean")
+	}
+}
+
 func TestObserveDetachedHead(t *testing.T) {
 	ctx := context.Background()
 	root := newCommittedRepository(t)
