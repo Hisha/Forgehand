@@ -40,6 +40,9 @@ func main() {
 	case "inspect":
 		err = inspectProject(os.Args[2:])
 
+	case "query":
+		err = queryCommand(os.Args[2:])
+
 	case "status":
 		err = status()
 
@@ -674,8 +677,7 @@ func formatProjectInspection(
 		}
 	}
 
-	_, err := io.WriteString(writer, output.String())
-	return err
+	return writeTabularOutput(writer, output.String())
 }
 
 func appendInventoryInspection(
@@ -855,7 +857,7 @@ func appendAnalysisInspection(
 						component.Identity,
 						evidence.Path,
 						evidence.Line,
-						evidence.Declaration,
+						sanitizeTableCell(evidence.Declaration),
 						evidence.BlobHash,
 					)
 				}
@@ -889,7 +891,7 @@ func appendAnalysisInspection(
 						dependency.Target,
 						evidence.Path,
 						evidence.Line,
-						evidence.Declaration,
+						sanitizeTableCell(evidence.Declaration),
 						evidence.BlobHash,
 					)
 				}
@@ -1012,6 +1014,11 @@ func usage() {
 	fmt.Println("  project inventory <id>          Build a committed-tree inventory")
 	fmt.Println("  project analyze <id>             Analyze components and dependencies")
 	fmt.Println("  inspect <id> [--components] [--dependencies] [--evidence]  Show project state")
+	fmt.Println("  query components <id> [--kind K] [--identity I] [--path P] [--contains S] [--analysis N] [--limit N] [--evidence]  List components")
+	fmt.Println("  query dependencies <id> <identity> [--analysis N] [--evidence]  List outgoing dependencies")
+	fmt.Println("  query dependents <id> <identity> [--analysis N] [--evidence]  List direct dependents")
+	fmt.Println("  query evidence <id> <identity> [--analysis N]  Show component evidence")
+	fmt.Println("  query changes <id> --from N --to N  Compare two analyses")
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
 	fmt.Println("  session run <id>                Run a session")

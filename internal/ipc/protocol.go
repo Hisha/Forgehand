@@ -11,6 +11,15 @@ type Request struct {
 	IncludeFiles        bool   `json:"include_files,omitempty"`
 	IncludeComponents   bool   `json:"include_components,omitempty"`
 	IncludeDependencies bool   `json:"include_dependencies,omitempty"`
+	IncludeEvidence     bool   `json:"include_evidence,omitempty"`
+	AnalysisID          int64  `json:"analysis_id,omitempty"`
+	FromAnalysisID      int64  `json:"from_analysis_id,omitempty"`
+	ToAnalysisID        int64  `json:"to_analysis_id,omitempty"`
+	Kind                string `json:"kind,omitempty"`
+	Identity            string `json:"identity,omitempty"`
+	ComponentPath       string `json:"component_path,omitempty"`
+	Contains            string `json:"contains,omitempty"`
+	Limit               int    `json:"limit,omitempty"`
 }
 
 type Session struct {
@@ -43,6 +52,7 @@ type Response struct {
 	Inventory  *Inventory          `json:"inventory,omitempty"`
 	Inspection *Inspection         `json:"inspection,omitempty"`
 	Analysis   *ComponentAnalysis  `json:"analysis,omitempty"`
+	Query      *QueryResponse      `json:"query,omitempty"`
 }
 
 type Project struct {
@@ -240,4 +250,72 @@ type SourceEvidence struct {
 	BlobHash    string `json:"blob_hash,omitempty"`
 	Declaration string `json:"declaration,omitempty"`
 	Line        int    `json:"line,omitempty"`
+}
+
+// QueryResponse is the result of a read-only query over persisted
+// observations. It never triggers analysis and never mutates stored state.
+type QueryResponse struct {
+	ProjectID    int64                `json:"project_id"`
+	Query        string               `json:"query"`
+	Observation  *QueryObservation    `json:"observation,omitempty"`
+	Components   []AnalysisComponent  `json:"components,omitempty"`
+	Dependencies []AnalysisDependency `json:"dependencies,omitempty"`
+	Dependents   []QueryDependent     `json:"dependents,omitempty"`
+	Evidence     []SourceEvidence     `json:"evidence,omitempty"`
+	Changes      *QueryChanges        `json:"changes,omitempty"`
+	Total        int                  `json:"total"`
+	Empty        bool                 `json:"empty"`
+	Limited      bool                 `json:"limited,omitempty"`
+	Warnings     []string             `json:"warnings,omitempty"`
+}
+
+// QueryObservation identifies the persisted analysis a query ran against and
+// separates freshness (current/stale/unavailable) from completeness
+// (complete/partial).
+type QueryObservation struct {
+	AnalysisID    int64  `json:"analysis_id"`
+	ProjectID     int64  `json:"project_id"`
+	Commit        string `json:"commit"`
+	HeadCommit    string `json:"head_commit,omitempty"`
+	IsDirty       bool   `json:"is_dirty"`
+	EngineVersion int    `json:"engine_version"`
+	ObservedAt    string `json:"observed_at"`
+	Status        string `json:"status"`
+	Head          string `json:"head,omitempty"`
+	Complete      bool   `json:"complete"`
+	Truncated     bool   `json:"truncated"`
+	Sources       int    `json:"sources"`
+	Analyzed      int    `json:"analyzed"`
+	Skipped       int    `json:"skipped"`
+}
+
+// QueryDependent is a direct dependent of a component.
+type QueryDependent struct {
+	Kind     string           `json:"kind"`
+	Source   string           `json:"source"`
+	Target   string           `json:"target"`
+	Language string           `json:"language,omitempty"`
+	Evidence []SourceEvidence `json:"evidence,omitempty"`
+}
+
+// QueryChanges is the deterministic difference between two observations.
+type QueryChanges struct {
+	From                QueryObservation        `json:"from"`
+	To                  QueryObservation        `json:"to"`
+	AddedComponents     []AnalysisComponent     `json:"added_components,omitempty"`
+	RemovedComponents   []AnalysisComponent     `json:"removed_components,omitempty"`
+	AddedDependencies   []AnalysisDependency    `json:"added_dependencies,omitempty"`
+	RemovedDependencies []AnalysisDependency    `json:"removed_dependencies,omitempty"`
+	Reclassified        []QueryReclassification `json:"reclassified_dependencies,omitempty"`
+}
+
+// QueryReclassification records a dependency whose classification changed while
+// its underlying relationship stayed the same.
+type QueryReclassification struct {
+	Source     string `json:"source"`
+	Target     string `json:"target"`
+	FromKind   string `json:"from_kind"`
+	ToKind     string `json:"to_kind"`
+	FromModule string `json:"from_module,omitempty"`
+	ToModule   string `json:"to_module,omitempty"`
 }

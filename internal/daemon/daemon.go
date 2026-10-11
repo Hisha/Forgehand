@@ -502,6 +502,14 @@ func handleConnection(
 
 		_ = encoder.Encode(ipc.Response{OK: true, Inspection: &response})
 
+	case "query-components", "query-dependencies", "query-dependents", "query-evidence", "query-changes":
+		result, err := handleQuery(context.Background(), stateDB, request)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		_ = encoder.Encode(ipc.Response{OK: true, Query: &result})
+
 	case "projects":
 		projects, err := stateDB.ListProjects(context.Background())
 		if err != nil {
