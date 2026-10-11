@@ -22,12 +22,31 @@ type projectInventory struct {
 	Inventory state.ProjectInventory
 }
 
+// inspectionOptions selects which stored details an inspection loads. It never
+// causes analysis to run: it only controls which already-stored observations
+// and details are read back.
+type inspectionOptions struct {
+	IncludeFiles        bool
+	IncludeComponents   bool
+	IncludeDependencies bool
+}
+
+func (o inspectionOptions) includeDetails() bool {
+	return o.IncludeComponents || o.IncludeDependencies
+}
+
+// projectInspection is a read-only view of a project's latest stored
+// observations. Inventory and Analysis currency are evaluated independently:
+// Status refers to the inventory, and Analysis.Status (if present) refers to the
+// component analysis.
 type projectInspection struct {
-	Project   state.Project
-	Inventory *state.ProjectInventory
-	Status    string
-	Head      string
-	Dirty     bool
+	Project        state.Project
+	Inventory      *state.ProjectInventory
+	Analysis       *state.ComponentObservation
+	Status         string
+	AnalysisStatus string
+	Head           string
+	Dirty          bool
 }
 
 // inventoryRegisteredProject builds and persists a deterministic inventory of
@@ -95,26 +114,38 @@ func inventoryRegisteredProject(
 	}, nil
 }
 
-// inspectRegisteredProject loads the latest stored inventory for a project and
-// determines whether it is current, stale, or unavailable relative to HEAD.
+// inspectRegisteredProject loads the latest stored observations for a project
+// and evaluates each one's currency relative to the live repository HEAD. It is
+// strictly read-only: it never builds inventory, runs analysis, or mutates
+// stored records.
 func inspectRegisteredProject(
 	ctx context.Context,
 	stateDB *state.Database,
 	projectID int64,
-	includeFiles bool,
+	options inspectionOptions,
 ) (projectInspection, error) {
 	project, err := stateDB.GetProject(ctx, projectID)
 	if err != nil {
 		return projectInspection{}, fmt.Errorf("get registered project: %w", err)
 	}
 
-	record, err := stateDB.LatestProjectInventory(ctx, project.ID, includeFiles)
+	inventory, err := stateDB.LatestProjectInventory(ctx, project.ID, options.IncludeFiles)
 	if err != nil {
 		return projectInspection{}, fmt.Errorf("load latest project inventory: %w", err)
 	}
-	if record == nil {
+
+	var analysis *state.ComponentObservation
+	if options.includeDetails() {
+		analysis, err = stateDB.LatestComponentObservation(ctx, project.ID, true)
+		if err != nil {
+			return projectInspection{}, fmt.Errorf("load latest component analysis: %w", err)
+		}
+	}
+
+	if inventory == nil && analysis == nil {
 		return projectInspection{}, fmt.Errorf(
-			"project %d has no inventory; run forgehand project inventory %d",
+			"project %d has no stored observations; run forgehand project inventory %d or forgehand project analyze %d",
+			project.ID,
 			project.ID,
 			project.ID,
 		)
@@ -136,13 +167,21 @@ func inspectRegisteredProject(
 		}
 	}
 
-	return projectInspection{
-		Project:   project,
-		Inventory: record,
-		Status:    inspectionStatus(record.CommitHash, head, hasHead),
-		Head:      head,
-		Dirty:     dirty,
-	}, nil
+	inspection := projectInspection{
+		Project: project,
+		Head:    head,
+		Dirty:   dirty,
+	}
+	if inventory != nil {
+		inspection.Inventory = inventory
+		inspection.Status = inspectionStatus(inventory.CommitHash, head, hasHead)
+	}
+	if analysis != nil {
+		inspection.Analysis = analysis
+		inspection.AnalysisStatus = analysisStatus(analysis.CommitHash, head, hasHead)
+	}
+
+	return inspection, nil
 }
 
 // inspectionStatus compares a stored inventory commit with the live HEAD.

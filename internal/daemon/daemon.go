@@ -454,28 +454,53 @@ func handleConnection(
 		inv := inventoryToIPC(record)
 		_ = encoder.Encode(ipc.Response{OK: true, Inventory: &inv})
 
+	case "project-analyze":
+		response, err := analyzeRegisteredProject(context.Background(), stateDB, request.ProjectID)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		analysis := analysisToIPC(response.Analysis, response.Status, response.Head, response.Dirty, true, true)
+		_ = encoder.Encode(ipc.Response{OK: true, Analysis: &analysis})
+
 	case "project-inspect":
 		inspection, err := inspectRegisteredProject(
 			context.Background(),
 			stateDB,
 			request.ProjectID,
-			request.IncludeFiles,
+			inspectionOptions{
+				IncludeFiles:        request.IncludeFiles,
+				IncludeComponents:   request.IncludeComponents,
+				IncludeDependencies: request.IncludeDependencies,
+			},
 		)
 		if err != nil {
 			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
 			return
 		}
 
-		inv := inventoryToIPC(*inspection.Inventory)
-		_ = encoder.Encode(ipc.Response{
-			OK: true,
-			Inspection: &ipc.Inspection{
-				Inventory: &inv,
-				Status:    inspection.Status,
-				Head:      inspection.Head,
-				Dirty:     inspection.Dirty,
-			},
-		})
+		response := ipc.Inspection{
+			Status: inspection.Status,
+			Head:   inspection.Head,
+			Dirty:  inspection.Dirty,
+		}
+		if inspection.Inventory != nil {
+			inv := inventoryToIPC(*inspection.Inventory)
+			response.Inventory = &inv
+		}
+		if inspection.Analysis != nil {
+			analysis := analysisToIPC(
+				*inspection.Analysis,
+				inspection.AnalysisStatus,
+				inspection.Head,
+				inspection.Dirty,
+				request.IncludeComponents,
+				request.IncludeDependencies,
+			)
+			response.Analysis = &analysis
+		}
+
+		_ = encoder.Encode(ipc.Response{OK: true, Inspection: &response})
 
 	case "projects":
 		projects, err := stateDB.ListProjects(context.Background())

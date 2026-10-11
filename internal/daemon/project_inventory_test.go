@@ -123,7 +123,7 @@ func TestInspectRegisteredProjectStatusCurrent(t *testing.T) {
 		t.Fatalf("inventoryRegisteredProject(): %v", err)
 	}
 
-	inspection, err := inspectRegisteredProject(ctx, db, project.ID, false)
+	inspection, err := inspectRegisteredProject(ctx, db, project.ID, inspectionOptions{})
 	if err != nil {
 		t.Fatalf("inspectRegisteredProject(): %v", err)
 	}
@@ -156,7 +156,7 @@ func TestInspectRegisteredProjectStatusStale(t *testing.T) {
 	runProjectIntakeGit(t, root, "commit", "-m", "advance head")
 	head := strings.TrimSpace(string(projectIntakeGitOutput(t, root, "rev-parse", "HEAD")))
 
-	inspection, err := inspectRegisteredProject(ctx, db, project.ID, true)
+	inspection, err := inspectRegisteredProject(ctx, db, project.ID, inspectionOptions{IncludeFiles: true})
 	if err != nil {
 		t.Fatalf("inspectRegisteredProject(): %v", err)
 	}
@@ -186,7 +186,7 @@ func TestInspectRegisteredProjectDisclosesDirtyWorkingTree(t *testing.T) {
 
 	writeProjectIntakeFile(t, root, "tracked.txt", "modified without commit\n")
 
-	inspection, err := inspectRegisteredProject(ctx, db, project.ID, false)
+	inspection, err := inspectRegisteredProject(ctx, db, project.ID, inspectionOptions{})
 	if err != nil {
 		t.Fatalf("inspectRegisteredProject(): %v", err)
 	}
@@ -207,11 +207,11 @@ func TestInspectRegisteredProjectWithoutInventory(t *testing.T) {
 	root := newProjectIntakeRepository(t)
 	project := createProjectInventoryFixture(t, ctx, db, root)
 
-	_, err := inspectRegisteredProject(ctx, db, project.ID, false)
+	_, err := inspectRegisteredProject(ctx, db, project.ID, inspectionOptions{})
 	if err == nil {
-		t.Fatal("inspect without inventory succeeded")
+		t.Fatal("inspect without observations succeeded")
 	}
-	if !strings.Contains(err.Error(), "no inventory") {
+	if !strings.Contains(err.Error(), "no stored observations") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

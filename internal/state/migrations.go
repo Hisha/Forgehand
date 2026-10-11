@@ -142,6 +142,57 @@ CREATE INDEX idx_inventory_files_inventory_id
 ON inventory_files(inventory_id);
 `,
 	},
+	{
+		version: 8,
+		sql: `
+CREATE TABLE component_observations (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	project_id INTEGER NOT NULL,
+	commit_hash TEXT NOT NULL,
+	head_commit TEXT NOT NULL,
+	is_dirty INTEGER NOT NULL DEFAULT 0,
+	engine_version INTEGER NOT NULL,
+	summary_json TEXT NOT NULL,
+	observed_at TEXT NOT NULL,
+	FOREIGN KEY(project_id) REFERENCES projects(id)
+);
+
+CREATE INDEX idx_component_observations_project_id
+ON component_observations(project_id);
+
+CREATE TABLE components (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	observation_id INTEGER NOT NULL,
+	kind TEXT NOT NULL,
+	identity TEXT NOT NULL,
+	path TEXT NOT NULL,
+	language TEXT NOT NULL DEFAULT '',
+	internal INTEGER NOT NULL DEFAULT 0,
+	evidence_json TEXT NOT NULL,
+	FOREIGN KEY(observation_id) REFERENCES component_observations(id),
+	UNIQUE(observation_id, kind, identity)
+);
+
+CREATE INDEX idx_components_observation
+ON components(observation_id);
+
+CREATE TABLE dependencies (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	observation_id INTEGER NOT NULL,
+	kind TEXT NOT NULL,
+	source TEXT NOT NULL,
+	target TEXT NOT NULL,
+	target_module TEXT NOT NULL DEFAULT '',
+	language TEXT NOT NULL DEFAULT 'Go',
+	evidence_json TEXT NOT NULL,
+	FOREIGN KEY(observation_id) REFERENCES component_observations(id),
+	UNIQUE(observation_id, kind, source, target)
+);
+
+CREATE INDEX idx_dependencies_observation
+ON dependencies(observation_id);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

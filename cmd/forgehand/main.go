@@ -304,6 +304,18 @@ func projectCommand(args []string) error {
 
 		return inventoryProject(projectID)
 
+	case "analyze":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand project analyze <id>")
+		}
+
+		projectID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || projectID <= 0 {
+			return fmt.Errorf("invalid project ID: %s", args[1])
+		}
+
+		return analyzeProject(projectID)
+
 	default:
 		return fmt.Errorf("unknown project command: %s", args[0])
 	}
@@ -528,17 +540,67 @@ func inventoryProject(projectID int64) error {
 	return nil
 }
 
+func analyzeProject(projectID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "project-analyze",
+		ProjectID: projectID,
+	})
+	if err != nil {
+		return err
+	}
+	if response.Analysis == nil {
+		return fmt.Errorf("daemon returned no component analysis")
+	}
+	fmt.Printf("Analyzed project %d\n", response.Analysis.ProjectID)
+	fmt.Printf("Analysis: %d\n", response.Analysis.ID)
+	fmt.Printf("Commit: %s\n", response.Analysis.CommitHash)
+	fmt.Printf("Head at analysis: %s\n", response.Analysis.HeadCommit)
+	if response.Analysis.IsDirty {
+		fmt.Println("Dirty at analysis: yes")
+	} else {
+		fmt.Println("Dirty at analysis: no")
+	}
+	fmt.Printf("Engine version: %d\n", response.Analysis.EngineVersion)
+	fmt.Printf("Status: %s\n", response.Analysis.Status)
+	if response.Analysis.Status == "current" {
+		fmt.Println("HEAD now: " + response.Analysis.Head)
+		if response.Analysis.Dirty {
+			fmt.Println("Working tree dirty (now): yes")
+		} else {
+			fmt.Println("Working tree dirty (now): no")
+		}
+	}
+	fmt.Printf("Complete: %t, Truncated: %t\n", response.Analysis.Summary.Complete, response.Analysis.Summary.Truncated)
+	fmt.Printf("Sources: %d, Analyzed: %d, Skipped: %d\n", response.Analysis.Summary.Sources, response.Analysis.Summary.Analyzed, response.Analysis.Summary.Skipped)
+	fmt.Printf("Components: modules=%d packages=%d commands=%d build=%d config=%d\n",
+		response.Analysis.Summary.Modules,
+		response.Analysis.Summary.Packages,
+		response.Analysis.Summary.Commands,
+		response.Analysis.Summary.BuildComponents,
+		response.Analysis.Summary.ConfigurationComponents,
+	)
+	return nil
+}
+
 func inspectProject(args []string) error {
-	if len(args) < 1 || len(args) > 2 {
-		return fmt.Errorf("usage: forgehand inspect <id> [--evidence]")
+	if len(args) < 1 {
+		return fmt.Errorf("usage: forgehand inspect <id> [--components] [--dependencies] [--evidence]")
 	}
 
 	includeFiles := false
-	if len(args) == 2 {
-		if args[1] != "--evidence" {
-			return fmt.Errorf("unknown inspect option: %s", args[1])
+	includeComponents := false
+	includeDependencies := false
+	for _, a := range args[1:] {
+		switch a {
+		case "--evidence":
+			includeFiles = true
+		case "--components":
+			includeComponents = true
+		case "--dependencies":
+			includeDependencies = true
+		default:
+			return fmt.Errorf("unknown inspect option: %s", a)
 		}
-		includeFiles = true
 	}
 
 	projectID, err := strconv.ParseInt(args[0], 10, 64)
@@ -547,83 +609,127 @@ func inspectProject(args []string) error {
 	}
 
 	response, err := request(ipc.Request{
-		Command:      "project-inspect",
-		ProjectID:    projectID,
-		IncludeFiles: includeFiles,
+		Command:             "project-inspect",
+		ProjectID:           projectID,
+		IncludeFiles:        includeFiles,
+		IncludeComponents:   includeComponents,
+		IncludeDependencies: includeDependencies,
 	})
 	if err != nil {
 		return err
 	}
-	if response.Inspection == nil || response.Inspection.Inventory == nil {
+	if response.Inspection == nil {
 		return fmt.Errorf("daemon returned no project inspection")
 	}
 
-	return formatProjectInspection(os.Stdout, *response.Inspection, includeFiles)
+	return formatProjectInspection(os.Stdout, *response.Inspection, inspectionFormatOptions{
+		includeInventoryFiles: includeFiles,
+		includeComponents:     includeComponents,
+		includeDependencies:   includeDependencies,
+		includeEvidence:       includeFiles,
+	})
+}
+
+type inspectionFormatOptions struct {
+	includeInventoryFiles bool
+	includeComponents     bool
+	includeDependencies   bool
+	includeEvidence       bool
 }
 
 func formatProjectInspection(
 	writer io.Writer,
 	inspection ipc.Inspection,
-	includeFiles bool,
+	options inspectionFormatOptions,
 ) error {
-	inv := inspection.Inventory
-
 	var output strings.Builder
-	fmt.Fprintf(&output, "Inspected project %d\n", inv.ProjectID)
-	fmt.Fprintf(&output, "Status: %s\n", inspection.Status)
-	fmt.Fprintf(&output, "Inventory: %d\n", inv.ID)
-	fmt.Fprintf(&output, "Commit analyzed: %s\n", inv.CommitHash)
+
+	projectID := int64(0)
+	if inspection.Inventory != nil {
+		projectID = inspection.Inventory.ProjectID
+	} else if inspection.Analysis != nil {
+		projectID = inspection.Analysis.ProjectID
+	}
+
+	fmt.Fprintf(&output, "Inspected project %d\n", projectID)
 	fmt.Fprintf(&output, "HEAD now: %s\n", inspection.Head)
 	if inspection.Dirty {
 		fmt.Fprintln(&output, "Working tree dirty (now): yes")
 	} else {
 		fmt.Fprintln(&output, "Working tree dirty (now): no")
 	}
-	if inv.IsDirty {
-		fmt.Fprintln(&output, "Dirty at inventory: yes")
+
+	if inventory := inspection.Inventory; inventory != nil {
+		appendInventoryInspection(&output, inspection, *inventory, options.includeInventoryFiles)
 	} else {
-		fmt.Fprintln(&output, "Dirty at inventory: no")
+		fmt.Fprintln(&output, "No inventory recorded; run `forgehand project inventory "+strconv.FormatInt(projectID, 10)+"`.")
 	}
-	fmt.Fprintf(&output, "Observed at: %s\n", inv.ObservedAt)
-	fmt.Fprintf(&output, "Engine version: %d\n", inv.EngineVersion)
-	fmt.Fprintf(&output, "Tracked files: %d\n", inv.TrackedFiles)
-	if inv.Truncated {
-		fmt.Fprintln(&output, "Truncated: yes (file budget reached)")
+
+	if options.includeComponents || options.includeDependencies {
+		if inspection.Analysis == nil {
+			fmt.Fprintln(&output)
+			fmt.Fprintln(&output, "No component analysis recorded; run `forgehand project analyze "+strconv.FormatInt(projectID, 10)+"`.")
+		} else {
+			appendAnalysisInspection(&output, *inspection.Analysis, options)
+		}
+	}
+
+	_, err := io.WriteString(writer, output.String())
+	return err
+}
+
+func appendInventoryInspection(
+	output *strings.Builder,
+	inspection ipc.Inspection,
+	inv ipc.Inventory,
+	includeFiles bool,
+) {
+	fmt.Fprintf(output, "Status: %s\n", inspection.Status)
+	fmt.Fprintf(output, "Inventory: %d\n", inv.ID)
+	fmt.Fprintf(output, "Commit analyzed: %s\n", inv.CommitHash)
+	if inv.IsDirty {
+		fmt.Fprintln(output, "Dirty at inventory: yes")
 	} else {
-		fmt.Fprintln(&output, "Truncated: no")
+		fmt.Fprintln(output, "Dirty at inventory: no")
+	}
+	fmt.Fprintf(output, "Observed at: %s\n", inv.ObservedAt)
+	fmt.Fprintf(output, "Engine version: %d\n", inv.EngineVersion)
+	fmt.Fprintf(output, "Tracked files: %d\n", inv.TrackedFiles)
+	if inv.Truncated {
+		fmt.Fprintln(output, "Truncated: yes (file budget reached)")
+	} else {
+		fmt.Fprintln(output, "Truncated: no")
 	}
 
 	switch inspection.Status {
 	case "stale":
 		fmt.Fprintf(
-			&output,
+			output,
 			"This inventory describes commit %s; HEAD has advanced to %s.\n",
 			inv.CommitHash,
 			inspection.Head,
 		)
 		fmt.Fprintf(
-			&output,
+			output,
 			"Run `forgehand project inventory %d` to refresh.\n",
 			inv.ProjectID,
 		)
 	case "unavailable":
 		fmt.Fprintln(
-			&output,
+			output,
 			"Unable to verify the current repository HEAD (unborn HEAD or missing repository).",
 		)
 	}
 
-	if err := appendInventorySummary(&output, inv.Summary); err != nil {
-		return err
-	}
+	_ = appendInventorySummary(output, inv.Summary)
 
 	if includeFiles {
-		fmt.Fprintln(&output)
-		fmt.Fprintln(&output, "Evidence files:")
-		fmt.Fprintln(&output, "PATH\tCATEGORY\tLANGUAGE\tSIZE\tBLOB")
+		fmt.Fprintln(output)
+		fmt.Fprintln(output, "Evidence files:")
+		fmt.Fprintln(output, "PATH\tCATEGORY\tLANGUAGE\tSIZE\tBLOB")
 		for _, file := range inv.Files {
 			fmt.Fprintf(
-				&output,
+				output,
 				"%s\t%s\t%s\t%d\t%s\n",
 				file.Path,
 				file.Category,
@@ -634,9 +740,164 @@ func formatProjectInspection(
 		}
 	}
 
-	fmt.Fprintln(&output, "Inventory reports committed files only; no builds or tests were run.")
-	_, err := io.WriteString(writer, output.String())
-	return err
+	fmt.Fprintln(output, "Inventory reports committed files only; no builds or tests were run.")
+}
+
+func appendAnalysisInspection(
+	output *strings.Builder,
+	analysis ipc.ComponentAnalysis,
+	options inspectionFormatOptions,
+) {
+	fmt.Fprintln(output)
+	fmt.Fprintf(output, "Analysis: %d\n", analysis.ID)
+	fmt.Fprintf(output, "Analysis status: %s\n", analysis.Status)
+	fmt.Fprintf(output, "Analysis commit: %s\n", analysis.CommitHash)
+	fmt.Fprintf(output, "HEAD at analysis: %s\n", analysis.HeadCommit)
+	if analysis.IsDirty {
+		fmt.Fprintln(output, "Dirty at analysis: yes")
+	} else {
+		fmt.Fprintln(output, "Dirty at analysis: no")
+	}
+	fmt.Fprintf(output, "Observed at: %s\n", analysis.ObservedAt)
+	fmt.Fprintf(output, "Analysis engine version: %d\n", analysis.EngineVersion)
+	if analysis.Summary.Complete {
+		fmt.Fprintln(output, "Analysis complete: yes")
+	} else {
+		fmt.Fprintln(output, "Analysis complete: no (partial)")
+	}
+	if analysis.Summary.Truncated {
+		fmt.Fprintln(output, "Analysis truncated: yes (source budget reached)")
+	} else {
+		fmt.Fprintln(output, "Analysis truncated: no")
+	}
+	fmt.Fprintf(
+		output,
+		"Sources: %d, analyzed: %d, skipped: %d\n",
+		analysis.Summary.Sources,
+		analysis.Summary.Analyzed,
+		analysis.Summary.Skipped,
+	)
+	fmt.Fprintf(
+		output,
+		"Components: modules=%d packages=%d commands=%d build=%d config=%d\n",
+		analysis.Summary.Modules,
+		analysis.Summary.Packages,
+		analysis.Summary.Commands,
+		analysis.Summary.BuildComponents,
+		analysis.Summary.ConfigurationComponents,
+	)
+	if len(analysis.Summary.Dependencies) > 0 {
+		fmt.Fprint(output, "Dependencies:")
+		for _, count := range analysis.Summary.Dependencies {
+			fmt.Fprintf(output, " %s=%d", count.Kind, count.Count)
+		}
+		fmt.Fprintln(output)
+	}
+
+	if analysis.Status != "current" {
+		fmt.Fprintf(
+			output,
+			"This analysis describes commit %s; HEAD is %s.\n",
+			analysis.CommitHash,
+			analysis.Head,
+		)
+		fmt.Fprintf(
+			output,
+			"Run `forgehand project analyze %d` to refresh.\n",
+			analysis.ProjectID,
+		)
+	}
+
+	if len(analysis.SkippedFiles) > 0 {
+		fmt.Fprintln(output, "Skipped sources:")
+		fmt.Fprintln(output, "PATH\tREASON\tBLOB")
+		for _, skipped := range analysis.SkippedFiles {
+			fmt.Fprintf(output, "%s\t%s\t%s\n", skipped.Path, skipped.Reason, skipped.BlobHash)
+		}
+	}
+
+	if len(analysis.ModuleRequirements) > 0 {
+		fmt.Fprintln(output, "Declared module requirements:")
+		fmt.Fprintln(output, "PATH\tVERSION\tINDIRECT")
+		for _, requirement := range analysis.ModuleRequirements {
+			fmt.Fprintf(
+				output,
+				"%s\t%s\t%t\n",
+				requirement.Path,
+				requirement.Version,
+				requirement.Indirect,
+			)
+		}
+	}
+
+	if options.includeComponents {
+		fmt.Fprintln(output)
+		fmt.Fprintln(output, "Components:")
+		fmt.Fprintln(output, "KIND\tIDENTITY\tPATH\tINTERNAL")
+		for _, component := range analysis.Components {
+			fmt.Fprintf(
+				output,
+				"%s\t%s\t%s\t%t\n",
+				component.Kind,
+				component.Identity,
+				component.Path,
+				component.Internal,
+			)
+		}
+		if options.includeEvidence {
+			fmt.Fprintln(output, "Component evidence:")
+			fmt.Fprintln(output, "IDENTITY\tPATH\tLINE\tDECLARATION\tBLOB")
+			for _, component := range analysis.Components {
+				for _, evidence := range component.Evidence {
+					fmt.Fprintf(
+						output,
+						"%s\t%s\t%d\t%s\t%s\n",
+						component.Identity,
+						evidence.Path,
+						evidence.Line,
+						evidence.Declaration,
+						evidence.BlobHash,
+					)
+				}
+			}
+		}
+	}
+
+	if options.includeDependencies {
+		fmt.Fprintln(output)
+		fmt.Fprintln(output, "Dependencies:")
+		fmt.Fprintln(output, "KIND\tSOURCE\tTARGET\tMODULE")
+		for _, dependency := range analysis.Dependencies {
+			fmt.Fprintf(
+				output,
+				"%s\t%s\t%s\t%s\n",
+				dependency.Kind,
+				dependency.Source,
+				dependency.Target,
+				dependency.TargetModule,
+			)
+		}
+		if options.includeEvidence {
+			fmt.Fprintln(output, "Dependency evidence:")
+			fmt.Fprintln(output, "SOURCE\tTARGET\tPATH\tLINE\tDECLARATION\tBLOB")
+			for _, dependency := range analysis.Dependencies {
+				for _, evidence := range dependency.Evidence {
+					fmt.Fprintf(
+						output,
+						"%s\t%s\t%s\t%d\t%s\t%s\n",
+						dependency.Source,
+						dependency.Target,
+						evidence.Path,
+						evidence.Line,
+						evidence.Declaration,
+						evidence.BlobHash,
+					)
+				}
+			}
+		}
+	}
+
+	fmt.Fprintln(output, "Analysis reports committed declarations only; no builds or tests were run.")
 }
 
 func formatInventorySummary(writer io.Writer, summary ipc.InventorySummary) error {
@@ -749,7 +1010,8 @@ func usage() {
 	fmt.Println("  project observe <id>            Observe a project's Git state")
 	fmt.Println("  project discover <id>           Discover a committed project tree")
 	fmt.Println("  project inventory <id>          Build a committed-tree inventory")
-	fmt.Println("  inspect <id> [--evidence]       Show the latest project inventory")
+	fmt.Println("  project analyze <id>             Analyze components and dependencies")
+	fmt.Println("  inspect <id> [--components] [--dependencies] [--evidence]  Show project state")
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
 	fmt.Println("  session run <id>                Run a session")

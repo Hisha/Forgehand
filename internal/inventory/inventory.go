@@ -129,7 +129,7 @@ func Build(
 		}
 
 		language, hasLanguage := discovery.ClassifyLanguage(gitFile.Path)
-		category := classifyCategory(gitFile.Path, language)
+		category := ClassifyCategory(gitFile.Path, language)
 
 		if hasLanguage {
 			languageTotals[language]++
@@ -227,9 +227,11 @@ func parentDirectories(filePath string) []string {
 	return directories
 }
 
-// classifyCategory is a deterministic, non-content heuristic. Build-system
-// detection takes priority because it identifies the project's build files.
-func classifyCategory(filePath string, language string) Category {
+// ClassifyCategory is a deterministic, non-content heuristic that partitions a
+// committed file path into a coarse category. Build-system detection takes
+// priority because it identifies the project's build files. The classifier is
+// exported so component analysis can share one authoritative classification.
+func ClassifyCategory(filePath string, language string) Category {
 	base := strings.ToLower(path.Base(filePath))
 	extension := strings.ToLower(path.Ext(base))
 

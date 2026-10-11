@@ -35,9 +35,9 @@ func TestClassifyCategory(t *testing.T) {
 
 	for filePath, want := range tests {
 		language, _ := discovery.ClassifyLanguage(filePath)
-		got := classifyCategory(filePath, language)
+		got := ClassifyCategory(filePath, language)
 		if got != want {
-			t.Fatalf("classifyCategory(%q) = %q, want %q", filePath, got, want)
+			t.Fatalf("ClassifyCategory(%q) = %q, want %q", filePath, got, want)
 		}
 	}
 }

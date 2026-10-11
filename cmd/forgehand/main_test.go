@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -154,7 +155,7 @@ func TestFormatProjectInspectionCurrent(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	if err := formatProjectInspection(&output, inspection, false); err != nil {
+	if err := formatProjectInspection(&output, inspection, inspectionFormatOptions{}); err != nil {
 		t.Fatalf("format current inspection: %v", err)
 	}
 	for _, want := range []string{
@@ -196,7 +197,7 @@ func TestFormatProjectInspectionStale(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	if err := formatProjectInspection(&output, inspection, false); err != nil {
+	if err := formatProjectInspection(&output, inspection, inspectionFormatOptions{}); err != nil {
 		t.Fatalf("format stale inspection: %v", err)
 	}
 	for _, want := range []string{
@@ -230,7 +231,10 @@ func TestFormatProjectInspectionEvidence(t *testing.T) {
 		},
 	}
 	var output bytes.Buffer
-	if err := formatProjectInspection(&output, inspection, true); err != nil {
+	if err := formatProjectInspection(&output, inspection, inspectionFormatOptions{
+		includeInventoryFiles: true,
+		includeEvidence:       true,
+	}); err != nil {
 		t.Fatalf("format evidence inspection: %v", err)
 	}
 	for _, want := range []string{
@@ -240,6 +244,247 @@ func TestFormatProjectInspectionEvidence(t *testing.T) {
 		if !strings.Contains(output.String(), want) {
 			t.Fatalf("evidence inspection missing %q:\n%s", want, output.String())
 		}
+	}
+}
+
+func TestFormatProjectInspectionComponentsDependenciesEvidence(t *testing.T) {
+	inspection := analysisInspectionFixture()
+	var output bytes.Buffer
+	if err := formatProjectInspection(&output, inspection, inspectionFormatOptions{
+		includeComponents:   true,
+		includeDependencies: true,
+		includeEvidence:     true,
+	}); err != nil {
+		t.Fatalf("format analysis inspection: %v", err)
+	}
+	for _, want := range []string{
+		"Analysis: 9",
+		"Analysis status: current",
+		"Analysis complete: yes",
+		"Declared module requirements:",
+		"github.com/example/dep",
+		"Components:",
+		"example.com/app/internal/greeting",
+		"Component evidence:",
+		"internal/greeting/greeting.go",
+		"gblob",
+		"Dependencies:",
+		"Dependency evidence:",
+		"ablob",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("analysis inspection missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestFormatProjectInspectionComponentsWithoutEvidence(t *testing.T) {
+	inspection := analysisInspectionFixture()
+	var output bytes.Buffer
+	if err := formatProjectInspection(&output, inspection, inspectionFormatOptions{
+		includeComponents: true,
+	}); err != nil {
+		t.Fatalf("format analysis inspection: %v", err)
+	}
+	if !strings.Contains(output.String(), "example.com/app/internal/greeting") {
+		t.Fatalf("component missing:\n%s", output.String())
+	}
+	if strings.Contains(output.String(), "Component evidence:") {
+		t.Fatalf("evidence printed without --evidence:\n%s", output.String())
+	}
+	if strings.Contains(output.String(), "KIND\tSOURCE\tTARGET\tMODULE") {
+		t.Fatalf("dependency detail printed without --dependencies:\n%s", output.String())
+	}
+}
+
+func TestFormatProjectInspectionMissingAnalysis(t *testing.T) {
+	inspection := ipc.Inspection{
+		Status: "current",
+		Head:   "abc123",
+		Inventory: &ipc.Inventory{
+			ID:           5,
+			ProjectID:    7,
+			CommitHash:   "abc123",
+			HeadCommit:   "abc123",
+			ObservedAt:   "2026-01-01T00:00:00Z",
+			TrackedFiles: 1,
+			Summary:      ipc.InventorySummary{TrackedFiles: 1},
+		},
+	}
+	var output bytes.Buffer
+	if err := formatProjectInspection(&output, inspection, inspectionFormatOptions{includeComponents: true}); err != nil {
+		t.Fatalf("format missing analysis inspection: %v", err)
+	}
+	if !strings.Contains(output.String(), "No component analysis recorded") {
+		t.Fatalf("missing analysis guidance absent:\n%s", output.String())
+	}
+	if !strings.Contains(output.String(), "forgehand project analyze 7") {
+		t.Fatalf("missing analysis command hint absent:\n%s", output.String())
+	}
+}
+
+func TestFormatProjectInspectionStalePartialAnalysis(t *testing.T) {
+	inspection := analysisInspectionFixture()
+	inspection.Analysis.Status = "stale"
+	inspection.Analysis.Summary.Complete = false
+	inspection.Analysis.SkippedFiles = []ipc.AnalysisSkippedFile{
+		{Path: "internal/broken/broken.go", BlobHash: "bblob", Reason: "malformed source"},
+	}
+	var output bytes.Buffer
+	if err := formatProjectInspection(&output, inspection, inspectionFormatOptions{includeComponents: true}); err != nil {
+		t.Fatalf("format stale analysis inspection: %v", err)
+	}
+	for _, want := range []string{
+		"Analysis status: stale",
+		"Analysis complete: no (partial)",
+		"forgehand project analyze 7",
+		"Skipped sources:",
+		"internal/broken/broken.go",
+		"bblob",
+	} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("stale/partial inspection missing %q:\n%s", want, output.String())
+		}
+	}
+}
+
+func TestInspectProjectForwardsAnalysisFlags(t *testing.T) {
+	dir, err := os.MkdirTemp(".", ".fh-cli-inspect-")
+	if err != nil {
+		t.Fatalf("create socket directory: %v", err)
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatalf("resolve socket directory: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(abs) })
+	socketPath := filepath.Join(abs, "forgehand.sock")
+	t.Setenv("FORGEHAND_SOCKET_PATH", socketPath)
+
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+
+	received := make(chan ipc.Request, 1)
+	go func() {
+		conn, err := listener.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		var request ipc.Request
+		if err := json.NewDecoder(conn).Decode(&request); err != nil {
+			return
+		}
+		received <- request
+		_ = json.NewEncoder(conn).Encode(ipc.Response{OK: true, Inspection: &ipc.Inspection{
+			Status:   "current",
+			Head:     "abc123",
+			Analysis: analysisInspectionFixture().Analysis,
+		}})
+	}()
+
+	output := captureStdout(t, func() {
+		if err := inspectProject([]string{"7", "--components", "--dependencies", "--evidence"}); err != nil {
+			t.Fatalf("inspectProject(): %v", err)
+		}
+	})
+
+	request := <-received
+	if request.Command != "project-inspect" || request.ProjectID != 7 {
+		t.Fatalf("request = %#v", request)
+	}
+	if !request.IncludeComponents || !request.IncludeDependencies || !request.IncludeFiles {
+		t.Fatalf("analysis flags not forwarded: %#v", request)
+	}
+	if !strings.Contains(output, "Components:") || !strings.Contains(output, "Dependencies:") {
+		t.Fatalf("inspection output missing analysis sections:\n%s", output)
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	original := os.Stdout
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("create stdout pipe: %v", err)
+	}
+	os.Stdout = writer
+	defer func() { os.Stdout = original }()
+
+	fn()
+	_ = writer.Close()
+	out, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("read captured stdout: %v", err)
+	}
+	_ = reader.Close()
+	return string(out)
+}
+
+func analysisInspectionFixture() ipc.Inspection {
+	return ipc.Inspection{
+		Status: "current",
+		Head:   "abc123",
+		Inventory: &ipc.Inventory{
+			ID:            5,
+			ProjectID:     7,
+			CommitHash:    "abc123",
+			HeadCommit:    "abc123",
+			EngineVersion: 1,
+			TrackedFiles:  2,
+			ObservedAt:    "2026-01-01T00:00:00Z",
+			Summary:       ipc.InventorySummary{TrackedFiles: 2},
+		},
+		Analysis: &ipc.ComponentAnalysis{
+			ID:            9,
+			ProjectID:     7,
+			CommitHash:    "abc123",
+			HeadCommit:    "abc123",
+			EngineVersion: 1,
+			ObservedAt:    "2026-01-01T00:00:00Z",
+			Status:        "current",
+			Head:          "abc123",
+			Summary: ipc.AnalysisSummary{
+				Complete: true,
+				Sources:  2,
+				Analyzed: 2,
+				Modules:  1,
+				Packages: 1,
+				Commands: 1,
+				Dependencies: []ipc.AnalysisDependencyCount{
+					{Kind: "internal", Count: 1},
+				},
+			},
+			Components: []ipc.AnalysisComponent{
+				{
+					Kind:     "package",
+					Identity: "example.com/app/internal/greeting",
+					Path:     "internal/greeting",
+					Language: "Go",
+					Internal: true,
+					Evidence: []ipc.SourceEvidence{
+						{Path: "internal/greeting/greeting.go", BlobHash: "gblob", Declaration: "package greeting", Line: 1},
+					},
+				},
+			},
+			Dependencies: []ipc.AnalysisDependency{
+				{
+					Kind:     "internal",
+					Source:   "example.com/app",
+					Target:   "example.com/app/internal/greeting",
+					Language: "Go",
+					Evidence: []ipc.SourceEvidence{
+						{Path: "app.go", BlobHash: "ablob", Declaration: "example.com/app/internal/greeting", Line: 3},
+					},
+				},
+			},
+			ModuleRequirements: []ipc.ModuleRequirement{
+				{Path: "github.com/example/dep", Version: "v1.2.3"},
+			},
+		},
 	}
 }
 
