@@ -43,6 +43,9 @@ func main() {
 	case "query":
 		err = queryCommand(os.Args[2:])
 
+	case "investigate":
+		err = investigateCommand(os.Args[2:])
+
 	case "status":
 		err = status()
 
@@ -1019,6 +1022,7 @@ func usage() {
 	fmt.Println("  query dependents <id> <identity> [--analysis N] [--evidence]  List direct dependents")
 	fmt.Println("  query evidence <id> <identity> [--analysis N]  Show component evidence")
 	fmt.Println("  query changes <id> --from N --to N  Compare two analyses")
+	fmt.Println("  investigate <id> --component <identity> [--analysis <id>] [--format text|json] [--limit <n>]  Investigate component")
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
 	fmt.Println("  session run <id>                Run a session")

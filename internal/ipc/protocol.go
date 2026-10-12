@@ -20,6 +20,8 @@ type Request struct {
 	ComponentPath       string `json:"component_path,omitempty"`
 	Contains            string `json:"contains,omitempty"`
 	Limit               int    `json:"limit,omitempty"`
+	Analysis            int64  `json:"analysis,omitempty"`
+	Format              string `json:"format,omitempty"`
 }
 
 type Session struct {
@@ -37,22 +39,23 @@ type Execution struct {
 }
 
 type Response struct {
-	OK         bool                `json:"ok"`
-	Message    string              `json:"message,omitempty"`
-	Version    string              `json:"version,omitempty"`
-	PID        int                 `json:"pid,omitempty"`
-	Session    *Session            `json:"session,omitempty"`
-	Sessions   []Session           `json:"sessions,omitempty"`
-	Execution  *Execution          `json:"execution,omitempty"`
-	Project    *Project            `json:"project,omitempty"`
-	Projects   []Project           `json:"projects,omitempty"`
-	Snapshot   *RepositorySnapshot `json:"snapshot,omitempty"`
-	Intake     *ProjectIntake      `json:"intake,omitempty"`
-	Discovery  *ProjectDiscovery   `json:"discovery,omitempty"`
-	Inventory  *Inventory          `json:"inventory,omitempty"`
-	Inspection *Inspection         `json:"inspection,omitempty"`
-	Analysis   *ComponentAnalysis  `json:"analysis,omitempty"`
-	Query      *QueryResponse      `json:"query,omitempty"`
+	OK            bool                   `json:"ok"`
+	Message       string                 `json:"message,omitempty"`
+	Version       string                 `json:"version,omitempty"`
+	PID           int                    `json:"pid,omitempty"`
+	Session       *Session               `json:"session,omitempty"`
+	Sessions      []Session              `json:"sessions,omitempty"`
+	Execution     *Execution             `json:"execution,omitempty"`
+	Project       *Project               `json:"project,omitempty"`
+	Projects      []Project              `json:"projects,omitempty"`
+	Snapshot      *RepositorySnapshot    `json:"snapshot,omitempty"`
+	Intake        *ProjectIntake         `json:"intake,omitempty"`
+	Discovery     *ProjectDiscovery      `json:"discovery,omitempty"`
+	Inventory     *Inventory             `json:"inventory,omitempty"`
+	Inspection    *Inspection            `json:"inspection,omitempty"`
+	Analysis      *ComponentAnalysis     `json:"analysis,omitempty"`
+	Query         *QueryResponse         `json:"query,omitempty"`
+	Investigation *InvestigationResponse `json:"investigation,omitempty"`
 }
 
 type Project struct {
@@ -318,4 +321,31 @@ type QueryReclassification struct {
 	ToKind     string `json:"to_kind"`
 	FromModule string `json:"from_module,omitempty"`
 	ToModule   string `json:"to_module,omitempty"`
+}
+
+// InvestigationResponse is the result of an investigation request. It contains
+// a deterministic, evidence-backed investigation context.
+type InvestigationResponse struct {
+	SchemaVersion  int                  `json:"schemaVersion"`
+	ProjectID      int64                `json:"projectId"`
+	AnalysisID     int64                `json:"analysisId"`
+	Commit         string               `json:"commit"`
+	Status         string               `json:"status"`
+	Complete       bool                 `json:"complete"`
+	Component      AnalysisComponent    `json:"component"`
+	Dependencies   []AnalysisDependency `json:"dependencies"`
+	Dependents     []QueryDependent     `json:"dependents"`
+	Evidence       []SourceEvidence     `json:"evidence"`
+	SuggestedFiles []InvestigationFile  `json:"suggestedFiles"`
+	Warnings       []string             `json:"warnings"`
+	Truncated      bool                 `json:"truncated,omitempty"`
+	TruncatedBy    string               `json:"truncatedBy,omitempty"`
+	TotalEvidence  int                  `json:"totalEvidence,omitempty"`
+	TotalFiles     int                  `json:"totalFiles,omitempty"`
+}
+
+// InvestigationFile describes a suggested file with reasons for selection.
+type InvestigationFile struct {
+	Path    string   `json:"path"`
+	Reasons []string `json:"reasons"`
 }

@@ -263,14 +263,7 @@ func (e *Engine) Dependencies(
 		return DependenciesResult{}, err
 	}
 
-	dependencies := make([]Dependency, 0)
-	for _, stored := range record.Dependencies {
-		if stored.Source != identity {
-			continue
-		}
-		dependencies = append(dependencies, fromDependencyRecord(stored))
-	}
-	sortDependencies(dependencies)
+	dependencies := outgoingDependencies(record, identity)
 
 	return DependenciesResult{
 		Observation:  observationMeta(record),
@@ -307,6 +300,35 @@ func (e *Engine) Dependents(
 		return DependentsResult{}, err
 	}
 
+	targets := incomingDependencies(record, identity)
+
+	return DependentsResult{
+		Observation: observationMeta(record),
+		Component:   component,
+		Dependents:  targets,
+		Warnings:    ambiguityWarnings(identity, matches),
+	}, nil
+}
+
+// outgoingDependencies returns the direct outgoing dependencies of the given
+// source identity, ordered deterministically. A known identity with no outgoing
+// dependencies yields an empty, non-nil slice.
+func outgoingDependencies(record state.ComponentObservation, identity string) []Dependency {
+	dependencies := make([]Dependency, 0)
+	for _, stored := range record.Dependencies {
+		if stored.Source != identity {
+			continue
+		}
+		dependencies = append(dependencies, fromDependencyRecord(stored))
+	}
+	sortDependencies(dependencies)
+	return dependencies
+}
+
+// incomingDependencies returns the direct internal dependents of the given
+// target identity, ordered deterministically. Module requirements are never
+// treated as dependents; only internal relationships are considered.
+func incomingDependencies(record state.ComponentObservation, identity string) []Dependency {
 	dependents := make([]Dependency, 0)
 	for _, stored := range record.Dependencies {
 		if stored.Kind != DependencyInternal || stored.Target != identity {
@@ -315,13 +337,24 @@ func (e *Engine) Dependents(
 		dependents = append(dependents, fromDependencyRecord(stored))
 	}
 	sortDependencies(dependents)
+	return dependents
+}
 
-	return DependentsResult{
-		Observation: observationMeta(record),
-		Component:   component,
-		Dependents:  dependents,
-		Warnings:    ambiguityWarnings(identity, matches),
-	}, nil
+// componentEvidence returns the committed source evidence for every component
+// sharing the given identity, ordered deterministically. Evidence from all
+// matches is merged so an ambiguous identity does not silently drop provenance.
+func componentEvidence(record state.ComponentObservation, identity string) []Evidence {
+	evidence := make([]Evidence, 0)
+	for _, stored := range record.Components {
+		if stored.Identity != identity {
+			continue
+		}
+		for _, item := range stored.Evidence {
+			evidence = append(evidence, fromComponentEvidence(item))
+		}
+	}
+	sortEvidence(evidence)
+	return evidence
 }
 
 // Evidence returns the source evidence associated with a component identity.
@@ -351,16 +384,7 @@ func (e *Engine) Evidence(
 		return EvidenceResult{}, err
 	}
 
-	evidence := make([]Evidence, 0)
-	for _, stored := range record.Components {
-		if stored.Identity != identity {
-			continue
-		}
-		for _, item := range stored.Evidence {
-			evidence = append(evidence, fromComponentEvidence(item))
-		}
-	}
-	sortEvidence(evidence)
+	evidence := componentEvidence(record, identity)
 
 	return EvidenceResult{
 		Observation: observationMeta(record),

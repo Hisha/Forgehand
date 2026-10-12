@@ -510,6 +510,14 @@ func handleConnection(
 		}
 		_ = encoder.Encode(ipc.Response{OK: true, Query: &result})
 
+	case "investigate":
+		result, err := handleInvestigation(context.Background(), stateDB, request)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		_ = encoder.Encode(ipc.Response{OK: true, Investigation: &result})
+
 	case "projects":
 		projects, err := stateDB.ListProjects(context.Background())
 		if err != nil {
