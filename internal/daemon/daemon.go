@@ -18,12 +18,62 @@ import (
 	"github.com/Hisha/Forgehand/internal/repository"
 	"github.com/Hisha/Forgehand/internal/state"
 	"github.com/Hisha/Forgehand/internal/version"
+
+	"modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 )
 
 const (
 	fakeWorkerSteps = 5
 	fakeWorkerDelay = 3 * time.Second
+
+	// busyRetryAttempts bounds application-level retries when SQLite reports a
+	// transient lock contention error despite the connection's busy_timeout.
+	busyRetryAttempts = 5
+	busyRetryDelay    = 50 * time.Millisecond
 )
+
+// executionStore is the subset of the state database a fake worker needs. It
+// exists so worker failure handling can be tested with an injected error.
+type executionStore interface {
+	AdvanceSessionExecution(ctx context.Context, executionID int64, step int) error
+	CompleteSessionExecution(ctx context.Context, executionID int64) error
+	InterruptSessionExecution(ctx context.Context, executionID int64) error
+	FailSessionExecution(ctx context.Context, executionID int64) error
+}
+
+// workerGroup tracks daemon-side fake workers. It rejects new work once the
+// daemon starts shutting down, so a worker can never be registered in the wait
+// set at the same time as the shutdown wait (which would race a WaitGroup).
+type workerGroup struct {
+	mu      sync.Mutex
+	group   sync.WaitGroup
+	stopped bool
+}
+
+func (w *workerGroup) start() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.stopped {
+		return false
+	}
+
+	w.group.Add(1)
+	return true
+}
+
+func (w *workerGroup) done() {
+	w.group.Done()
+}
+
+func (w *workerGroup) stopAndWait() {
+	w.mu.Lock()
+	w.stopped = true
+	w.mu.Unlock()
+
+	w.group.Wait()
+}
 
 func SocketPath() (string, error) {
 	return config.SocketPath()
@@ -170,11 +220,11 @@ func runConfigured(config Config) error {
 		return fmt.Errorf("record daemon run: %w", err)
 	}
 
-	var workers sync.WaitGroup
+	var workers workerGroup
 
 	defer func() {
 		cancel()
-		workers.Wait()
+		workers.stopAndWait()
 
 		if err := stateDB.FinishDaemonRun(context.Background(), runID); err != nil {
 			fmt.Fprintf(os.Stderr, "forgehand: record clean shutdown: %v\n", err)
@@ -206,7 +256,7 @@ func runConfigured(config Config) error {
 func handleConnection(
 	ctx context.Context,
 	stateDB *state.Database,
-	workers *sync.WaitGroup,
+	workers *workerGroup,
 	conn net.Conn,
 	client ClientIdentity,
 ) {
@@ -574,12 +624,21 @@ func handleConnection(
 		})
 
 	case "session-run":
+		if !workers.start() {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: "daemon is shutting down",
+			})
+			return
+		}
+
 		execution, err := stateDB.StartSessionExecution(
 			context.Background(),
 			request.SessionID,
 			fakeWorkerSteps,
 		)
 		if err != nil {
+			workers.done()
 			_ = encoder.Encode(ipc.Response{
 				OK:      false,
 				Message: err.Error(),
@@ -587,10 +646,9 @@ func handleConnection(
 			return
 		}
 
-		workers.Add(1)
 		go func() {
-			defer workers.Done()
-			runFakeWorker(ctx, stateDB, execution)
+			defer workers.done()
+			runFakeWorker(ctx, stateDB, execution, fakeWorkerDelay)
 		}()
 
 		_ = encoder.Encode(ipc.Response{
@@ -605,11 +663,20 @@ func handleConnection(
 		})
 
 	case "session-resume":
+		if !workers.start() {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: "daemon is shutting down",
+			})
+			return
+		}
+
 		execution, err := stateDB.ResumeSessionExecution(
 			context.Background(),
 			request.SessionID,
 		)
 		if err != nil {
+			workers.done()
 			_ = encoder.Encode(ipc.Response{
 				OK:      false,
 				Message: err.Error(),
@@ -617,10 +684,9 @@ func handleConnection(
 			return
 		}
 
-		workers.Add(1)
 		go func() {
-			defer workers.Done()
-			runFakeWorker(ctx, stateDB, execution)
+			defer workers.done()
+			runFakeWorker(ctx, stateDB, execution, fakeWorkerDelay)
 		}()
 
 		_ = encoder.Encode(ipc.Response{
@@ -662,6 +728,40 @@ func handleConnection(
 
 		_ = encoder.Encode(response)
 
+	case "session-status":
+		session, execution, err := stateDB.SessionExecutionStatus(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		response := ipc.Response{
+			OK: true,
+			Session: &ipc.Session{
+				ID:    session.ID,
+				Title: session.Title,
+				State: session.State,
+			},
+		}
+
+		if execution != nil {
+			response.Execution = &ipc.Execution{
+				ID:          execution.ID,
+				SessionID:   execution.SessionID,
+				Status:      execution.Status,
+				CurrentStep: execution.CurrentStep,
+				TotalSteps:  execution.TotalSteps,
+			}
+		}
+
+		_ = encoder.Encode(response)
+
 	default:
 		_ = encoder.Encode(ipc.Response{
 			OK:      false,
@@ -672,35 +772,31 @@ func handleConnection(
 
 func runFakeWorker(
 	ctx context.Context,
-	stateDB *state.Database,
+	store executionStore,
 	execution state.SessionExecution,
+	delay time.Duration,
 ) {
 	currentStep := execution.CurrentStep
 
 	for step := currentStep + 1; step <= execution.TotalSteps; step++ {
-		timer := time.NewTimer(fakeWorkerDelay)
-
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
+		if !waitForStep(ctx, delay) {
 			fmt.Printf(
 				"Execution %d stopped at %d/%d\n",
 				execution.ID,
 				currentStep,
 				execution.TotalSteps,
 			)
+			interruptExecution(store, execution.ID)
 			return
-
-		case <-timer.C:
 		}
 
-		if err := stateDB.AdvanceSessionExecution(
-			context.Background(),
-			execution.ID,
-			step,
-		); err != nil {
+		if err := retryOnBusy(ctx, func() error {
+			return store.AdvanceSessionExecution(
+				context.Background(),
+				execution.ID,
+				step,
+			)
+		}); err != nil {
 			fmt.Fprintf(
 				os.Stderr,
 				"forgehand: execution %d step %d: %v\n",
@@ -708,6 +804,11 @@ func runFakeWorker(
 				step,
 				err,
 			)
+			if ctx.Err() != nil {
+				interruptExecution(store, execution.ID)
+			} else {
+				failExecution(store, execution.ID)
+			}
 			return
 		}
 
@@ -721,18 +822,107 @@ func runFakeWorker(
 		)
 	}
 
-	if err := stateDB.CompleteSessionExecution(
-		context.Background(),
-		execution.ID,
-	); err != nil {
+	if err := retryOnBusy(ctx, func() error {
+		return store.CompleteSessionExecution(
+			context.Background(),
+			execution.ID,
+		)
+	}); err != nil {
 		fmt.Fprintf(
 			os.Stderr,
 			"forgehand: complete execution %d: %v\n",
 			execution.ID,
 			err,
 		)
+		if ctx.Err() != nil {
+			interruptExecution(store, execution.ID)
+		} else {
+			failExecution(store, execution.ID)
+		}
 		return
 	}
 
 	fmt.Printf("Execution %d completed\n", execution.ID)
+}
+
+// waitForStep blocks for the worker's step delay. It returns false when the
+// daemon context is cancelled first, so the worker can stop at the last
+// committed checkpoint.
+func waitForStep(ctx context.Context, delay time.Duration) bool {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// interruptExecution records a recoverable interruption at the current
+// checkpoint so the execution is never abandoned silently in RUNNING.
+func interruptExecution(store executionStore, executionID int64) {
+	if err := store.InterruptSessionExecution(
+		context.Background(),
+		executionID,
+	); err != nil {
+		fmt.Fprintf(
+			os.Stderr,
+			"forgehand: interrupt execution %d: %v\n",
+			executionID,
+			err,
+		)
+	}
+}
+
+// failExecution records a terminal execution failure, preserving the last
+// committed checkpoint rather than leaving the execution in RUNNING.
+func failExecution(store executionStore, executionID int64) {
+	if err := store.FailSessionExecution(
+		context.Background(),
+		executionID,
+	); err != nil {
+		fmt.Fprintf(
+			os.Stderr,
+			"forgehand: mark execution %d failed: %v\n",
+			executionID,
+			err,
+		)
+	}
+}
+
+// retryOnBusy re-runs a state operation a bounded number of times when SQLite
+// reports lock contention. Each attempt is a whole transaction, and the driver
+// rolls back a transaction whose commit returns busy, so a retry cannot double
+// apply a transition.
+func retryOnBusy(ctx context.Context, op func() error) error {
+	var err error
+
+	for attempt := 0; attempt < busyRetryAttempts; attempt++ {
+		if err = op(); err == nil {
+			return nil
+		}
+		if !isBusy(err) || attempt == busyRetryAttempts-1 {
+			return err
+		}
+
+		select {
+		case <-ctx.Done():
+			return err
+		case <-time.After(busyRetryDelay * time.Duration(attempt+1)):
+		}
+	}
+
+	return err
+}
+
+func isBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+
+	primary := sqliteErr.Code() & 0xff
+	return primary == sqlite3.SQLITE_BUSY || primary == sqlite3.SQLITE_LOCKED
 }

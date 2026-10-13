@@ -166,6 +166,109 @@ func TestDaemonPreservesExistingSessionRecovery(t *testing.T) {
 	}
 }
 
+func TestDaemonSessionStatusAndShutdownInterruptsRunningExecution(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "state")
+	socketPath := filepath.Join(shortSocketTestDir(t), "forgehand.sock")
+	process := startDaemonProcess(t, stateDir, socketPath, "0600")
+	waitForDaemon(t, process, socketPath)
+
+	start := sendDaemonRequest(t, socketPath, ipc.Request{
+		Command: "session-start",
+		Title:   "integration status",
+	})
+	if !start.OK || start.Session == nil {
+		stopDaemon(t, process, syscall.SIGTERM, true)
+		t.Fatalf("session-start response = %#v", start)
+	}
+	sessionID := start.Session.ID
+
+	before := sendDaemonRequest(t, socketPath, ipc.Request{
+		Command:   "session-status",
+		SessionID: sessionID,
+	})
+	if !before.OK || before.Session == nil || before.Execution != nil {
+		stopDaemon(t, process, syscall.SIGTERM, true)
+		t.Fatalf("session-status before run = %#v", before)
+	}
+
+	run := sendDaemonRequest(t, socketPath, ipc.Request{
+		Command:   "session-run",
+		SessionID: sessionID,
+	})
+	if !run.OK || run.Execution == nil {
+		stopDaemon(t, process, syscall.SIGTERM, true)
+		t.Fatalf("session-run response = %#v", run)
+	}
+
+	status := sendDaemonRequest(t, socketPath, ipc.Request{
+		Command:   "session-status",
+		SessionID: sessionID,
+	})
+	if !status.OK || status.Session == nil || status.Execution == nil {
+		stopDaemon(t, process, syscall.SIGTERM, true)
+		t.Fatalf("session-status while running = %#v", status)
+	}
+	if status.Session.State != state.SessionStateRunning {
+		stopDaemon(t, process, syscall.SIGTERM, true)
+		t.Fatalf("session state = %q, want %q", status.Session.State, state.SessionStateRunning)
+	}
+	if status.Execution.Status != state.ExecutionStatusRunning {
+		stopDaemon(t, process, syscall.SIGTERM, true)
+		t.Fatalf("execution status = %q, want %q", status.Execution.Status, state.ExecutionStatusRunning)
+	}
+	if status.Execution.TotalSteps != fakeWorkerSteps {
+		stopDaemon(t, process, syscall.SIGTERM, true)
+		t.Fatalf("total steps = %d, want %d", status.Execution.TotalSteps, fakeWorkerSteps)
+	}
+
+	stopDaemon(t, process, syscall.SIGTERM, true)
+
+	db, err := state.OpenAt(context.Background(), stateDir)
+	if err != nil {
+		t.Fatalf("open state after shutdown: %v", err)
+	}
+	defer db.Close()
+
+	sessionState, latest, err := db.SessionExecutionStatus(context.Background(), sessionID)
+	if err != nil {
+		t.Fatalf("read session after shutdown: %v", err)
+	}
+	if latest == nil {
+		t.Fatal("execution missing after shutdown")
+	}
+	if latest.Status != state.ExecutionStatusInterrupted {
+		t.Fatalf("execution status = %q, want %q", latest.Status, state.ExecutionStatusInterrupted)
+	}
+	if latest.CurrentStep > fakeWorkerSteps {
+		t.Fatalf("current step = %d, want <= %d", latest.CurrentStep, fakeWorkerSteps)
+	}
+	if sessionState.State != state.SessionStateInterrupted {
+		t.Fatalf("session state = %q, want %q", sessionState.State, state.SessionStateInterrupted)
+	}
+}
+
+func sendDaemonRequest(t *testing.T, socketPath string, request ipc.Request) ipc.Response {
+	t.Helper()
+
+	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	if err != nil {
+		t.Fatalf("dial daemon: %v", err)
+	}
+	defer conn.Close()
+
+	if err := json.NewEncoder(conn).Encode(request); err != nil {
+		t.Fatalf("send request: %v", err)
+	}
+
+	var response ipc.Response
+	if err := json.NewDecoder(conn).Decode(&response); err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+
+	return response
+}
+
 type daemonProcess struct {
 	command *exec.Cmd
 	output  *bytes.Buffer

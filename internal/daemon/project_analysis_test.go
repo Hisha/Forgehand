@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"net"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/Hisha/Forgehand/internal/components"
@@ -337,7 +336,7 @@ func runDaemonRequest(t *testing.T, db *state.Database, request ipc.Request) ipc
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleConnection(context.Background(), db, &sync.WaitGroup{}, server, ClientIdentity{})
+		handleConnection(context.Background(), db, &workerGroup{}, server, ClientIdentity{})
 	}()
 
 	if err := json.NewEncoder(client).Encode(request); err != nil {

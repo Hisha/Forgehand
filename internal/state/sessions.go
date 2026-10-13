@@ -12,6 +12,7 @@ const (
 	SessionStateRunning     = "RUNNING"
 	SessionStateCompleted   = "COMPLETED"
 	SessionStateInterrupted = "INTERRUPTED"
+	SessionStateFailed      = "FAILED"
 )
 
 type Session struct {

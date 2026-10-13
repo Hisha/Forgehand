@@ -11,6 +11,7 @@ const (
 	ExecutionStatusRunning     = "RUNNING"
 	ExecutionStatusCompleted   = "COMPLETED"
 	ExecutionStatusInterrupted = "INTERRUPTED"
+	ExecutionStatusFailed      = "FAILED"
 )
 
 type SessionExecution struct {
@@ -397,6 +398,289 @@ WHERE id = ?
 	}
 
 	return nil
+}
+
+// InterruptSessionExecution marks a single running execution and its session as
+// INTERRUPTED, preserving the last committed checkpoint. It is the recoverable
+// interruption path (graceful worker cancellation); the execution remains
+// resumable through ResumeSessionExecution.
+func (d *Database) InterruptSessionExecution(
+	ctx context.Context,
+	executionID int64,
+) error {
+	return d.transitionRunningExecution(
+		ctx,
+		executionID,
+		ExecutionStatusInterrupted,
+		SessionStateInterrupted,
+	)
+}
+
+// FailSessionExecution marks a single running execution and its session as
+// FAILED, preserving the last committed checkpoint. It is the terminal failure
+// path for an unexpected worker error and, unlike an interruption, is not
+// resumable.
+func (d *Database) FailSessionExecution(
+	ctx context.Context,
+	executionID int64,
+) error {
+	return d.transitionRunningExecution(
+		ctx,
+		executionID,
+		ExecutionStatusFailed,
+		SessionStateFailed,
+	)
+}
+
+func (d *Database) transitionRunningExecution(
+	ctx context.Context,
+	executionID int64,
+	executionStatus string,
+	sessionStatus string,
+) error {
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin execution transition: %w", err)
+	}
+	defer tx.Rollback()
+
+	var (
+		sessionID int64
+		status    string
+	)
+
+	err = tx.QueryRowContext(ctx, `
+SELECT session_id, status
+FROM session_executions
+WHERE id = ?
+`,
+		executionID,
+	).Scan(
+		&sessionID,
+		&status,
+	)
+	if err == sql.ErrNoRows {
+		return fmt.Errorf("execution %d does not exist", executionID)
+	}
+	if err != nil {
+		return fmt.Errorf("read execution %d: %w", executionID, err)
+	}
+
+	if status != ExecutionStatusRunning {
+		return fmt.Errorf(
+			"execution %d is %s, expected %s",
+			executionID,
+			status,
+			ExecutionStatusRunning,
+		)
+	}
+
+	nowText := time.Now().UTC().Format(time.RFC3339Nano)
+
+	result, err := tx.ExecContext(ctx, `
+UPDATE session_executions
+SET status = ?
+WHERE id = ?
+  AND status = ?
+`,
+		executionStatus,
+		executionID,
+		ExecutionStatusRunning,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"transition execution %d to %s: %w",
+			executionID,
+			executionStatus,
+			err,
+		)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf(
+			"check execution %d transition: %w",
+			executionID,
+			err,
+		)
+	}
+
+	if rowsAffected != 1 {
+		return fmt.Errorf(
+			"execution %d could not transition to %s",
+			executionID,
+			executionStatus,
+		)
+	}
+
+	result, err = tx.ExecContext(ctx, `
+UPDATE sessions
+SET state = ?,
+    updated_at = ?
+WHERE id = ?
+  AND state = ?
+`,
+		sessionStatus,
+		nowText,
+		sessionID,
+		SessionStateRunning,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"transition session %d to %s: %w",
+			sessionID,
+			sessionStatus,
+			err,
+		)
+	}
+
+	rowsAffected, err = result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf(
+			"check session %d transition: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	if rowsAffected != 1 {
+		return fmt.Errorf(
+			"session %d could not transition to %s",
+			sessionID,
+			sessionStatus,
+		)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf(
+			"commit execution %d transition: %w",
+			executionID,
+			err,
+		)
+	}
+
+	return nil
+}
+
+// SessionExecutionStatus reports a session's durable state and its most recent
+// execution, if one has been started. It is read-only and is the backing path
+// for the session-status IPC command.
+func (d *Database) SessionExecutionStatus(
+	ctx context.Context,
+	sessionID int64,
+) (Session, *SessionExecution, error) {
+	var (
+		session     Session
+		createdText string
+		updatedText string
+	)
+
+	err := d.db.QueryRowContext(ctx, `
+SELECT
+	id,
+	title,
+	state,
+	created_at,
+	updated_at
+FROM sessions
+WHERE id = ?
+`,
+		sessionID,
+	).Scan(
+		&session.ID,
+		&session.Title,
+		&session.State,
+		&createdText,
+		&updatedText,
+	)
+	if err == sql.ErrNoRows {
+		return Session{}, nil, fmt.Errorf("session %d does not exist", sessionID)
+	}
+	if err != nil {
+		return Session{}, nil, fmt.Errorf("read session %d: %w", sessionID, err)
+	}
+
+	session.CreatedAt, err = time.Parse(time.RFC3339Nano, createdText)
+	if err != nil {
+		return Session{}, nil, fmt.Errorf(
+			"parse created_at for session %d: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	session.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedText)
+	if err != nil {
+		return Session{}, nil, fmt.Errorf(
+			"parse updated_at for session %d: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	var (
+		execution     SessionExecution
+		startedText   string
+		completedText sql.NullString
+	)
+
+	err = d.db.QueryRowContext(ctx, `
+SELECT
+	id,
+	session_id,
+	status,
+	current_step,
+	total_steps,
+	started_at,
+	completed_at
+FROM session_executions
+WHERE session_id = ?
+ORDER BY id DESC
+LIMIT 1
+`,
+		sessionID,
+	).Scan(
+		&execution.ID,
+		&execution.SessionID,
+		&execution.Status,
+		&execution.CurrentStep,
+		&execution.TotalSteps,
+		&startedText,
+		&completedText,
+	)
+	if err == sql.ErrNoRows {
+		return session, nil, nil
+	}
+	if err != nil {
+		return Session{}, nil, fmt.Errorf(
+			"read latest execution for session %d: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	execution.StartedAt, err = time.Parse(time.RFC3339Nano, startedText)
+	if err != nil {
+		return Session{}, nil, fmt.Errorf(
+			"parse execution %d start time: %w",
+			execution.ID,
+			err,
+		)
+	}
+
+	if completedText.Valid {
+		completedAt, err := time.Parse(time.RFC3339Nano, completedText.String)
+		if err != nil {
+			return Session{}, nil, fmt.Errorf(
+				"parse execution %d completion time: %w",
+				execution.ID,
+				err,
+			)
+		}
+		execution.CompletedAt = &completedAt
+	}
+
+	return session, &execution, nil
 }
 
 func (d *Database) InterruptRunningExecutions(

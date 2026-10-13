@@ -123,6 +123,18 @@ func sessionCommand(args []string) error {
 
 		return resumeSession(sessionID)
 
+	case "status":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand session status <id>")
+		}
+
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+
+		return sessionStatus(sessionID)
+
 	default:
 		return fmt.Errorf("unknown session command: %s", args[0])
 	}
@@ -187,6 +199,39 @@ func resumeSession(sessionID int64) error {
 
 	fmt.Printf("Resumed session %d\n", response.Execution.SessionID)
 	fmt.Printf("Execution: %d\n", response.Execution.ID)
+	fmt.Printf(
+		"Progress: %d/%d\n",
+		response.Execution.CurrentStep,
+		response.Execution.TotalSteps,
+	)
+
+	return nil
+}
+
+func sessionStatus(sessionID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "session-status",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if response.Session == nil {
+		return fmt.Errorf("daemon returned no session")
+	}
+
+	fmt.Printf("Session %d\n", response.Session.ID)
+	fmt.Printf("Title: %s\n", response.Session.Title)
+	fmt.Printf("State: %s\n", response.Session.State)
+
+	if response.Execution == nil {
+		fmt.Println("Execution: none")
+		return nil
+	}
+
+	fmt.Printf("Execution: %d\n", response.Execution.ID)
+	fmt.Printf("Status: %s\n", response.Execution.Status)
 	fmt.Printf(
 		"Progress: %d/%d\n",
 		response.Execution.CurrentStep,
@@ -1027,5 +1072,6 @@ func usage() {
 	fmt.Println("  session start <title>           Create a session")
 	fmt.Println("  session run <id>                Run a session")
 	fmt.Println("  session resume <id>             Resume an interrupted session")
+	fmt.Println("  session status <id>             Show a session's execution progress")
 	fmt.Println("  sessions                        List sessions")
 }

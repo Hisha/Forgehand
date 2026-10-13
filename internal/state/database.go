@@ -10,6 +10,25 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// Concurrent fake workers advance independent executions against one shared
+// SQLite database. SQLite permits only a single writer at a time, so the
+// configuration below makes writers queue instead of failing:
+//
+//   - journal_mode=WAL lets readers proceed while a writer holds the write
+//     lock, so progress reads never block checkpoint writes.
+//   - busy_timeout makes a connection wait for a held lock (rather than
+//     returning SQLITE_BUSY immediately). The worker retry loop in the daemon
+//     is a bounded safety net beyond this.
+//   - txlock=immediate takes the write lock at BEGIN, so a transaction that
+//     reads-then-writes cannot fail while upgrading a deferred lock.
+//   - MaxOpenConns bounds the number of pooled connections (and therefore
+//     concurrent lock waiters) against an unbounded goroutine fan-out.
+const (
+	dbBusyTimeoutMilliseconds = 5000
+	dbMaxOpenConnections      = 8
+	dbMaxIdleConnections      = 8
+)
+
 type Database struct {
 	db *sql.DB
 }
@@ -38,12 +57,19 @@ func OpenAt(ctx context.Context, dir string) (*Database, error) {
 
 	path := filepath.Join(filepath.Clean(dir), "forgehand.db")
 
-	dsn := path + "?_pragma=foreign_keys(1)"
+	dsn := fmt.Sprintf(
+		"%s?_busy_timeout=%d&_foreign_keys=on&_journal_mode=WAL&_txlock=immediate",
+		path,
+		dbBusyTimeoutMilliseconds,
+	)
 
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open state database: %w", err)
 	}
+
+	db.SetMaxOpenConns(dbMaxOpenConnections)
+	db.SetMaxIdleConns(dbMaxIdleConnections)
 
 	if err := db.PingContext(ctx); err != nil {
 		db.Close()

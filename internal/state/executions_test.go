@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"sync"
 	"testing"
 )
 
@@ -452,5 +453,196 @@ VALUES (?, ?, ?, ?, ?)
 
 	if err == nil {
 		t.Fatal("execution for nonexistent session unexpectedly succeeded")
+	}
+}
+
+func TestInterruptSessionExecutionPreservesCheckpointAndSessionIsResumable(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	session, err := db.CreateSession(ctx, "Interrupt one execution")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	execution, err := db.StartSessionExecution(ctx, session.ID, 5)
+	if err != nil {
+		t.Fatalf("StartSessionExecution: %v", err)
+	}
+
+	for step := 1; step <= 2; step++ {
+		if err := db.AdvanceSessionExecution(ctx, execution.ID, step); err != nil {
+			t.Fatalf("advance to step %d: %v", step, err)
+		}
+	}
+
+	if err := db.InterruptSessionExecution(ctx, execution.ID); err != nil {
+		t.Fatalf("InterruptSessionExecution: %v", err)
+	}
+
+	sessionState, latest, err := db.SessionExecutionStatus(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("SessionExecutionStatus: %v", err)
+	}
+
+	if sessionState.State != SessionStateInterrupted {
+		t.Fatalf("session state = %q, want %q", sessionState.State, SessionStateInterrupted)
+	}
+	if latest == nil {
+		t.Fatal("interrupted execution missing")
+	}
+	if latest.Status != ExecutionStatusInterrupted {
+		t.Fatalf("execution status = %q, want %q", latest.Status, ExecutionStatusInterrupted)
+	}
+	if latest.CurrentStep != 2 {
+		t.Fatalf("current step = %d, want 2", latest.CurrentStep)
+	}
+
+	resumed, err := db.ResumeSessionExecution(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("ResumeSessionExecution: %v", err)
+	}
+	if resumed.CurrentStep != 2 {
+		t.Fatalf("resumed current step = %d, want 2", resumed.CurrentStep)
+	}
+	if resumed.Status != ExecutionStatusRunning {
+		t.Fatalf("resumed status = %q, want %q", resumed.Status, ExecutionStatusRunning)
+	}
+}
+
+func TestFailSessionExecutionPreservesCheckpointAndIsTerminal(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	session, err := db.CreateSession(ctx, "Fail one execution")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	execution, err := db.StartSessionExecution(ctx, session.ID, 5)
+	if err != nil {
+		t.Fatalf("StartSessionExecution: %v", err)
+	}
+
+	if err := db.AdvanceSessionExecution(ctx, execution.ID, 1); err != nil {
+		t.Fatalf("advance to step 1: %v", err)
+	}
+
+	if err := db.FailSessionExecution(ctx, execution.ID); err != nil {
+		t.Fatalf("FailSessionExecution: %v", err)
+	}
+
+	sessionState, latest, err := db.SessionExecutionStatus(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("SessionExecutionStatus: %v", err)
+	}
+
+	if sessionState.State != SessionStateFailed {
+		t.Fatalf("session state = %q, want %q", sessionState.State, SessionStateFailed)
+	}
+	if latest == nil {
+		t.Fatal("failed execution missing")
+	}
+	if latest.Status != ExecutionStatusFailed {
+		t.Fatalf("execution status = %q, want %q", latest.Status, ExecutionStatusFailed)
+	}
+	if latest.CurrentStep != 1 {
+		t.Fatalf("current step = %d, want 1 (checkpoint preserved)", latest.CurrentStep)
+	}
+	if latest.CompletedAt != nil {
+		t.Fatal("failed execution unexpectedly has a completion time")
+	}
+
+	if _, err := db.ResumeSessionExecution(ctx, session.ID); err == nil {
+		t.Fatal("failed execution unexpectedly resumed")
+	}
+}
+
+func TestSessionExecutionStatusWithoutExecution(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	session, err := db.CreateSession(ctx, "No execution yet")
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	sessionState, latest, err := db.SessionExecutionStatus(ctx, session.ID)
+	if err != nil {
+		t.Fatalf("SessionExecutionStatus: %v", err)
+	}
+	if sessionState.State != SessionStateReady {
+		t.Fatalf("session state = %q, want %q", sessionState.State, SessionStateReady)
+	}
+	if latest != nil {
+		t.Fatalf("expected no execution, got %#v", latest)
+	}
+
+	if _, _, err := db.SessionExecutionStatus(ctx, 999999); err == nil {
+		t.Fatal("SessionExecutionStatus accepted missing session")
+	}
+}
+
+// TestConcurrentExecutionTransactionsComplete runs several full execution
+// lifecycles in parallel against one database. It reproduces the checkpoint
+// contention that previously produced SQLITE_BUSY and verifies every execution
+// reaches COMPLETED without leaving a session RUNNING.
+func TestConcurrentExecutionTransactionsComplete(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	const workers = 4
+	const steps = 5
+
+	executions := make([]SessionExecution, 0, workers)
+	for i := 0; i < workers; i++ {
+		session, err := db.CreateSession(ctx, "concurrent")
+		if err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+		execution, err := db.StartSessionExecution(ctx, session.ID, steps)
+		if err != nil {
+			t.Fatalf("StartSessionExecution: %v", err)
+		}
+		executions = append(executions, execution)
+	}
+
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+
+	for _, execution := range executions {
+		wait.Add(1)
+		go func(execution SessionExecution) {
+			defer wait.Done()
+			<-start
+			for step := 1; step <= steps; step++ {
+				if err := db.AdvanceSessionExecution(ctx, execution.ID, step); err != nil {
+					t.Errorf("execution %d advance to step %d: %v", execution.ID, step, err)
+					return
+				}
+			}
+			if err := db.CompleteSessionExecution(ctx, execution.ID); err != nil {
+				t.Errorf("execution %d complete: %v", execution.ID, err)
+			}
+		}(execution)
+	}
+
+	close(start)
+	wait.Wait()
+
+	for _, execution := range executions {
+		sessionState, latest, err := db.SessionExecutionStatus(ctx, execution.SessionID)
+		if err != nil {
+			t.Fatalf("SessionExecutionStatus: %v", err)
+		}
+		if latest == nil || latest.Status != ExecutionStatusCompleted {
+			t.Fatalf("execution %d status = %#v, want COMPLETED", execution.ID, latest)
+		}
+		if latest.CurrentStep != steps {
+			t.Fatalf("execution %d current step = %d, want %d", execution.ID, latest.CurrentStep, steps)
+		}
+		if sessionState.State != SessionStateCompleted {
+			t.Fatalf("session %d state = %q, want %q", execution.SessionID, sessionState.State, SessionStateCompleted)
+		}
 	}
 }
