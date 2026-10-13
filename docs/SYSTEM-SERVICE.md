@@ -168,4 +168,7 @@ preserve these boundaries:
 
 ## Installation and upgrades
 
+**Documentation scope:** this page describes the service and identity foundation. `LINUX-INSTALLATION.md` describes the supported installer. The earlier statement that the systemd template is "not an installer" remains true of the template itself, but no longer means that Forgehand lacks an installer.
+
+
 A supported Linux installer is available in `packaging/linux/` with commands `install`, `upgrade`, `status`, and `uninstall`. See [Linux Installation Guide](LINUX-INSTALLATION.md) for details. The installer preserves existing state (`/var/lib/forgehand`), supports personal and dedicated deployments, validates readiness, and provides rollback on upgrade failure. These capabilities build on the existing systemd template and non-root daemon.

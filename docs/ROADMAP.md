@@ -1,112 +1,91 @@
-# Forgehand Initial Roadmap
+# Forgehand Roadmap and Current Status
 
-This roadmap is intentionally short. Later phases should be created from evidence gathered in earlier ones.
+**Updated:** October 2026
+**Product:** An independent, Linux-first, TUI-first, persistent AI coding environment. OpenCode is a design reference and a tool used to develop Forgehand, **not** a Forgehand runtime dependency.
 
-**Related:** [Security Principles](SECURITY-PRINCIPLES.md)
+This roadmap preserves the original phase goals and exit criteria. The 4B.x labels used for recent repository-intelligence work are *implementation milestone identifiers*, not proof that original Phase 4 (AI investigation) or Phase 2 (orchestration) is complete. Do not renumber past commits or declare a phase finished merely because a related command exists.
+
+## Core delivery sequence
+
+1. Establish and validate durable orchestration with **fake workers**.
+2. Connect the existing repository intelligence to Forgehand's **own** internal worker tasks.
+3. Provide a usable minimal **TUI** to control and reattach to sessions.
+4. Add replaceable **model-provider adapters** and a real evidence-backed AI investigator.
+5. Add bounded coding, pre-execution safety controls, functional and independent security verification, and a human-controlled promotion decision.
+
+These are dependencies, not a promise of particular implementation packages. The scheduler and TUI can be developed in thin vertical slices rather than as large standalone subsystems.
 
 ## Phase 0 — Design baseline
 
-- Record architectural invariants.
-- Establish terminology.
-- Establish research questions.
-- Keep implementation choices explicitly undecided.
-
-**Exit condition:** the repository contains a coherent design baseline that can be reviewed and changed through Git.
+Architectural invariants, terminology, research questions, and security boundaries documented. **Baseline established;** amend with implementation evidence rather than silently changing product direction.
 
 ## Phase 1 — Technical spikes
 
-Research and prototype:
+Go, SQLite, Linux daemon/Unix IPC, and installer have been selected/implemented. OpenCode may be studied for interaction and provider patterns only. Remaining spikes should focus on safe fake-worker orchestration, provider streaming/tool calls, TUI reconnect/event consumption, and worker execution policy.
 
-- implementation language candidates;
-- OpenCode architecture/reuse;
-- daemon/client boundary;
-- durable session persistence;
-- structured knowledge + SQLite indexing;
-- repository discovery primitives.
+**Exit condition:** implementation choices are backed by small experiments, with alternatives and limitations recorded.
 
-**Exit condition:** enough evidence exists to select an initial implementation stack and persistence approach.
+## Phase 2 — Persistent skeleton (NEXT PRIORITY: acceptance gap audit)
 
-## Phase 2 — Persistent skeleton
-
-Build a minimal Forgehand engine using fake workers.
-
-Required behavior:
+Original acceptance criteria remain authoritative:
 
 - initialize/open a Git project;
-- create a session;
-- execute a fake long-running worker;
-- detach and reattach a client;
-- persist events/state;
-- enter WAITING_FOR_USER;
-- accept user input and resume;
+- create a durable engineering session;
+- run a fake long-running worker;
+- detach and reattach a client without ending work;
+- persist state and events;
+- enter `WAITING_FOR_USER`, accept an answer, and resume;
 - manage at least two sessions;
-- schedule them conservatively;
-- recover meaningfully after daemon interruption.
+- schedule conservatively at safe checkpoints with resource claims;
+- recover meaningfully after abrupt daemon interruption.
 
-No real coding model is required for this phase.
+**Status:** partial infrastructure and earlier fake-worker/session recovery mechanisms exist, but the full acceptance matrix has **not been reverified** against current code. First audit what is already implemented; do not rebuild working mechanisms blindly. No real model is needed to pass Phase 2.
 
-**Exit condition:** the orchestration architecture works without AI.
+**Exit condition:** demonstrate the entire list against an isolated daemon and disposable state, including a crash/restart scenario, without depending on OpenCode.
 
-## Phase 3 — Project knowledge prototype
+## Phase 3 — Project knowledge prototype (SUBSTANTIAL PARTIAL IMPLEMENTATION)
 
-Add an initial cataloger for a deliberately limited project type.
+Completed and independently exercised in the recent 4B.x work:
 
-- deterministic repository discovery;
-- durable structured knowledge;
-- narrative Markdown generation where useful;
-- generated SQLite index;
-- evidence/provenance;
-- Git-aware staleness/update behavior.
+- **4B.1** committed-tree file inventory (`6cd68da`);
+- **4B.2** Go AST component/dependency mapping (`d77b856`);
+- **4B.3** evidence-backed repository queries (`e25e5c5`);
+- **4B.4** deterministic investigation context (`b481347`, reported local commit), with historical selection, freshness/truncation metadata, and suggested files.
 
-**Exit condition:** Forgehand can answer useful project questions from its maintained knowledge and show where those answers came from.
+These are deterministic persisted observations and retrieval tools, not a semantic reasoning worker. **Still open:** Git-friendly structured and narrative durable knowledge that can rebuild the disposable index; semantic cataloging where useful; broader language coverage and invalidation/update policies. Avoid expanding these areas until Phase 2 is stable unless a concrete worker need justifies it.
 
-Incremental implementation status:
+**Exit condition:** Forgehand answers useful project questions with provenance, and its intended durable knowledge survives loss/rebuild of the generated index.
 
-- deterministic committed-tree discovery is implemented for registered
-  projects;
-- discovery records exact commit provenance, aggregate language counts, and
-  evidence paths for a limited set of build-system indicators;
-- historical discovery observations are retained in SQLite without copying the
-  full Git file inventory.
+## Phase 4 — AI investigation (NOT YET COMPLETE)
 
-This is the first deterministic layer of project knowledge. Phase 3 remains in
-progress: semantic cataloging, durable Git-friendly knowledge, broader
-provenance, and staleness/update behavior are not yet complete.
+Introduce a real Forgehand-owned investigator that consumes evidence and repository knowledge, uses a replaceable model provider, requests targeted tools or human clarification as needed, and produces a falsifiable, evidence-backed diagnosis **without editing code**.
 
-Infrastructure foundation implemented alongside the prototype:
+**Exit condition:** demonstrate better, more efficient investigations than the same model exploring from scratch, with durable sessions and provenance. A deterministic `investigate` command alone does not meet this criterion.
 
-- non-root Linux daemon invariant and capability-free service execution;
-- explicit service state/socket configuration and single-daemon state locking;
-- local Unix peer identity capture and a non-installed systemd service
-  template.
+## Phase 5 — Implementation and verification (PLANNED)
 
-This foundation does not implement multi-user authorization, project ACLs,
-remote APIs, or isolated workers, and does not complete Phase 2 or Phase 3.
+Forgehand-owned planner/coder/verifier roles execute bounded work. Include tool permissions, execution identity and isolation, pre-execution assessment, functional checks, independent security verification, human review and fail-closed promotion. Workers cannot approve their own security exceptions.
 
-## Phase 4 — Investigation
+**Exit condition:** one real change proceeds from user objective through investigation, plan, code, verification, and promotion decision, with a recoverable audit trail.
 
-Introduce the first reasoning worker.
+## Near-term proposed implementation checkpoints (not yet committed design)
 
-Given a specific engineering question, it should retrieve relevant project knowledge and targeted source evidence, then produce an evidence-backed diagnosis without editing code.
+1. **Phase 2 audit:** map current job/session/event/worker/recovery code to each original acceptance criterion and identify missing tests.
+2. **Durable job vertical slice:** implement only proven gaps in queue, worker handoff, human wait, multi-session resource scheduling, and restart recovery using fake workers.
+3. **Minimal TUI vertical slice:** show jobs/events, submit an objective, detach/reattach, answer a human request; no full-screen design expansion until these flows work.
+4. **Internal task/context contract:** link existing investigation context to Forgehand-owned jobs and worker roles, with bounded evidence and explicit provenance.
+5. **Provider spike:** local llama.cpp/OpenAI-compatible streaming and tool-call behavior, cancellation, errors, and model switching without losing session state.
+6. **AI investigator vertical slice:** one evidence-backed investigation in a durable session, no source modification.
 
-**Exit condition:** investigation quality is demonstrably better than asking the same model to explore the repository from scratch.
-
-## Phase 5 — Implementation and verification
-
-Connect bounded coding and verification workers, including functional and security verification.
-
-**Exit condition:** Forgehand can carry one real change from user objective through investigation, plan, implementation, functional verification, security verification, and promotion decision while preserving a durable session history.
+The exact checkpoint numbering should be assigned after the Phase 2 audit; do not automatically label these `4C.x` or `4B.5`.
 
 ## Beyond
 
-Only after the above works should Forgehand consider:
+More advanced resource scheduling, remote/distributed workers, additional language intelligence, GUI, Windows, broader automation, project authorization, and remote authentication follow demonstrated needs. The Linux installer is **already implemented**; additional packaging targets remain future work. Security verification and isolation are requirements for applicable code-execution milestones, **not** optional features to postpone until after autonomous coding.
 
-- richer resource scheduling;
-- remote/distributed workers;
-- additional language intelligence;
-- desktop GUI;
-- broad cross-platform support;
-- more autonomous project planning.
-- security verification engine (scanners, evidence, findings, fail-closed promotion gate).
-- project authorization, worker isolation, remote authentication, and audit logging.
-- Linux installer/upgrade workflow (implemented in this milestone) extended to additional packaging targets (Debian/RPM/container) as future work.
+## Release/acceptance discipline
+
+- Keep development acceptance isolated from `/usr/bin/forgehand`, `/var/lib/forgehand`, `/run/forgehand/forgehand.sock`, and the installed `forgehand@...` systemd service.
+- Distinguish **implemented**, **tested**, **locally committed**, **pushed**, and **deployed**. Do not infer later stages from earlier ones.
+- Record actual test commands and results; keep unrelated working-tree changes out of milestone commits.
+- Review this roadmap when a milestone changes the product boundary or when evidence disproves an assumption.

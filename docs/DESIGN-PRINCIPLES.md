@@ -6,6 +6,11 @@ This document records the architectural invariants accepted during Forgehand's i
 
 ## 1. Git is required
 
+### Product identity: independent coding environment
+
+Forgehand is its own long-running AI-assisted software engineering application, not a plugin, wrapper, or context service for OpenCode or another coding agent. It owns the TUI/client boundary, session and job lifecycle, scheduler, model-provider connections, tool execution, human approvals, and verification workflow. OpenCode may inform design patterns and may be used to develop Forgehand, but is not a runtime dependency. This statement clarifies the original headless/TUI-first and replaceable-worker principles; it does not mandate a particular TUI or model SDK.
+
+
 Every Forgehand-managed project is a Git repository.
 
 Git provides:

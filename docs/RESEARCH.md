@@ -32,6 +32,9 @@ Do not select a language based solely on familiarity or benchmark performance.
 
 ## 2. OpenCode architecture and reuse
 
+**Decision clarification (October 2026):** Forgehand is an independent application. OpenCode is a useful reference for TUI, providers, tool permissions, and session UX, and may be used during Forgehand development. Integrating with, wrapping, or depending on OpenCode is not a product objective. Prior options below remain historical research categories, not an active integration plan. Go has been selected and is in use; do not reopen the language choice without evidence of a concrete blocker.
+
+
 Study OpenCode to determine:
 
 - how its TUI is structured;
@@ -127,6 +130,9 @@ Only after the project representation exists, test which local models are actual
 Avoid choosing permanent agent boundaries before measuring where models fail.
 
 ## 8. Scheduling prototype
+
+**Immediate research task:** audit existing fake-worker/session and daemon-recovery implementation against the original Phase 2 acceptance matrix before proposing new scheduler code. Test with an isolated daemon, two sessions, a durable human wait, client detach/reattach, resource contention, and abrupt restart. Record observed results and missing behavior rather than assuming either success or absence.
+
 
 Use fake workers before real models.
 

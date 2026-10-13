@@ -42,6 +42,21 @@ currently the service identity but remains architecturally distinct.
 
 ## Worker
 
+A worker is owned and scheduled by Forgehand; it is not synonymous with an OpenCode agent or with a permanently dedicated model process. Investigator, planner, coder, and verifier are roles, which may share a provider/model sequentially.
+
+## Job / task
+
+A **job** is a durable unit of engineering work tracked by the session engine. A **task** is a bounded step within a job, suitable for a worker or deterministic operation. Exact identifiers, nesting, and lifecycle schema remain to be confirmed by the Phase 2 implementation audit; these terms do not imply a newly implemented job engine.
+
+## Model provider
+
+An adapter used by Forgehand workers to communicate with a replaceable local or remote inference endpoint. The provider does not own jobs, sessions, permissions, or checkpoints. Provider API details remain undecided.
+
+## Investigation context
+
+Deterministic, evidence-backed repository context assembled from persisted observations for Forgehand's internal investigator/other workers. It is not itself an AI-generated diagnosis.
+
+
 A bounded executor used by Forgehand. A worker may use an LLM, deterministic tooling, or both.
 
 ## Cataloger

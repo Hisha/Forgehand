@@ -4,6 +4,13 @@
 
 ## Status
 
+**Direction reaffirmed (October 2026):** Forgehand is a standalone coding environment. OpenCode is a reference/development tool, not its execution engine. The conceptual session/scheduler/worker architecture below remains authoritative. Current implementation has advanced deterministic repository intelligence ahead of the full persistent orchestration and interactive client; that is a sequencing gap, not a product pivot. See `ROADMAP.md` for evidence-based status and next priorities.
+
+**Current implementation facts (reported and acceptance-tested through 4B.4):** Go daemon/CLI, SQLite persistence, Unix IPC, Linux service/installer, Git project intake, committed-tree discovery and file inventory, Go component/dependency observations, read-only queries, and deterministic investigation context. The 4B.4 implementation was committed locally as `b481347` according to the development session; no GitHub push or production deployment is asserted. Existing fake-worker/session recovery facilities require an explicit gap audit against Phase 2 acceptance criteria before being considered complete.
+
+**Not yet demonstrated end-to-end:** independent TUI, persistent multi-job orchestration meeting all Phase 2 criteria, real model-provider runtime, AI investigator, coding worker, secure execution isolation, functional/security promotion gates, or Git-friendly durable project knowledge independent of SQLite. Do not confuse a deterministic investigation *context* with an AI investigation *worker*.
+
+
 Initial architecture. Component boundaries are conceptual and intentionally do not prescribe an implementation language, TUI framework, IPC mechanism, model provider, or structured-data format.
 
 ## System view
@@ -49,6 +56,15 @@ separate. See [Linux system-service foundation](SYSTEM-SERVICE.md) and
 [Security Principles](SECURITY-PRINCIPLES.md).
 
 ## Major conceptual components
+
+### Product boundary and ownership
+
+Forgehand owns engineering state and execution. The TUI is a client, not a session host; the daemon/session engine persists objectives, tasks, checkpoints, tool events, approvals, and recovery state. The scheduler chooses eligible work at safe boundaries. Workers are bounded role executions that may use models, deterministic tools, or both. The provider layer adapts replaceable local/remote models; no model or external coding application owns sessions. Project knowledge supplies evidence to Forgehand's internal workers, not primarily to third-party agents.
+
+The existing `investigate` query is an internal foundation for a future AI investigator. A compact internal worker task/context contract may be useful, but should be designed as part of Forgehand's job engine and not mistaken for an OpenCode integration milestone.
+
+Security boundaries remain separate: client access, project authorization, worker execution identity/isolation, provider data disclosure, pre-execution assessment, and independent verification. Future code execution must not be treated as safe merely because the daemon is non-root.
+
 
 ### Session Engine
 
