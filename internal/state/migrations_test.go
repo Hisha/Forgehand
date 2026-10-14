@@ -24,8 +24,8 @@ func TestFreshDatabaseMigratesToLatestVersion(t *testing.T) {
 		t.Fatalf("read schema version: %v", err)
 	}
 
-	if version != 10 {
-		t.Fatalf("schema version = %d, want 10", version)
+	if version != 11 {
+		t.Fatalf("schema version = %d, want 11", version)
 	}
 
 	for _, want := range []string{
@@ -129,8 +129,8 @@ VALUES (?, ?, ?, ?)
 	).Scan(&version); err != nil {
 		t.Fatalf("read migrated schema version: %v", err)
 	}
-	if version != 10 {
-		t.Fatalf("migrated schema version = %d, want 10", version)
+	if version != 11 {
+		t.Fatalf("migrated schema version = %d, want 11", version)
 	}
 
 	var (
@@ -254,8 +254,8 @@ VALUES (1, 'main.go', 'legacy-blob', '100644', 17, 'Go', 'source')
 	).Scan(&version); err != nil {
 		t.Fatalf("read migrated schema version: %v", err)
 	}
-	if version != 10 {
-		t.Fatalf("migrated schema version = %d, want 10", version)
+	if version != 11 {
+		t.Fatalf("migrated schema version = %d, want 11", version)
 	}
 
 	inventory, err := db.GetProjectInventory(ctx, 1, true)
@@ -350,8 +350,8 @@ VALUES (1, ?, 5, 5, ?, ?)
 	).Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 10 {
-		t.Fatalf("schema version = %d, want 10", version)
+	if version != 11 {
+		t.Fatalf("schema version = %d, want 11", version)
 	}
 
 	var mode string
@@ -474,8 +474,8 @@ VALUES (1, ?, 3, 5, ?, ?)
 	if err := db.db.QueryRowContext(ctx, `SELECT version FROM schema_version LIMIT 1`).Scan(&version); err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
-	if version != 10 {
-		t.Fatalf("schema version = %d, want 10", version)
+	if version != 11 {
+		t.Fatalf("schema version = %d, want 11", version)
 	}
 
 	session, latest, err := db.SessionExecutionStatus(ctx, 1)
@@ -568,8 +568,8 @@ VALUES (1, 1, ?, ?, '{}')
 	).Scan(&version); err != nil {
 		t.Fatalf("read migrated schema version: %v", err)
 	}
-	if version != 10 {
-		t.Fatalf("migrated schema version = %d, want 10", version)
+	if version != 11 {
+		t.Fatalf("migrated schema version = %d, want 11", version)
 	}
 
 	var tableName string

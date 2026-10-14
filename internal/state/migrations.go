@@ -241,6 +241,13 @@ ON human_interactions(execution_id)
 WHERE status = 'PENDING';
 `,
 	},
+	{
+		version: 11,
+		sql: `
+ALTER TABLE session_executions ADD COLUMN canceled_at TEXT;
+ALTER TABLE session_executions ADD COLUMN cancel_reason TEXT;
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

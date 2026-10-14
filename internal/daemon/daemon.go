@@ -41,15 +41,22 @@ type executionStore interface {
 	InterruptSessionExecution(ctx context.Context, executionID int64) error
 	FailSessionExecution(ctx context.Context, executionID int64) error
 	RequestHumanInput(ctx context.Context, executionID int64, question string, contextDetails map[string]any) (state.HumanInteraction, bool, error)
+	SessionExecutionStatus(ctx context.Context, sessionID int64) (state.Session, *state.SessionExecution, error)
 }
 
 // workerGroup tracks daemon-side fake workers. It rejects new work once the
 // daemon starts shutting down, so a worker can never be registered in the wait
 // set at the same time as the shutdown wait (which would race a WaitGroup).
+//
+// It also owns the daemon-local execution ownership map: at most one live
+// worker may own a given execution ID at a time. Ownership is in-memory only
+// and therefore cannot survive a daemon restart, which is exactly the intended
+// lifetime for Milestone 2E (no distributed leases).
 type workerGroup struct {
 	mu      sync.Mutex
 	group   sync.WaitGroup
 	stopped bool
+	owners  map[int64]context.CancelFunc
 }
 
 func (w *workerGroup) start() bool {
@@ -68,10 +75,71 @@ func (w *workerGroup) done() {
 	w.group.Done()
 }
 
+// claim records ownership of an execution for a worker and registers its
+// cancellation function. It fails when the daemon is shutting down or another
+// worker already owns the execution, preventing duplicate workers for one
+// execution.
+func (w *workerGroup) claim(executionID int64, cancel context.CancelFunc) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.stopped {
+		return false
+	}
+	if w.owners == nil {
+		w.owners = make(map[int64]context.CancelFunc)
+	}
+	if _, exists := w.owners[executionID]; exists {
+		return false
+	}
+
+	w.owners[executionID] = cancel
+	return true
+}
+
+// release removes a worker's ownership record so a later run or resume of the
+// same execution is not blocked.
+func (w *workerGroup) release(executionID int64) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	delete(w.owners, executionID)
+}
+
+// cancel signals the worker that owns an execution, if any. It reports whether
+// an owner was found.
+func (w *workerGroup) cancel(executionID int64) bool {
+	w.mu.Lock()
+	cancel, ok := w.owners[executionID]
+	w.mu.Unlock()
+
+	if !ok {
+		return false
+	}
+
+	cancel()
+	return true
+}
+
+func (w *workerGroup) ownerCount() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	return len(w.owners)
+}
+
 func (w *workerGroup) stopAndWait() {
 	w.mu.Lock()
 	w.stopped = true
+	cancelers := make([]context.CancelFunc, 0, len(w.owners))
+	for _, cancel := range w.owners {
+		cancelers = append(cancelers, cancel)
+	}
 	w.mu.Unlock()
+
+	for _, cancel := range cancelers {
+		cancel()
+	}
 
 	w.group.Wait()
 }
@@ -647,26 +715,20 @@ func handleConnection(
 			return
 		}
 
-		go func() {
-			defer workers.done()
-			runFakeWorkerWithPause(
-				ctx,
-				stateDB,
-				execution,
-				fakeWorkerDelay,
-				config.FakeWorkerPauseStep(),
-			)
-		}()
+		if err := launchExecutionWorker(ctx, stateDB, workers, execution); err != nil {
+			workers.done()
+			_ = stateDB.InterruptSessionExecution(context.Background(), execution.ID)
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
 
+		encoded := executionToIPC(execution)
 		_ = encoder.Encode(ipc.Response{
-			OK: true,
-			Execution: &ipc.Execution{
-				ID:          execution.ID,
-				SessionID:   execution.SessionID,
-				Status:      execution.Status,
-				CurrentStep: execution.CurrentStep,
-				TotalSteps:  execution.TotalSteps,
-			},
+			OK:        true,
+			Execution: &encoded,
 		})
 
 	case "session-resume":
@@ -712,26 +774,66 @@ func handleConnection(
 			return
 		}
 
-		go func() {
-			defer workers.done()
-			runFakeWorkerWithPause(
-				ctx,
-				stateDB,
-				execution,
-				fakeWorkerDelay,
-				config.FakeWorkerPauseStep(),
-			)
-		}()
+		if err := launchExecutionWorker(ctx, stateDB, workers, execution); err != nil {
+			workers.done()
+			_ = stateDB.InterruptSessionExecution(context.Background(), execution.ID)
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
 
+		encoded := executionToIPC(execution)
 		_ = encoder.Encode(ipc.Response{
-			OK: true,
-			Execution: &ipc.Execution{
-				ID:          execution.ID,
-				SessionID:   execution.SessionID,
-				Status:      execution.Status,
-				CurrentStep: execution.CurrentStep,
-				TotalSteps:  execution.TotalSteps,
+			OK:        true,
+			Execution: &encoded,
+		})
+
+	case "session-cancel":
+		result, err := stateDB.CancelSessionExecution(
+			context.Background(),
+			request.SessionID,
+			request.Reason,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		if result.Outcome == state.CancellationRejectedTerminal {
+			_ = encoder.Encode(ipc.Response{
+				OK:            false,
+				CancelOutcome: string(result.Outcome),
+				Message: fmt.Sprintf(
+					"execution %d is %s; cancellation is not permitted",
+					result.Execution.ID,
+					result.Execution.Status,
+				),
+			})
+			return
+		}
+
+		// Cancellation is durably committed by now. Signal the owning worker,
+		// if one is live, so it stops at a safe point. The database is
+		// authoritative: a worker that misses the signal still cannot advance
+		// the canceled execution.
+		workers.cancel(result.Execution.ID)
+
+		encoded := executionToIPC(result.Execution)
+		_ = encoder.Encode(ipc.Response{
+			OK:            true,
+			Canceled:      true,
+			CancelOutcome: string(result.Outcome),
+			Session: &ipc.Session{
+				ID:    result.Session.ID,
+				Title: result.Session.Title,
+				State: result.Session.State,
 			},
+			Execution: &encoded,
 		})
 
 	case "sessions":
@@ -785,13 +887,8 @@ func handleConnection(
 		}
 
 		if execution != nil {
-			response.Execution = &ipc.Execution{
-				ID:          execution.ID,
-				SessionID:   execution.SessionID,
-				Status:      execution.Status,
-				CurrentStep: execution.CurrentStep,
-				TotalSteps:  execution.TotalSteps,
-			}
+			encoded := executionToIPC(*execution)
+			response.Execution = &encoded
 		}
 
 		if session.State == state.SessionStateWaitingForUser {
@@ -930,6 +1027,61 @@ func handleConnection(
 	}
 }
 
+// launchExecutionWorker starts the deterministic fake worker for an execution
+// under daemon-local ownership. The caller must already have reserved a worker
+// slot with workerGroup.start. Ownership is claimed before the goroutine is
+// launched so a concurrent cancellation can always find and signal it. On any
+// error the caller is responsible for releasing the reserved slot and
+// reconciling the execution.
+func launchExecutionWorker(
+	ctx context.Context,
+	stateDB *state.Database,
+	workers *workerGroup,
+	execution state.SessionExecution,
+) error {
+	workerCtx, cancel := context.WithCancel(ctx)
+	if !workers.claim(execution.ID, cancel) {
+		cancel()
+		return fmt.Errorf(
+			"execution %d already has an active worker",
+			execution.ID,
+		)
+	}
+
+	go func() {
+		defer workers.done()
+		defer workers.release(execution.ID)
+		defer cancel()
+		runFakeWorkerWithPause(
+			workerCtx,
+			stateDB,
+			execution,
+			fakeWorkerDelay,
+			config.FakeWorkerPauseStep(),
+		)
+	}()
+
+	return nil
+}
+
+func executionToIPC(execution state.SessionExecution) ipc.Execution {
+	encoded := ipc.Execution{
+		ID:          execution.ID,
+		SessionID:   execution.SessionID,
+		Status:      execution.Status,
+		CurrentStep: execution.CurrentStep,
+		TotalSteps:  execution.TotalSteps,
+	}
+	if execution.CanceledAt != nil {
+		canceledAt := execution.CanceledAt.UTC().Format(time.RFC3339Nano)
+		encoded.CanceledAt = &canceledAt
+	}
+	if execution.CancelReason != nil {
+		encoded.CancelReason = execution.CancelReason
+	}
+	return encoded
+}
+
 func interactionToIPC(interaction state.HumanInteraction) ipc.Interaction {
 	encoded := ipc.Interaction{
 		ID:          interaction.ID,
@@ -981,7 +1133,7 @@ func runFakeWorkerWithPause(
 				currentStep,
 				execution.TotalSteps,
 			)
-			interruptExecution(store, execution.ID)
+			handleWorkerStop(store, execution, ctx)
 			return
 		}
 
@@ -999,11 +1151,7 @@ func runFakeWorkerWithPause(
 				step,
 				err,
 			)
-			if ctx.Err() != nil {
-				interruptExecution(store, execution.ID)
-			} else {
-				failExecution(store, execution.ID)
-			}
+			handleWorkerStop(store, execution, ctx)
 			return
 		}
 
@@ -1017,7 +1165,7 @@ func runFakeWorkerWithPause(
 		)
 
 		if pauseAfterStep > 0 && step == pauseAfterStep {
-			requestHumanInput(store, execution.ID, step, execution.TotalSteps)
+			requestHumanInput(store, execution, step, execution.TotalSteps, ctx)
 			return
 		}
 	}
@@ -1034,15 +1182,51 @@ func runFakeWorkerWithPause(
 			execution.ID,
 			err,
 		)
+		handleWorkerStop(store, execution, ctx)
+		return
+	}
+
+	fmt.Printf("Execution %d completed\n", execution.ID)
+}
+
+// handleWorkerStop reconciles an execution when a worker leaves its loop after
+// a stop signal or an error. The database status is authoritative: a CANCELED
+// (or otherwise terminal) execution is never overwritten. A still-RUNNING
+// execution is interrupted when the stop was a daemon/worker cancellation, and
+// failed when the worker hit a real error.
+func handleWorkerStop(
+	store executionStore,
+	execution state.SessionExecution,
+	ctx context.Context,
+) {
+	_, latest, err := store.SessionExecutionStatus(
+		context.Background(),
+		execution.SessionID,
+	)
+	if err != nil {
+		fmt.Fprintf(
+			os.Stderr,
+			"forgehand: read execution %d status: %v\n",
+			execution.ID,
+			err,
+		)
+		return
+	}
+	if latest == nil {
+		return
+	}
+
+	switch latest.Status {
+	case state.ExecutionStatusRunning:
 		if ctx.Err() != nil {
 			interruptExecution(store, execution.ID)
 		} else {
 			failExecution(store, execution.ID)
 		}
-		return
+	default:
+		// CANCELED, COMPLETED, FAILED, INTERRUPTED, or WAITING_FOR_USER are
+		// already durable and must not be overwritten by a departing worker.
 	}
-
-	fmt.Printf("Execution %d completed\n", execution.ID)
 }
 
 // requestHumanInput persists the worker's pending question and transitions the
@@ -1050,14 +1234,15 @@ func runFakeWorkerWithPause(
 // goroutine returns so waiting work consumes no active worker capacity.
 func requestHumanInput(
 	store executionStore,
-	executionID int64,
+	execution state.SessionExecution,
 	step int,
 	totalSteps int,
+	ctx context.Context,
 ) {
 	err := retryOnBusy(context.Background(), func() error {
 		_, _, err := store.RequestHumanInput(
 			context.Background(),
-			executionID,
+			execution.ID,
 			fmt.Sprintf(
 				"Fake worker paused after checkpoint %d of %d. Provide input to continue.",
 				step,
@@ -1075,14 +1260,14 @@ func requestHumanInput(
 		fmt.Fprintf(
 			os.Stderr,
 			"forgehand: request human input for execution %d: %v\n",
-			executionID,
+			execution.ID,
 			err,
 		)
-		failExecution(store, executionID)
+		handleWorkerStop(store, execution, ctx)
 		return
 	}
 
-	fmt.Printf("Execution %d waiting for user input\n", executionID)
+	fmt.Printf("Execution %d waiting for user input\n", execution.ID)
 }
 
 // waitForStep blocks for the worker's step delay. It returns false when the

@@ -25,6 +25,7 @@ type Request struct {
 	AfterEventID        int64  `json:"after_event_id,omitempty"`
 	InteractionID       int64  `json:"interaction_id,omitempty"`
 	Answer              string `json:"answer,omitempty"`
+	Reason              string `json:"reason,omitempty"`
 }
 
 type Session struct {
@@ -34,11 +35,13 @@ type Session struct {
 }
 
 type Execution struct {
-	ID          int64  `json:"id"`
-	SessionID   int64  `json:"session_id"`
-	Status      string `json:"status"`
-	CurrentStep int    `json:"current_step"`
-	TotalSteps  int    `json:"total_steps"`
+	ID           int64   `json:"id"`
+	SessionID    int64   `json:"session_id"`
+	Status       string  `json:"status"`
+	CurrentStep  int     `json:"current_step"`
+	TotalSteps   int     `json:"total_steps"`
+	CanceledAt   *string `json:"canceled_at,omitempty"`
+	CancelReason *string `json:"cancel_reason,omitempty"`
 }
 
 // Interaction is a durable worker-to-human question. Answer is populated only
@@ -78,6 +81,8 @@ type Response struct {
 	Interaction   *Interaction           `json:"interaction,omitempty"`
 	Interactions  []Interaction          `json:"interactions,omitempty"`
 	AnswerApplied bool                   `json:"answer_applied,omitempty"`
+	Canceled      bool                   `json:"canceled,omitempty"`
+	CancelOutcome string                 `json:"cancel_outcome,omitempty"`
 }
 
 type Project struct {

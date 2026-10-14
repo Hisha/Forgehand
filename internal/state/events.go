@@ -15,6 +15,7 @@ const (
 	EventTypeExecutionCompleted         = "execution.completed"
 	EventTypeExecutionInterrupted       = "execution.interrupted"
 	EventTypeExecutionFailed            = "execution.failed"
+	EventTypeExecutionCanceled          = "execution.canceled"
 	EventTypeExecutionResumed           = "execution.resumed"
 	EventTypeInteractionRequested       = "interaction.requested"
 	EventTypeInteractionAnswered        = "interaction.answered"

@@ -159,6 +159,30 @@ func sessionCommand(args []string) error {
 
 		return sessionStatus(sessionID)
 
+	case "cancel":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: forgehand session cancel <id> [--reason \"...\"]")
+		}
+
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+
+		var reason string
+		for i := 2; i < len(args); i++ {
+			if args[i] != "--reason" {
+				return fmt.Errorf("unknown flag: %s", args[i])
+			}
+			if i+1 >= len(args) {
+				return fmt.Errorf("missing value for --reason")
+			}
+			reason = args[i+1]
+			i++
+		}
+
+		return cancelSession(sessionID, reason)
+
 	case "events":
 		if len(args) < 2 {
 			return fmt.Errorf("usage: forgehand session events <id> [--after <event-id>] [--limit <number>]")
@@ -357,9 +381,54 @@ func sessionStatus(sessionID int64) error {
 		response.Execution.TotalSteps,
 	)
 
+	if response.Execution.CanceledAt != nil {
+		fmt.Printf("Canceled: %s\n", *response.Execution.CanceledAt)
+	}
+	if response.Execution.CancelReason != nil {
+		fmt.Printf("Cancel reason: %s\n", *response.Execution.CancelReason)
+	}
+
 	if response.Interaction != nil {
 		fmt.Printf("Awaiting input: interaction %d\n", response.Interaction.ID)
 		fmt.Printf("Question: %s\n", response.Interaction.Question)
+	}
+
+	return nil
+}
+
+func cancelSession(sessionID int64, reason string) error {
+	response, err := request(ipc.Request{
+		Command:   "session-cancel",
+		SessionID: sessionID,
+		Reason:    reason,
+	})
+	if err != nil {
+		return err
+	}
+
+	if response.Session == nil {
+		return fmt.Errorf("daemon returned no session")
+	}
+
+	if response.CancelOutcome == "already_canceled" {
+		fmt.Printf("Session %d was already canceled\n", response.Session.ID)
+		return nil
+	}
+
+	fmt.Printf("Canceled session %d\n", response.Session.ID)
+	fmt.Printf("State: %s\n", response.Session.State)
+
+	if response.Execution != nil {
+		fmt.Printf("Execution: %d\n", response.Execution.ID)
+		fmt.Printf("Status: %s\n", response.Execution.Status)
+		fmt.Printf(
+			"Progress: %d/%d\n",
+			response.Execution.CurrentStep,
+			response.Execution.TotalSteps,
+		)
+		if response.Execution.CancelReason != nil {
+			fmt.Printf("Reason: %s\n", *response.Execution.CancelReason)
+		}
 	}
 
 	return nil
@@ -1252,6 +1321,7 @@ func usage() {
 	fmt.Println("  session run <id>                Run a session")
 	fmt.Println("  session resume <id>             Resume an interrupted or answered waiting session")
 	fmt.Println("  session status <id>             Show a session's execution progress")
+	fmt.Println("  session cancel <id> [--reason \"...\"]  Permanently cancel a session")
 	fmt.Println("  session questions <id>          List pending questions for a session")
 	fmt.Println("  session answer <interaction-id> \"answer text\"  Answer a pending question")
 	fmt.Println("  session events <id> [--after N] [--limit N]  List session events")

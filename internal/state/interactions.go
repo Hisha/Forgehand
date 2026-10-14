@@ -490,6 +490,12 @@ VALUES (?, ?, ?, ?, ?, ?)
 // answered. A duplicate submission returns the already-answered interaction
 // with applied=false and appends no event, so an answer can never be lost or
 // replaced.
+//
+// A PENDING interaction whose execution has already been CANCELED is rejected:
+// the interaction stays PENDING, no answer is recorded, and no event is
+// appended. An interaction answered before cancellation keeps its recorded
+// answer. Because the execution status is read inside the answer transaction,
+// concurrent answer/cancel requests resolve deterministically.
 func (d *Database) AnswerHumanInput(
 	ctx context.Context,
 	interactionID int64,
@@ -521,6 +527,30 @@ func (d *Database) AnswerHumanInput(
 			"interaction %d has unexpected status %s",
 			interactionID,
 			interaction.Status,
+		)
+	}
+
+	// A canceled execution is terminal and intentional; its pending question
+	// must never be answered. The interaction row is left untouched (still
+	// PENDING) for historical inspection, and no interaction.answered event is
+	// appended. This read shares the answer transaction, so concurrent
+	// answer/cancel requests are serialized deterministically: if cancellation
+	// committed first the answer is rejected here, and if the answer committed
+	// first cancellation still succeeds.
+	_, executionStatus, _, _, err := executionInteractionTarget(
+		ctx,
+		tx,
+		interaction.ExecutionID,
+	)
+	if err != nil {
+		return HumanInteraction{}, false, err
+	}
+	if executionStatus == ExecutionStatusCanceled {
+		return HumanInteraction{}, false, fmt.Errorf(
+			"interaction %d cannot be answered: execution %d is %s",
+			interactionID,
+			interaction.ExecutionID,
+			ExecutionStatusCanceled,
 		)
 	}
 

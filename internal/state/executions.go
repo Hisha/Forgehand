@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -13,16 +14,48 @@ const (
 	ExecutionStatusCompleted      = "COMPLETED"
 	ExecutionStatusInterrupted    = "INTERRUPTED"
 	ExecutionStatusFailed         = "FAILED"
+	ExecutionStatusCanceled       = "CANCELED"
 )
 
+// MaxCancelReasonLength bounds the user-supplied cancellation reason so the
+// durable event payload and execution row cannot grow without limit.
+const MaxCancelReasonLength = 200
+
+// CancellationOutcome describes the result of a CancelSessionExecution request.
+// It distinguishes a newly applied cancellation from an idempotent repeat and
+// from a refusal to cancel an already-terminal execution.
+type CancellationOutcome string
+
+const (
+	// CancellationApplied means the execution and session transitioned to
+	// CANCELED in this call and an execution.canceled event was appended.
+	CancellationApplied CancellationOutcome = "canceled"
+	// CancellationAlreadyCanceled means the execution was already CANCELED; no
+	// state change or event was made.
+	CancellationAlreadyCanceled CancellationOutcome = "already_canceled"
+	// CancellationRejectedTerminal means the execution is COMPLETED or FAILED
+	// and may not be canceled.
+	CancellationRejectedTerminal CancellationOutcome = "rejected_terminal"
+)
+
+// CancellationResult reports the durable state after a cancellation request and
+// how the request was resolved.
+type CancellationResult struct {
+	Session   Session
+	Execution SessionExecution
+	Outcome   CancellationOutcome
+}
+
 type SessionExecution struct {
-	ID          int64
-	SessionID   int64
-	Status      string
-	CurrentStep int
-	TotalSteps  int
-	StartedAt   time.Time
-	CompletedAt *time.Time
+	ID           int64
+	SessionID    int64
+	Status       string
+	CurrentStep  int
+	TotalSteps   int
+	StartedAt    time.Time
+	CompletedAt  *time.Time
+	CanceledAt   *time.Time
+	CancelReason *string
 }
 
 func (d *Database) StartSessionExecution(
@@ -701,6 +734,8 @@ WHERE id = ?
 		execution     SessionExecution
 		startedText   string
 		completedText sql.NullString
+		canceledText  sql.NullString
+		cancelReason  sql.NullString
 	)
 
 	err = d.db.QueryRowContext(ctx, `
@@ -711,7 +746,9 @@ SELECT
 	current_step,
 	total_steps,
 	started_at,
-	completed_at
+	completed_at,
+	canceled_at,
+	cancel_reason
 FROM session_executions
 WHERE session_id = ?
 ORDER BY id DESC
@@ -726,6 +763,8 @@ LIMIT 1
 		&execution.TotalSteps,
 		&startedText,
 		&completedText,
+		&canceledText,
+		&cancelReason,
 	)
 	if err == sql.ErrNoRows {
 		return session, nil, nil
@@ -759,7 +798,357 @@ LIMIT 1
 		execution.CompletedAt = &completedAt
 	}
 
+	if canceledText.Valid {
+		canceledAt, err := time.Parse(time.RFC3339Nano, canceledText.String)
+		if err != nil {
+			return Session{}, nil, fmt.Errorf(
+				"parse execution %d cancellation time: %w",
+				execution.ID,
+				err,
+			)
+		}
+		execution.CanceledAt = &canceledAt
+	}
+
+	if cancelReason.Valid {
+		value := cancelReason.String
+		execution.CancelReason = &value
+	}
+
 	return session, &execution, nil
+}
+
+// CancelSessionExecution transitions a session's most recent execution and the
+// session to the terminal CANCELED state and appends an execution.canceled
+// event in the same transaction. It is the intentional-stop path, distinct from
+// COMPLETED (success), FAILED (error), INTERRUPTED (recoverable), and
+// WAITING_FOR_USER (awaiting a human).
+//
+// Cancellation is accepted from RUNNING, WAITING_FOR_USER, and INTERRUPTED.
+// INTERRUPTED is cancellable so a user can permanently abandon work they no
+// longer wish to resume. COMPLETED and FAILED are terminal and rejected with
+// CancellationRejectedTerminal. An execution that is already CANCELED returns
+// CancellationAlreadyCanceled without writing a second event or changing the
+// recorded reason, making repeated requests idempotent. A session with no
+// execution is rejected.
+//
+// The entire state change and event append occur in one transaction. A failure
+// to append the event rolls the whole cancellation back.
+func (d *Database) CancelSessionExecution(
+	ctx context.Context,
+	sessionID int64,
+	reason string,
+) (CancellationResult, error) {
+	reason = strings.TrimSpace(reason)
+	if len(reason) > MaxCancelReasonLength {
+		reason = reason[:MaxCancelReasonLength]
+	}
+
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return CancellationResult{}, fmt.Errorf("begin session cancellation: %w", err)
+	}
+	defer tx.Rollback()
+
+	var (
+		session     Session
+		createdText string
+		updatedText string
+	)
+
+	err = tx.QueryRowContext(ctx, `
+SELECT
+	id,
+	title,
+	state,
+	created_at,
+	updated_at
+FROM sessions
+WHERE id = ?
+`,
+		sessionID,
+	).Scan(
+		&session.ID,
+		&session.Title,
+		&session.State,
+		&createdText,
+		&updatedText,
+	)
+	if err == sql.ErrNoRows {
+		return CancellationResult{}, fmt.Errorf("session %d does not exist", sessionID)
+	}
+	if err != nil {
+		return CancellationResult{}, fmt.Errorf("read session %d: %w", sessionID, err)
+	}
+
+	session.CreatedAt, err = time.Parse(time.RFC3339Nano, createdText)
+	if err != nil {
+		return CancellationResult{}, fmt.Errorf(
+			"parse created_at for session %d: %w",
+			sessionID,
+			err,
+		)
+	}
+	session.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedText)
+	if err != nil {
+		return CancellationResult{}, fmt.Errorf(
+			"parse updated_at for session %d: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	var (
+		execution     SessionExecution
+		startedText   string
+		completedText sql.NullString
+		canceledText  sql.NullString
+		cancelReason  sql.NullString
+	)
+
+	err = tx.QueryRowContext(ctx, `
+SELECT
+	id,
+	session_id,
+	status,
+	current_step,
+	total_steps,
+	started_at,
+	completed_at,
+	canceled_at,
+	cancel_reason
+FROM session_executions
+WHERE session_id = ?
+ORDER BY id DESC
+LIMIT 1
+`,
+		sessionID,
+	).Scan(
+		&execution.ID,
+		&execution.SessionID,
+		&execution.Status,
+		&execution.CurrentStep,
+		&execution.TotalSteps,
+		&startedText,
+		&completedText,
+		&canceledText,
+		&cancelReason,
+	)
+	if err == sql.ErrNoRows {
+		return CancellationResult{}, fmt.Errorf(
+			"session %d has no execution to cancel",
+			sessionID,
+		)
+	}
+	if err != nil {
+		return CancellationResult{}, fmt.Errorf(
+			"read latest execution for session %d: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	execution.StartedAt, err = time.Parse(time.RFC3339Nano, startedText)
+	if err != nil {
+		return CancellationResult{}, fmt.Errorf(
+			"parse execution %d start time: %w",
+			execution.ID,
+			err,
+		)
+	}
+	if completedText.Valid {
+		completedAt, err := time.Parse(time.RFC3339Nano, completedText.String)
+		if err != nil {
+			return CancellationResult{}, fmt.Errorf(
+				"parse execution %d completion time: %w",
+				execution.ID,
+				err,
+			)
+		}
+		execution.CompletedAt = &completedAt
+	}
+	if canceledText.Valid {
+		canceledAt, err := time.Parse(time.RFC3339Nano, canceledText.String)
+		if err != nil {
+			return CancellationResult{}, fmt.Errorf(
+				"parse execution %d cancellation time: %w",
+				execution.ID,
+				err,
+			)
+		}
+		execution.CanceledAt = &canceledAt
+	}
+	if cancelReason.Valid {
+		value := cancelReason.String
+		execution.CancelReason = &value
+	}
+
+	switch execution.Status {
+	case ExecutionStatusCanceled:
+		if err := tx.Commit(); err != nil {
+			return CancellationResult{}, fmt.Errorf(
+				"commit idempotent session cancellation: %w",
+				err,
+			)
+		}
+		return CancellationResult{
+			Session:   session,
+			Execution: execution,
+			Outcome:   CancellationAlreadyCanceled,
+		}, nil
+
+	case ExecutionStatusRunning, ExecutionStatusWaitingForUser, ExecutionStatusInterrupted:
+		// Cancellable.
+
+	case ExecutionStatusCompleted, ExecutionStatusFailed:
+		if err := tx.Commit(); err != nil {
+			return CancellationResult{}, fmt.Errorf(
+				"commit rejected session cancellation: %w",
+				err,
+			)
+		}
+		return CancellationResult{
+			Session:   session,
+			Execution: execution,
+			Outcome:   CancellationRejectedTerminal,
+		}, nil
+
+	default:
+		return CancellationResult{}, fmt.Errorf(
+			"execution %d has unknown status %s",
+			execution.ID,
+			execution.Status,
+		)
+	}
+
+	now := time.Now().UTC()
+	nowText := now.Format(time.RFC3339Nano)
+
+	var reasonValue any
+	if reason != "" {
+		reasonValue = reason
+	}
+
+	result, err := tx.ExecContext(ctx, `
+UPDATE session_executions
+SET status = ?,
+    canceled_at = ?,
+    cancel_reason = ?
+WHERE id = ?
+  AND status = ?
+`,
+		ExecutionStatusCanceled,
+		nowText,
+		reasonValue,
+		execution.ID,
+		execution.Status,
+	)
+	if err != nil {
+		return CancellationResult{}, fmt.Errorf(
+			"cancel execution %d: %w",
+			execution.ID,
+			err,
+		)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return CancellationResult{}, fmt.Errorf(
+			"check execution %d cancellation: %w",
+			execution.ID,
+			err,
+		)
+	}
+	if rowsAffected != 1 {
+		return CancellationResult{}, fmt.Errorf(
+			"execution %d could not transition from %s to %s",
+			execution.ID,
+			execution.Status,
+			ExecutionStatusCanceled,
+		)
+	}
+
+	result, err = tx.ExecContext(ctx, `
+UPDATE sessions
+SET state = ?,
+    updated_at = ?
+WHERE id = ?
+  AND state = ?
+`,
+		SessionStateCanceled,
+		nowText,
+		sessionID,
+		session.State,
+	)
+	if err != nil {
+		return CancellationResult{}, fmt.Errorf(
+			"cancel session %d: %w",
+			sessionID,
+			err,
+		)
+	}
+
+	rowsAffected, err = result.RowsAffected()
+	if err != nil {
+		return CancellationResult{}, fmt.Errorf(
+			"check session %d cancellation: %w",
+			sessionID,
+			err,
+		)
+	}
+	if rowsAffected != 1 {
+		return CancellationResult{}, fmt.Errorf(
+			"session %d could not transition from %s to %s",
+			sessionID,
+			session.State,
+			SessionStateCanceled,
+		)
+	}
+
+	details := map[string]any{
+		"execution_id":  execution.ID,
+		"status":        ExecutionStatusCanceled,
+		"session_state": SessionStateCanceled,
+		"current_step":  execution.CurrentStep,
+		"total_steps":   execution.TotalSteps,
+	}
+	if reason != "" {
+		details["reason"] = reason
+	}
+
+	if err := d.appendSessionEvent(
+		ctx,
+		tx,
+		sessionID,
+		&execution.ID,
+		EventTypeExecutionCanceled,
+		details,
+	); err != nil {
+		return CancellationResult{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return CancellationResult{}, fmt.Errorf(
+			"commit execution %d cancellation: %w",
+			execution.ID,
+			err,
+		)
+	}
+
+	execution.Status = ExecutionStatusCanceled
+	execution.CanceledAt = &now
+	if reason != "" {
+		value := reason
+		execution.CancelReason = &value
+	}
+	session.State = SessionStateCanceled
+	session.UpdatedAt = now
+
+	return CancellationResult{
+		Session:   session,
+		Execution: execution,
+		Outcome:   CancellationApplied,
+	}, nil
 }
 
 func (d *Database) InterruptRunningExecutions(

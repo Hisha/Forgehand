@@ -14,7 +14,7 @@
 | Daemon (long-running) | I | `internal/daemon/daemon.go` | Runs, handles commands, manages workers, graceful SIGTERM, recovers ownership. |
 | Non-root enforcement | I | `internal/daemon/daemon.go:55-66` (`TestRootDaemonRefusalOccursBeforeFilesystemChanges`) | Refuses real/effective UID 0 before filesystem changes. |
 | Socket/ownership locking | I | `internal/daemon/ownership_linux.go`, `internal/daemon/daemon_integration_test.go` | Single-daemon via advisory lock on state dir; rejects duplicates; recovers after crash. |
-| SQLite persistence | I | `internal/state/database.go`, migrations v1-10 | Migrations tested; foreign keys enabled. |
+| SQLite persistence | I | `internal/state/database.go`, migrations v1-11 | Migrations tested; foreign keys enabled. |
 | System service template (systemd) | I | `packaging/systemd/forgehand@.service`, `internal/config/*systemd*` | Template provided; config/systemd validation/tests. |
 | Linux installer (Go) | I | `packaging/linux/installer/*.go`, tests | Commands install/upgrade/status/uninstall; wrapper `install.sh`; packaged `forgehand-installer` binary present. |
 
@@ -37,13 +37,14 @@
 ## 4. Sessions, Execution & Recovery (Phase 2)
 | Capability | Status | Evidence | Notes |
 |---|---|---|---|
-| Persistent sessions (create/list) | I | `internal/state/sessions.go`, migrations v2, `cmd/forgehand session start`, `sessions` | States: READY/RUNNING/WAITING_FOR_USER/COMPLETED/INTERRUPTED (per schema/tests). |
+| Persistent sessions (create/list) | I | `internal/state/sessions.go`, migrations v2, `cmd/forgehand session start`, `sessions` | States: READY/RUNNING/WAITING_FOR_USER/COMPLETED/INTERRUPTED/CANCELED (per schema/tests). |
 | Fake worker execution lifecycle | I | `internal/state/executions.go`, migrations v3, daemon `session-run`, `session-resume`, `runFakeWorker` | Start advances session to RUNNING; stepwise advance; completion sets COMPLETED; 5 steps, 3s delay (configurable); optional deterministic pause for human input (`FORGEHAND_FAKE_WORKER_PAUSE_STEP`). |
 | Resume interrupted execution (checkpoint) | I | `TestResumeSessionExecutionPreservesCheckpoint`, `ResumeSessionExecution` in state, CLI `session resume` | Preserves current step; transitions back to RUNNING. |
 | Interrupt running executions on crash/start | I | `InterruptRunningExecutions`, daemon startup checks previous run; integration `TestDaemonPreservesExistingSessionRecovery` | Marks orphaned RUNNING executions as INTERRUPTED and sessions to INTERRUPTED on unclean shutdown detection. |
 | Multi-session management | P | Sessions table persists multiple; no explicit multi-session scheduler test exercising concurrent dispatch | Can create/list multiple sessions; no demonstrated concurrent scheduling across sessions with resource claims. |
 | Detach/reattach client | N | No client detach/reconnect event stream/state beyond process disconnect | IPC is request-response over Unix socket; no session attachment tracking or event subscription shown. |
 | WAITING_FOR_USER / human input | I | `internal/state/interactions.go`, migration v10, `internal/daemon/daemon.go`, CLI `session questions`/`session answer`, `docs/MILESTONE-2D-HUMAN-INTERACTION.md` | Durable pending question; atomic RUNNING->WAITING_FOR_USER; idempotent request/answer; resume after answer preserving checkpoint; survives graceful and unclean restart without auto-resume. |
+| Explicit session cancellation | I | `internal/state/executions.go` (`CancelSessionExecution`), migration v11, daemon `session-cancel`, CLI `session cancel`, `docs/MILESTONE-2E-SESSION-LIFECYCLE.md` | Terminal CANCELED from RUNNING/WAITING_FOR_USER/INTERRUPTED; idempotent; rejects COMPLETED/FAILED; atomic event; daemon-local worker ownership stops live workers safely; survives restart. |
 | Safe scheduling checkpoints | P | Step-based checkpointing in fake worker (advances after delay); no scheduler component with policy | Checkpoints exist at step boundaries; no general scheduler enforcing safe yield/resource claims. |
 | Recovery after daemon interruption | P | Crash recovery marks interrupted executions/sessions; fake worker stops on context cancel; no end-to-end crash+resume of in-progress step demonstrated beyond state transitions | State-level recovery implemented; full orchestration recovery (e.g., detach/reattach during run) not demonstrated. |
 
