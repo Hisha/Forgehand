@@ -8,10 +8,11 @@ import (
 )
 
 const (
-	ExecutionStatusRunning     = "RUNNING"
-	ExecutionStatusCompleted   = "COMPLETED"
-	ExecutionStatusInterrupted = "INTERRUPTED"
-	ExecutionStatusFailed      = "FAILED"
+	ExecutionStatusRunning        = "RUNNING"
+	ExecutionStatusWaitingForUser = "WAITING_FOR_USER"
+	ExecutionStatusCompleted      = "COMPLETED"
+	ExecutionStatusInterrupted    = "INTERRUPTED"
+	ExecutionStatusFailed         = "FAILED"
 )
 
 type SessionExecution struct {

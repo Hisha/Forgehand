@@ -40,6 +40,7 @@ type executionStore interface {
 	CompleteSessionExecution(ctx context.Context, executionID int64) error
 	InterruptSessionExecution(ctx context.Context, executionID int64) error
 	FailSessionExecution(ctx context.Context, executionID int64) error
+	RequestHumanInput(ctx context.Context, executionID int64, question string, contextDetails map[string]any) (state.HumanInteraction, bool, error)
 }
 
 // workerGroup tracks daemon-side fake workers. It rejects new work once the
@@ -648,7 +649,13 @@ func handleConnection(
 
 		go func() {
 			defer workers.done()
-			runFakeWorker(ctx, stateDB, execution, fakeWorkerDelay)
+			runFakeWorkerWithPause(
+				ctx,
+				stateDB,
+				execution,
+				fakeWorkerDelay,
+				config.FakeWorkerPauseStep(),
+			)
 		}()
 
 		_ = encoder.Encode(ipc.Response{
@@ -671,7 +678,7 @@ func handleConnection(
 			return
 		}
 
-		execution, err := stateDB.ResumeSessionExecution(
+		session, _, err := stateDB.SessionExecutionStatus(
 			context.Background(),
 			request.SessionID,
 		)
@@ -684,9 +691,36 @@ func handleConnection(
 			return
 		}
 
+		var execution state.SessionExecution
+		if session.State == state.SessionStateWaitingForUser {
+			execution, err = stateDB.ResumeAfterHumanInput(
+				context.Background(),
+				request.SessionID,
+			)
+		} else {
+			execution, err = stateDB.ResumeSessionExecution(
+				context.Background(),
+				request.SessionID,
+			)
+		}
+		if err != nil {
+			workers.done()
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
 		go func() {
 			defer workers.done()
-			runFakeWorker(ctx, stateDB, execution, fakeWorkerDelay)
+			runFakeWorkerWithPause(
+				ctx,
+				stateDB,
+				execution,
+				fakeWorkerDelay,
+				config.FakeWorkerPauseStep(),
+			)
 		}()
 
 		_ = encoder.Encode(ipc.Response{
@@ -760,7 +794,88 @@ func handleConnection(
 			}
 		}
 
+		if session.State == state.SessionStateWaitingForUser {
+			pending, err := stateDB.GetPendingHumanInput(
+				context.Background(),
+				request.SessionID,
+			)
+			if err != nil {
+				_ = encoder.Encode(ipc.Response{
+					OK:      false,
+					Message: err.Error(),
+				})
+				return
+			}
+			if pending != nil {
+				interaction := interactionToIPC(*pending)
+				response.Interaction = &interaction
+			}
+		}
+
 		_ = encoder.Encode(response)
+
+	case "session-questions":
+		pending, err := stateDB.ListPendingHumanInteractions(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		interactions := make([]ipc.Interaction, 0, len(pending))
+		for _, interaction := range pending {
+			interactions = append(interactions, interactionToIPC(interaction))
+		}
+
+		_ = encoder.Encode(ipc.Response{
+			OK:          true,
+			Interactions: interactions,
+		})
+
+	case "interaction-get":
+		interaction, err := stateDB.GetHumanInteraction(
+			context.Background(),
+			request.InteractionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		encoded := interactionToIPC(*interaction)
+		_ = encoder.Encode(ipc.Response{
+			OK:          true,
+			Interaction: &encoded,
+		})
+
+	case "interaction-answer":
+		interaction, applied, err := stateDB.AnswerHumanInput(
+			context.Background(),
+			request.InteractionID,
+			request.Answer,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		encoded := interactionToIPC(interaction)
+		_ = encoder.Encode(ipc.Response{
+			OK:            true,
+			Interaction:   &encoded,
+			AnswerApplied: applied,
+		})
 
 	case "session-events":
 		limit := request.Limit
@@ -815,11 +930,46 @@ func handleConnection(
 	}
 }
 
+func interactionToIPC(interaction state.HumanInteraction) ipc.Interaction {
+	encoded := ipc.Interaction{
+		ID:          interaction.ID,
+		SessionID:   interaction.SessionID,
+		ExecutionID: interaction.ExecutionID,
+		Question:    interaction.Question,
+		Context:     interaction.Context,
+		Status:      interaction.Status,
+		CreatedAt:   interaction.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
+	if interaction.Answer != nil {
+		encoded.Answer = interaction.Answer
+	}
+	if interaction.AnsweredAt != nil {
+		answeredAt := interaction.AnsweredAt.UTC().Format(time.RFC3339Nano)
+		encoded.AnsweredAt = &answeredAt
+	}
+	return encoded
+}
+
 func runFakeWorker(
 	ctx context.Context,
 	store executionStore,
 	execution state.SessionExecution,
 	delay time.Duration,
+) {
+	runFakeWorkerWithPause(ctx, store, execution, delay, 0)
+}
+
+// runFakeWorkerWithPause drives a deterministic fake execution. When
+// pauseAfterStep is greater than zero the worker requests human input after
+// committing that checkpoint and returns, releasing its worker slot. It never
+// stays alive while waiting and never repeats a committed checkpoint; the
+// resumed worker continues from execution.CurrentStep.
+func runFakeWorkerWithPause(
+	ctx context.Context,
+	store executionStore,
+	execution state.SessionExecution,
+	delay time.Duration,
+	pauseAfterStep int,
 ) {
 	currentStep := execution.CurrentStep
 
@@ -865,6 +1015,11 @@ func runFakeWorker(
 			currentStep,
 			execution.TotalSteps,
 		)
+
+		if pauseAfterStep > 0 && step == pauseAfterStep {
+			requestHumanInput(store, execution.ID, step, execution.TotalSteps)
+			return
+		}
 	}
 
 	if err := retryOnBusy(ctx, func() error {
@@ -888,6 +1043,46 @@ func runFakeWorker(
 	}
 
 	fmt.Printf("Execution %d completed\n", execution.ID)
+}
+
+// requestHumanInput persists the worker's pending question and transitions the
+// execution to WAITING_FOR_USER. The execution is left resumable; the worker
+// goroutine returns so waiting work consumes no active worker capacity.
+func requestHumanInput(
+	store executionStore,
+	executionID int64,
+	step int,
+	totalSteps int,
+) {
+	err := retryOnBusy(context.Background(), func() error {
+		_, _, err := store.RequestHumanInput(
+			context.Background(),
+			executionID,
+			fmt.Sprintf(
+				"Fake worker paused after checkpoint %d of %d. Provide input to continue.",
+				step,
+				totalSteps,
+			),
+			map[string]any{
+				"step":        step,
+				"total_steps": totalSteps,
+				"source":      "fake-worker",
+			},
+		)
+		return err
+	})
+	if err != nil {
+		fmt.Fprintf(
+			os.Stderr,
+			"forgehand: request human input for execution %d: %v\n",
+			executionID,
+			err,
+		)
+		failExecution(store, executionID)
+		return
+	}
+
+	fmt.Printf("Execution %d waiting for user input\n", executionID)
 }
 
 // waitForStep blocks for the worker's step delay. It returns false when the

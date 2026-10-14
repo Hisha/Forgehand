@@ -14,7 +14,12 @@ const (
 	StateDirEnvironment   = "FORGEHAND_STATE_DIR"
 	SocketPathEnvironment = "FORGEHAND_SOCKET_PATH"
 	SocketModeEnvironment = "FORGEHAND_SOCKET_MODE"
-	defaultSocketMode     = 0o600
+	// FakeWorkerPauseStepEnvironment configures the deterministic fake worker
+	// to pause and request human input after completing the given checkpoint
+	// step. A value of 0 (or an unset/invalid value) disables the pause, so
+	// normal fake-worker execution is unchanged.
+	FakeWorkerPauseStepEnvironment = "FORGEHAND_FAKE_WORKER_PAUSE_STEP"
+	defaultSocketMode              = 0o600
 )
 
 func StateDir() (string, error) {
@@ -46,6 +51,23 @@ func SocketPath() (string, error) {
 		return "", errors.New("XDG_RUNTIME_DIR is not set and FORGEHAND_SOCKET_PATH is not configured")
 	}
 	return validateSocketPath(filepath.Join(runtimeDir, "forgehand", "forgehand.sock"))
+}
+
+// FakeWorkerPauseStep returns the configured checkpoint step after which the
+// deterministic fake worker requests human input. It returns 0 when the pause
+// is disabled or the configured value is not a positive integer, so an invalid
+// configuration never changes default fake-worker behavior.
+func FakeWorkerPauseStep() int {
+	configured := strings.TrimSpace(os.Getenv(FakeWorkerPauseStepEnvironment))
+	if configured == "" {
+		return 0
+	}
+
+	value, err := strconv.Atoi(configured)
+	if err != nil || value <= 0 {
+		return 0
+	}
+	return value
 }
 
 func SocketMode() (fs.FileMode, error) {

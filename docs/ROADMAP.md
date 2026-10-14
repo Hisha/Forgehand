@@ -39,7 +39,7 @@ Original acceptance criteria remain authoritative:
 - schedule conservatively at safe checkpoints with resource claims;
 - recover meaningfully after abrupt daemon interruption.
 
-**Status:** partial infrastructure and earlier fake-worker/session recovery mechanisms exist, but the full acceptance matrix has **not been reverified** against current code. First audit what is already implemented; do not rebuild working mechanisms blindly. No real model is needed to pass Phase 2.
+**Status:** partial infrastructure and earlier fake-worker/session recovery mechanisms exist, but the full acceptance matrix has **not been reverified** against current code. First audit what is already implemented; do not rebuild working mechanisms blindly. No real model is needed to pass Phase 2. Milestone 2D now implements and tests the `WAITING_FOR_USER`/answer/resume criterion (see `docs/MILESTONE-2D-HUMAN-INTERACTION.md`); detach/reattach, multi-session resource scheduling, and full orchestration recovery remain open.
 
 **Exit condition:** demonstrate the entire list against an isolated daemon and disposable state, including a crash/restart scenario, without depending on OpenCode.
 

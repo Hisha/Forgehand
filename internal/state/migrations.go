@@ -213,6 +213,34 @@ CREATE INDEX idx_session_events_execution_id
 ON session_events(execution_id);
 `,
 	},
+	{
+		version: 10,
+		sql: `
+CREATE TABLE human_interactions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id INTEGER NOT NULL,
+	execution_id INTEGER NOT NULL,
+	question TEXT NOT NULL,
+	context_json TEXT,
+	status TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	answer TEXT,
+	answered_at TEXT,
+	FOREIGN KEY(session_id) REFERENCES sessions(id),
+	FOREIGN KEY(execution_id) REFERENCES session_executions(id)
+);
+
+CREATE INDEX idx_human_interactions_session_id
+ON human_interactions(session_id);
+
+CREATE INDEX idx_human_interactions_execution_id
+ON human_interactions(execution_id);
+
+CREATE UNIQUE INDEX idx_human_interactions_one_pending_per_execution
+ON human_interactions(execution_id)
+WHERE status = 'PENDING';
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

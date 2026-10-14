@@ -8,11 +8,12 @@ import (
 )
 
 const (
-	SessionStateReady       = "READY"
-	SessionStateRunning     = "RUNNING"
-	SessionStateCompleted   = "COMPLETED"
-	SessionStateInterrupted = "INTERRUPTED"
-	SessionStateFailed      = "FAILED"
+	SessionStateReady          = "READY"
+	SessionStateRunning        = "RUNNING"
+	SessionStateWaitingForUser = "WAITING_FOR_USER"
+	SessionStateCompleted      = "COMPLETED"
+	SessionStateInterrupted    = "INTERRUPTED"
+	SessionStateFailed         = "FAILED"
 )
 
 type Session struct {

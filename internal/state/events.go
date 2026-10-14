@@ -9,13 +9,17 @@ import (
 )
 
 const (
-	EventTypeSessionCreated      = "session.created"
-	EventTypeExecutionStarted    = "execution.started"
-	EventTypeExecutionCheckpoint = "execution.checkpoint"
-	EventTypeExecutionCompleted  = "execution.completed"
-	EventTypeExecutionInterrupted= "execution.interrupted"
-	EventTypeExecutionFailed     = "execution.failed"
-	EventTypeExecutionResumed    = "execution.resumed"
+	EventTypeSessionCreated             = "session.created"
+	EventTypeExecutionStarted           = "execution.started"
+	EventTypeExecutionCheckpoint        = "execution.checkpoint"
+	EventTypeExecutionCompleted         = "execution.completed"
+	EventTypeExecutionInterrupted       = "execution.interrupted"
+	EventTypeExecutionFailed            = "execution.failed"
+	EventTypeExecutionResumed           = "execution.resumed"
+	EventTypeInteractionRequested       = "interaction.requested"
+	EventTypeInteractionAnswered        = "interaction.answered"
+	EventTypeExecutionWaitingForUser    = "execution.waiting_for_user"
+	EventTypeExecutionResumedAfterInput = "execution.resumed_after_input"
 )
 
 type SessionEvent struct {

@@ -23,6 +23,8 @@ type Request struct {
 	Analysis            int64  `json:"analysis,omitempty"`
 	Format              string `json:"format,omitempty"`
 	AfterEventID        int64  `json:"after_event_id,omitempty"`
+	InteractionID       int64  `json:"interaction_id,omitempty"`
+	Answer              string `json:"answer,omitempty"`
 }
 
 type Session struct {
@@ -37,6 +39,20 @@ type Execution struct {
 	Status      string `json:"status"`
 	CurrentStep int    `json:"current_step"`
 	TotalSteps  int    `json:"total_steps"`
+}
+
+// Interaction is a durable worker-to-human question. Answer is populated only
+// once the interaction has been answered.
+type Interaction struct {
+	ID          int64          `json:"id"`
+	SessionID   int64          `json:"session_id"`
+	ExecutionID int64          `json:"execution_id"`
+	Question    string         `json:"question"`
+	Context     map[string]any `json:"context,omitempty"`
+	Status      string         `json:"status"`
+	CreatedAt   string         `json:"created_at"`
+	Answer      *string        `json:"answer,omitempty"`
+	AnsweredAt  *string        `json:"answered_at,omitempty"`
 }
 
 type Response struct {
@@ -59,6 +75,9 @@ type Response struct {
 	Investigation *InvestigationResponse `json:"investigation,omitempty"`
 	Events        []SessionEvent         `json:"events,omitempty"`
 	NextEventID   int64                  `json:"next_event_id,omitempty"`
+	Interaction   *Interaction           `json:"interaction,omitempty"`
+	Interactions  []Interaction          `json:"interactions,omitempty"`
+	AnswerApplied bool                   `json:"answer_applied,omitempty"`
 }
 
 type Project struct {

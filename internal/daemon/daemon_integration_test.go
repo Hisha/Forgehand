@@ -274,12 +274,13 @@ type daemonProcess struct {
 	output  *bytes.Buffer
 }
 
-func startDaemonProcess(t *testing.T, stateDir, socketPath, socketMode string) *daemonProcess {
+func startDaemonProcess(t *testing.T, stateDir, socketPath, socketMode string, extraEnv ...string) *daemonProcess {
 	t.Helper()
 	if os.Getuid() == 0 || os.Geteuid() == 0 {
 		t.Skip("non-root daemon integration test requires a non-root test account")
 	}
 	command := newDaemonCommand(stateDir, socketPath, socketMode)
+	command.Env = append(command.Env, extraEnv...)
 	output := &bytes.Buffer{}
 	command.Stdout = output
 	command.Stderr = output

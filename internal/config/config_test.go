@@ -117,3 +117,26 @@ func TestConfigurationRejectsUnsafeValues(t *testing.T) {
 		}
 	})
 }
+
+func TestFakeWorkerPauseStepParsing(t *testing.T) {
+	t.Run("unset disables pause", func(t *testing.T) {
+		t.Setenv(FakeWorkerPauseStepEnvironment, "")
+		if got := FakeWorkerPauseStep(); got != 0 {
+			t.Fatalf("FakeWorkerPauseStep() = %d, want 0", got)
+		}
+	})
+	t.Run("positive value is used", func(t *testing.T) {
+		t.Setenv(FakeWorkerPauseStepEnvironment, "3")
+		if got := FakeWorkerPauseStep(); got != 3 {
+			t.Fatalf("FakeWorkerPauseStep() = %d, want 3", got)
+		}
+	})
+	t.Run("invalid values disable pause", func(t *testing.T) {
+		for _, value := range []string{"0", "-1", "nope", "2.5"} {
+			t.Setenv(FakeWorkerPauseStepEnvironment, value)
+			if got := FakeWorkerPauseStep(); got != 0 {
+				t.Fatalf("FakeWorkerPauseStep(%q) = %d, want 0", value, got)
+			}
+		}
+	})
+}

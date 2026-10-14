@@ -123,6 +123,30 @@ func sessionCommand(args []string) error {
 
 		return resumeSession(sessionID)
 
+	case "questions":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand session questions <id>")
+		}
+
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+
+		return sessionQuestions(sessionID)
+
+	case "answer":
+		if len(args) != 3 {
+			return fmt.Errorf("usage: forgehand session answer <interaction-id> \"answer text\"")
+		}
+
+		interactionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || interactionID <= 0 {
+			return fmt.Errorf("invalid interaction ID: %s", args[1])
+		}
+
+		return answerInteraction(interactionID, args[2])
+
 	case "status":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: forgehand session status <id>")
@@ -249,6 +273,60 @@ func resumeSession(sessionID int64) error {
 	return nil
 }
 
+func sessionQuestions(sessionID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "session-questions",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return err
+	}
+
+	if len(response.Interactions) == 0 {
+		fmt.Println("No pending questions.")
+		return nil
+	}
+
+	for _, interaction := range response.Interactions {
+		fmt.Printf("Interaction %d\n", interaction.ID)
+		fmt.Printf("Session: %d\n", interaction.SessionID)
+		fmt.Printf("Execution: %d\n", interaction.ExecutionID)
+		fmt.Printf("Status: %s\n", interaction.Status)
+		fmt.Printf("Created: %s\n", interaction.CreatedAt)
+		fmt.Printf("Question: %s\n", interaction.Question)
+	}
+
+	return nil
+}
+
+func answerInteraction(interactionID int64, answer string) error {
+	response, err := request(ipc.Request{
+		Command:       "interaction-answer",
+		InteractionID: interactionID,
+		Answer:        answer,
+	})
+	if err != nil {
+		return err
+	}
+
+	if response.Interaction == nil {
+		return fmt.Errorf("daemon returned no interaction")
+	}
+
+	if !response.AnswerApplied {
+		fmt.Printf(
+			"Interaction %d was already answered\n",
+			response.Interaction.ID,
+		)
+		return nil
+	}
+
+	fmt.Printf("Answered interaction %d\n", response.Interaction.ID)
+	fmt.Printf("Status: %s\n", response.Interaction.Status)
+
+	return nil
+}
+
 func sessionStatus(sessionID int64) error {
 	response, err := request(ipc.Request{
 		Command:   "session-status",
@@ -278,6 +356,11 @@ func sessionStatus(sessionID int64) error {
 		response.Execution.CurrentStep,
 		response.Execution.TotalSteps,
 	)
+
+	if response.Interaction != nil {
+		fmt.Printf("Awaiting input: interaction %d\n", response.Interaction.ID)
+		fmt.Printf("Question: %s\n", response.Interaction.Question)
+	}
 
 	return nil
 }
@@ -1167,8 +1250,10 @@ func usage() {
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
 	fmt.Println("  session run <id>                Run a session")
-	fmt.Println("  session resume <id>             Resume an interrupted session")
+	fmt.Println("  session resume <id>             Resume an interrupted or answered waiting session")
 	fmt.Println("  session status <id>             Show a session's execution progress")
+	fmt.Println("  session questions <id>          List pending questions for a session")
+	fmt.Println("  session answer <interaction-id> \"answer text\"  Answer a pending question")
 	fmt.Println("  session events <id> [--after N] [--limit N]  List session events")
 	fmt.Println("  sessions                        List sessions")
 }
