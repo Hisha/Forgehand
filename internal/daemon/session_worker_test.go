@@ -328,3 +328,25 @@ func TestSessionStatusIPCReportsExecutionProgress(t *testing.T) {
 		t.Fatalf("session state after cancellation = %q, want %q", sessionState.State, state.SessionStateInterrupted)
 	}
 }
+
+func TestDaemonSessionEventsIPCFollowsEstablishedPattern(t *testing.T) {
+	db := openWorkerTestDatabase(t)
+	ctx := context.Background()
+	workers := &workerGroup{}
+
+	resp1 := roundTripRequest(t, ctx, db, workers, ipc.Request{Command: "session-start", Title: "test"})
+	if !resp1.OK || resp1.Session == nil {
+		t.Fatalf("start failed: %+v", resp1)
+	}
+	sessionID := resp1.Session.ID
+
+	resp2 := roundTripRequest(t, ctx, db, workers, ipc.Request{Command: "session-events", SessionID: sessionID})
+	if !resp2.OK {
+		t.Fatalf("events failed: %+v", resp2)
+	}
+	if len(resp2.Events) != 1 {
+		t.Fatalf("got %d events, want 1", len(resp2.Events))
+	}
+
+	workers.stopAndWait()
+}

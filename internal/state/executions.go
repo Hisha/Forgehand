@@ -131,9 +131,27 @@ WHERE id = ?
 		)
 	}
 
+	execID := executionID
+	if err := d.appendSessionEvent(
+		ctx,
+		tx,
+		sessionID,
+		&execID,
+		EventTypeExecutionStarted,
+		map[string]any{
+			"execution_id": executionID,
+			"total_steps":  totalSteps,
+			"status":       ExecutionStatusRunning,
+		},
+	); err != nil {
+		return SessionExecution{}, err
+	}
+
+
+
 	if err := tx.Commit(); err != nil {
 		return SessionExecution{}, fmt.Errorf(
-			"commit session execution: %w",
+			"commit execution resume: %w",
 			err,
 		)
 	}
@@ -146,6 +164,12 @@ WHERE id = ?
 		TotalSteps:  totalSteps,
 		StartedAt:   now,
 	}, nil
+}
+
+func sessionIDFromExec(d *Database, tx *sql.Tx, ctx context.Context, executionID int64) int64 {
+	var sessionID int64
+	_ = tx.QueryRowContext(ctx, `SELECT session_id FROM session_executions WHERE id = ?`, executionID).Scan(&sessionID)
+	return sessionID
 }
 
 func (d *Database) AdvanceSessionExecution(
@@ -163,10 +187,12 @@ func (d *Database) AdvanceSessionExecution(
 		status      string
 		currentStep int
 		totalSteps  int
+		sessionID   int64
 	)
 
 	err = tx.QueryRowContext(ctx, `
 SELECT
+	session_id,
 	status,
 	current_step,
 	total_steps
@@ -175,6 +201,7 @@ WHERE id = ?
 `,
 		executionID,
 	).Scan(
+		&sessionID,
 		&status,
 		&currentStep,
 		&totalSteps,
@@ -244,6 +271,22 @@ WHERE id = ?
 			"execution %d progress changed concurrently",
 			executionID,
 		)
+	}
+
+	if err := d.appendSessionEvent(
+		ctx,
+		tx,
+		sessionID,
+		&executionID,
+		EventTypeExecutionCheckpoint,
+		map[string]any{
+			"execution_id": executionID,
+			"step":         step,
+			"current_step": step,
+			"total_steps":  totalSteps,
+		},
+	); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -387,6 +430,22 @@ WHERE id = ?
 			SessionStateRunning,
 			SessionStateCompleted,
 		)
+	}
+
+	if err := d.appendSessionEvent(
+		ctx,
+		tx,
+		sessionID,
+		&executionID,
+		EventTypeExecutionCompleted,
+		map[string]any{
+			"execution_id": executionID,
+			"current_step": currentStep,
+			"total_steps":  totalSteps,
+			"status":       ExecutionStatusCompleted,
+		},
+	); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -549,6 +608,25 @@ WHERE id = ?
 			sessionID,
 			sessionStatus,
 		)
+	}
+
+	eventType := EventTypeExecutionInterrupted
+	if executionStatus == ExecutionStatusFailed {
+		eventType = EventTypeExecutionFailed
+	}
+	if err := d.appendSessionEvent(
+		ctx,
+		tx,
+		sessionID,
+		&executionID,
+		eventType,
+		map[string]any{
+			"execution_id": executionID,
+			"status":       executionStatus,
+			"session_state": sessionStatus,
+		},
+	); err != nil {
+		return err
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -821,6 +899,22 @@ WHERE id = ?
 			)
 		}
 
+		if err := d.appendSessionEvent(
+			ctx,
+			tx,
+			item.sessionID,
+			&item.executionID,
+			EventTypeExecutionInterrupted,
+			map[string]any{
+				"execution_id": item.executionID,
+				"status":       ExecutionStatusInterrupted,
+				"session_state": SessionStateInterrupted,
+				"recovery":     true,
+			},
+		); err != nil {
+			return 0, err
+		}
+
 		interrupted++
 	}
 
@@ -1008,6 +1102,22 @@ WHERE id = ?
 			SessionStateInterrupted,
 			SessionStateRunning,
 		)
+	}
+
+	if err := d.appendSessionEvent(
+		ctx,
+		tx,
+		sessionID,
+		&execution.ID,
+		EventTypeExecutionResumed,
+		map[string]any{
+			"execution_id": execution.ID,
+			"current_step": execution.CurrentStep,
+			"total_steps":  execution.TotalSteps,
+			"status":       ExecutionStatusRunning,
+		},
+	); err != nil {
+		return SessionExecution{}, err
 	}
 
 	if err := tx.Commit(); err != nil {

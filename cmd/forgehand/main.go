@@ -135,6 +135,47 @@ func sessionCommand(args []string) error {
 
 		return sessionStatus(sessionID)
 
+	case "events":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: forgehand session events <id> [--after <event-id>] [--limit <number>]")
+		}
+
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+
+		var afterEventID int64
+		limit := 0
+		for i := 2; i < len(args); i++ {
+			if args[i] == "--after" {
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --after")
+				}
+				afterEventID, err = strconv.ParseInt(args[i+1], 10, 64)
+				if err != nil || afterEventID < 0 {
+					return fmt.Errorf("invalid event ID: %s", args[i+1])
+				}
+				i++
+				continue
+			}
+			if args[i] == "--limit" {
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --limit")
+				}
+				limitVal, err := strconv.Atoi(args[i+1])
+				if err != nil || limitVal <= 0 {
+					return fmt.Errorf("invalid limit: %s", args[i+1])
+				}
+				limit = limitVal
+				i++
+				continue
+			}
+			return fmt.Errorf("unknown flag: %s", args[i])
+		}
+
+		return sessionEvents(sessionID, afterEventID, limit)
+
 	default:
 		return fmt.Errorf("unknown session command: %s", args[0])
 	}
@@ -1046,6 +1087,61 @@ func listProjects() error {
 	return nil
 }
 
+
+func sessionEvents(sessionID int64, afterEventID int64, limit int) error {
+	response, err := request(ipc.Request{
+		Command:      "session-events",
+		SessionID:    sessionID,
+		AfterEventID: afterEventID,
+		Limit:        limit,
+	})
+	if err != nil {
+		return err
+	}
+
+	if len(response.Events) == 0 {
+		if afterEventID == 0 {
+			fmt.Println("No events")
+		} else {
+			fmt.Println("No events after cursor")
+		}
+		return nil
+	}
+
+	writer := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+	defer writer.Flush()
+
+	fmt.Fprintln(writer, "ID	SESSION	EXECUTION	TYPE	TIMESTAMP	DETAILS")
+
+	for _, event := range response.Events {
+		exec := "-"
+		if event.ExecutionID != nil {
+			exec = fmt.Sprintf("%d", *event.ExecutionID)
+		}
+		details := ""
+		if len(event.Details) > 0 {
+			b, _ := json.Marshal(event.Details)
+			details = string(b)
+			if len(details) > 80 {
+				details = details[:77] + "..."
+			}
+		}
+		fmt.Fprintf(writer, "%d\t%d\t%s\t%s\t%s\t%s\n",
+			event.ID,
+			event.SessionID,
+			exec,
+			event.Type,
+			event.Timestamp,
+			details,
+		)
+	}
+
+	if response.NextEventID > 0 && response.NextEventID >= response.Events[len(response.Events)-1].ID {
+		// next cursor is last id
+	}
+	return nil
+}
+
 func usage() {
 	fmt.Println("Forgehand")
 	fmt.Println()
@@ -1073,5 +1169,6 @@ func usage() {
 	fmt.Println("  session run <id>                Run a session")
 	fmt.Println("  session resume <id>             Resume an interrupted session")
 	fmt.Println("  session status <id>             Show a session's execution progress")
+	fmt.Println("  session events <id> [--after N] [--limit N]  List session events")
 	fmt.Println("  sessions                        List sessions")
 }

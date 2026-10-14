@@ -193,6 +193,26 @@ CREATE INDEX idx_dependencies_observation
 ON dependencies(observation_id);
 `,
 	},
+	{
+		version: 9,
+		sql: `
+CREATE TABLE session_events (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id INTEGER NOT NULL,
+	execution_id INTEGER,
+	event_type TEXT NOT NULL,
+	timestamp TEXT NOT NULL,
+	details_json TEXT NOT NULL DEFAULT '{}',
+	FOREIGN KEY(session_id) REFERENCES sessions(id)
+);
+
+CREATE INDEX idx_session_events_session_id_id
+ON session_events(session_id, id);
+
+CREATE INDEX idx_session_events_execution_id
+ON session_events(execution_id);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

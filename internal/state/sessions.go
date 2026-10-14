@@ -23,45 +23,12 @@ type Session struct {
 	UpdatedAt time.Time
 }
 
+func trimTitle(title string) string {
+	return strings.TrimSpace(title)
+}
+
 func (d *Database) CreateSession(ctx context.Context, title string) (Session, error) {
-	title = strings.TrimSpace(title)
-	if title == "" {
-		return Session{}, fmt.Errorf("session title must not be empty")
-	}
-
-	now := time.Now().UTC()
-	nowText := now.Format(time.RFC3339Nano)
-
-	result, err := d.db.ExecContext(ctx, `
-INSERT INTO sessions (
-	title,
-	state,
-	created_at,
-	updated_at
-)
-VALUES (?, ?, ?, ?)
-`,
-		title,
-		SessionStateReady,
-		nowText,
-		nowText,
-	)
-	if err != nil {
-		return Session{}, fmt.Errorf("create session: %w", err)
-	}
-
-	id, err := result.LastInsertId()
-	if err != nil {
-		return Session{}, fmt.Errorf("read session id: %w", err)
-	}
-
-	return Session{
-		ID:        id,
-		Title:     title,
-		State:     SessionStateReady,
-		CreatedAt: now,
-		UpdatedAt: now,
-	}, nil
+	return d.CreateSessionWithEvent(ctx, title)
 }
 
 func (d *Database) ListSessions(ctx context.Context) ([]Session, error) {

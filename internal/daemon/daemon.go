@@ -762,6 +762,51 @@ func handleConnection(
 
 		_ = encoder.Encode(response)
 
+	case "session-events":
+		limit := request.Limit
+		if limit <= 0 {
+			limit = 100
+		}
+		if limit > 1000 {
+			limit = 1000
+		}
+
+		events, nextCursor, err := stateDB.ListSessionEvents(
+			context.Background(),
+			request.SessionID,
+			request.AfterEventID,
+			limit,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		ipcEvents := make([]ipc.SessionEvent, 0, len(events))
+		for _, ev := range events {
+			ipcEv := ipc.SessionEvent{
+				ID:        ev.ID,
+				SessionID: ev.SessionID,
+				Type:      ev.Type,
+				Timestamp: ev.Timestamp.UTC().Format(time.RFC3339Nano),
+				Details:   ev.Details,
+			}
+			if ev.ExecutionID != nil {
+				id := *ev.ExecutionID
+				ipcEv.ExecutionID = &id
+			}
+			ipcEvents = append(ipcEvents, ipcEv)
+		}
+
+		_ = encoder.Encode(ipc.Response{
+			OK:          true,
+			Events:      ipcEvents,
+			NextEventID: nextCursor,
+		})
+
 	default:
 		_ = encoder.Encode(ipc.Response{
 			OK:      false,

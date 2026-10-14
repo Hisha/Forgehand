@@ -22,6 +22,7 @@ type Request struct {
 	Limit               int    `json:"limit,omitempty"`
 	Analysis            int64  `json:"analysis,omitempty"`
 	Format              string `json:"format,omitempty"`
+	AfterEventID        int64  `json:"after_event_id,omitempty"`
 }
 
 type Session struct {
@@ -56,6 +57,8 @@ type Response struct {
 	Analysis      *ComponentAnalysis     `json:"analysis,omitempty"`
 	Query         *QueryResponse         `json:"query,omitempty"`
 	Investigation *InvestigationResponse `json:"investigation,omitempty"`
+	Events        []SessionEvent         `json:"events,omitempty"`
+	NextEventID   int64                  `json:"next_event_id,omitempty"`
 }
 
 type Project struct {
@@ -342,6 +345,15 @@ type InvestigationResponse struct {
 	TruncatedBy    string               `json:"truncatedBy,omitempty"`
 	TotalEvidence  int                  `json:"totalEvidence,omitempty"`
 	TotalFiles     int                  `json:"totalFiles,omitempty"`
+}
+
+type SessionEvent struct {
+	ID          int64         `json:"id"`
+	SessionID   int64         `json:"session_id"`
+	ExecutionID *int64        `json:"execution_id,omitempty"`
+	Type        string        `json:"type"`
+	Timestamp   string        `json:"timestamp"`
+	Details     map[string]any `json:"details,omitempty"`
 }
 
 // InvestigationFile describes a suggested file with reasons for selection.
