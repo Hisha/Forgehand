@@ -305,6 +305,9 @@ func runConfigured(config Config) error {
 	defer func() {
 		cancel()
 		workers.stopAndWait()
+		// Join the dispatcher so it cannot touch the database while it is
+		// being closed below.
+		<-dispatcher.done
 
 		if err := stateDB.FinishDaemonRun(context.Background(), runID); err != nil {
 			fmt.Fprintf(os.Stderr, "forgehand: record clean shutdown: %v\n", err)
