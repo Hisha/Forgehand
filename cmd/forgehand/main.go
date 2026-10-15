@@ -93,14 +93,47 @@ func sessionCommand(args []string) error {
 	switch args[0] {
 	case "start":
 		if len(args) < 2 {
-			return fmt.Errorf("usage: forgehand session start <title>")
+			return fmt.Errorf("usage: forgehand session start <title> or forgehand session start --project <id> --task \"...\"")
 		}
-
-		if len(args) > 2 {
-			return fmt.Errorf("session title must be quoted when it contains spaces")
+		// Support flags: --project, --task, --model
+		if args[1][0] != '-' && len(args) == 2 {
+			return startSession(args[1])
 		}
-
-		return startSession(args[1])
+		var title, task, model string
+		var projectID int64
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--project":
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --project")
+				}
+				id, err := strconv.ParseInt(args[i+1], 10, 64)
+				if err != nil || id <= 0 {
+					return fmt.Errorf("invalid project ID: %s", args[i+1])
+				}
+				projectID = id
+				i++
+			case "--task":
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --task")
+				}
+				task = args[i+1]
+				i++
+			case "--model":
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --model")
+				}
+				model = args[i+1]
+				i++
+			default:
+				if i == 1 && args[i][0] != '-' {
+					title = args[i]
+					continue
+				}
+				return fmt.Errorf("unknown flag: %s", args[i])
+			}
+		}
+		return startCodingSession(title, task, model, projectID)
 
 	case "run":
 		if len(args) != 2 {
@@ -161,6 +194,17 @@ func sessionCommand(args []string) error {
 		}
 
 		return sessionStatus(sessionID)
+
+
+	case "result":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand session result <id>")
+		}
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+		return sessionResult(sessionID)
 
 	case "cancel":
 		if len(args) < 2 {
@@ -1339,4 +1383,61 @@ func usage() {
 	fmt.Println("  session answer <interaction-id> \"answer text\"  Answer a pending question")
 	fmt.Println("  session events <id> [--after N] [--limit N]  List session events")
 	fmt.Println("  sessions                        List sessions")
+}
+
+
+func startCodingSession(title, task, model string, projectID int64) error {
+	if projectID <= 0 || strings.TrimSpace(task) == "" {
+		return fmt.Errorf("project and task are required for a coding session")
+	}
+	response, err := request(ipc.Request{
+		Command:   "session-start",
+		ProjectID: projectID,
+		Task:      task,
+		Title:     title,
+		Model:     model,
+	})
+	if err != nil {
+		return err
+	}
+	if response.Session == nil {
+		return fmt.Errorf("daemon returned no session")
+	}
+	fmt.Printf("Created coding session %d\n", response.Session.ID)
+	fmt.Printf("State: %s\n", response.Session.State)
+	fmt.Printf("Title: %s\n", response.Session.Title)
+	fmt.Printf("Project: %d\n", response.Session.ProjectID)
+	fmt.Printf("Task: %s\n", response.Session.Task)
+	fmt.Printf("Kind: %s\n", response.Session.Kind)
+	if response.Session.Provider != "" {
+		fmt.Printf("Provider: %s\n", response.Session.Provider)
+	}
+	if response.Session.Model != "" {
+		fmt.Printf("Model: %s\n", response.Session.Model)
+	}
+	return nil
+}
+
+func sessionResult(sessionID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "session-result",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return err
+	}
+	if response.Result == nil {
+		return fmt.Errorf("daemon returned no result")
+	}
+	fmt.Printf("Session: %d\n", response.Result.SessionID)
+	fmt.Printf("Execution: %d\n", response.Result.ExecutionID)
+	if response.Result.Provider != "" {
+		fmt.Printf("Provider: %s\n", response.Result.Provider)
+	}
+	if response.Result.Model != "" {
+		fmt.Printf("Model: %s\n", response.Result.Model)
+	}
+	fmt.Printf("Created: %s\n", response.Result.CreatedAt)
+	fmt.Printf("Content:\n%s\n", response.Result.Content)
+	return nil
 }

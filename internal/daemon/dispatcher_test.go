@@ -33,7 +33,7 @@ func TestNewDispatcherClampsCapacity(t *testing.T) {
 		{1, 1},
 		{4, 4},
 	} {
-		disp := newDispatcher(nil, nil, testCase.input)
+		disp := newDispatcher(nil, nil, testCase.input, nil)
 		if got := disp.capacity(); got != testCase.want {
 			t.Fatalf("newDispatcher(%d).capacity() = %d, want %d", testCase.input, got, testCase.want)
 		}
@@ -66,7 +66,7 @@ func TestDispatcherRespectsCapacityAndFIFO(t *testing.T) {
 		executions = append(executions, execution)
 	}
 
-	disp := newDispatcher(db, &workers, 2)
+	disp := newDispatcher(db, &workers, 2, nil)
 	go disp.run(ctx)
 	t.Cleanup(func() { <-disp.done })
 
@@ -129,7 +129,7 @@ func TestDispatcherStartsNextWhenCapacityFrees(t *testing.T) {
 		executions = append(executions, execution)
 	}
 
-	disp := newDispatcher(db, &workers, 1)
+	disp := newDispatcher(db, &workers, 1, nil)
 	go disp.run(ctx)
 	t.Cleanup(func() { <-disp.done })
 

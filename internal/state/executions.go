@@ -67,6 +67,7 @@ type SessionExecution struct {
 	// at the time the execution was read. It is 0 when the execution is not
 	// currently QUEUED.
 	QueuePosition int
+	Kind          string
 }
 
 func (d *Database) StartSessionExecution(

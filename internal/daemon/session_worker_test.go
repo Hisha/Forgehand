@@ -240,7 +240,7 @@ func roundTripRequest(
 	t.Helper()
 
 	dispCtx, stopDispatcher := context.WithCancel(ctx)
-	dispatcher := newDispatcher(db, workers, 16)
+	dispatcher := newDispatcher(db, workers, 16, nil)
 	go dispatcher.run(dispCtx)
 	t.Cleanup(func() {
 		stopDispatcher()

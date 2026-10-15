@@ -60,3 +60,13 @@
 | Pre-execution security assessment / execution policy | N | Documented in SECURITY-PRINCIPLES.md as planned | Not implemented. |
 | Functional/security verification pipeline with promotion gates | N | Documented as planned | Not implemented. |
 | Git-friendly durable knowledge independent of SQLite | N | Structured knowledge/narrative knowledge not implemented; SQLite is generated index for observations | Phase 3 open. |
+
+## 6. AI Workers (Phase 3/4 prelude)
+
+| Capability | Status | Evidence | Notes |
+|---|---|---|---|
+| Model provider (OpenAI-compatible) | I | `internal/provider/provider.go`, config `FORGEHAND_PROVIDER_*` | Non-streaming chat completions, timeouts, context cancellation, error handling with non-200 body summary (no credentials logged). |
+| Bounded repository context builder | I | `internal/repocontext/builder.go` | Deterministic selection with denylist, per-file/total/size limits, read-only via Git blobs; assembles system+user messages with structured response guidance. |
+| Coding session model (schema v13) | I | `internal/state/migrations.go` (v13), `model_results` table, sessions/project/task/kind/provider/model | Migration v13 adds coding session fields and durable model_results with unique execution_id; event `model.response.completed`. |
+| Model worker and dispatcher branching | I | `internal/daemon/model_worker.go`, `internal/daemon/dispatcher.go`, kind from execution | Single scheduling path: coding executions branch to model worker, others to fake worker; completion via `CompleteModelExecution` is atomic (result + completion event + terminal state). |
+| IPC/CLI for coding sessions | I | `internal/ipc/protocol.go` (Task/Model/Result), `cmd/forgehand/main.go`, daemon handlers (`session-start` coding branch, `session-result`) | `session start --project <id> --task "..." [--model <name>]`, `session status` includes new fields, `session result <id>` returns model result; backward compatible with existing fake sessions. |

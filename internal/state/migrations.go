@@ -261,6 +261,33 @@ CREATE INDEX idx_session_executions_status_queue_seq
 ON session_executions(status, queue_seq);
 `,
 	},
+	{
+		version: 13,
+		sql: `
+ALTER TABLE sessions ADD COLUMN project_id INTEGER;
+ALTER TABLE sessions ADD COLUMN task TEXT;
+ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'fake';
+ALTER TABLE sessions ADD COLUMN provider TEXT;
+ALTER TABLE sessions ADD COLUMN model TEXT;
+
+ALTER TABLE session_executions ADD COLUMN kind TEXT;
+
+CREATE TABLE model_results (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id INTEGER NOT NULL,
+	execution_id INTEGER NOT NULL UNIQUE,
+	provider TEXT,
+	model TEXT,
+	content TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	FOREIGN KEY(session_id) REFERENCES sessions(id),
+	FOREIGN KEY(execution_id) REFERENCES session_executions(id)
+);
+
+CREATE INDEX idx_model_results_session_id
+ON model_results(session_id);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

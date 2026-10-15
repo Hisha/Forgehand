@@ -19,11 +19,17 @@ type dispatcher struct {
 	db         *state.Database
 	workers    *workerGroup
 	maxWorkers int
+	model      *modelRuntime
 	wake       chan struct{}
 	done       chan struct{}
 }
 
-func newDispatcher(db *state.Database, workers *workerGroup, maxWorkers int) *dispatcher {
+func newDispatcher(
+	db *state.Database,
+	workers *workerGroup,
+	maxWorkers int,
+	model *modelRuntime,
+) *dispatcher {
 	if maxWorkers < 1 {
 		maxWorkers = 1
 	}
@@ -31,6 +37,7 @@ func newDispatcher(db *state.Database, workers *workerGroup, maxWorkers int) *di
 		db:         db,
 		workers:    workers,
 		maxWorkers: maxWorkers,
+		model:      model,
 		wake:       make(chan struct{}, 1),
 		done:       make(chan struct{}),
 	}
@@ -93,7 +100,7 @@ func (d *dispatcher) dispatch(ctx context.Context) {
 			return
 		}
 
-		if err := launchExecutionWorker(ctx, d.db, d.workers, execution, d.notify); err != nil {
+		if err := launchExecutionWorker(ctx, d.db, d.workers, d.model, execution, d.notify); err != nil {
 			fmt.Fprintf(
 				os.Stderr,
 				"forgehand: launch execution %d: %v\n",

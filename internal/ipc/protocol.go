@@ -26,12 +26,30 @@ type Request struct {
 	InteractionID       int64  `json:"interaction_id,omitempty"`
 	Answer              string `json:"answer,omitempty"`
 	Reason              string `json:"reason,omitempty"`
+	// Task and Model configure a coding session created through session-start.
+	Task  string `json:"task,omitempty"`
+	Model string `json:"model,omitempty"`
 }
 
 type Session struct {
-	ID    int64  `json:"id"`
-	Title string `json:"title"`
-	State string `json:"state"`
+	ID        int64  `json:"id"`
+	Title     string `json:"title"`
+	State     string `json:"state"`
+	ProjectID *int64 `json:"project_id,omitempty"`
+	Task      string `json:"task,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model,omitempty"`
+}
+
+// ModelResult is the durable model response for a coding session execution.
+type ModelResult struct {
+	SessionID   int64  `json:"session_id"`
+	ExecutionID int64  `json:"execution_id"`
+	Provider    string `json:"provider,omitempty"`
+	Model       string `json:"model,omitempty"`
+	Content     string `json:"content"`
+	CreatedAt   string `json:"created_at"`
 }
 
 type Execution struct {
@@ -47,7 +65,8 @@ type Execution struct {
 	QueueSeq *int64 `json:"queue_seq,omitempty"`
 	// QueuePosition is the 1-based position among currently QUEUED executions;
 	// it is 0 when the execution is not queued.
-	QueuePosition int `json:"queue_position,omitempty"`
+	QueuePosition int    `json:"queue_position,omitempty"`
+	Kind          string `json:"kind,omitempty"`
 }
 
 // Interaction is a durable worker-to-human question. Answer is populated only
@@ -86,6 +105,7 @@ type Response struct {
 	NextEventID   int64                  `json:"next_event_id,omitempty"`
 	Interaction   *Interaction           `json:"interaction,omitempty"`
 	Interactions  []Interaction          `json:"interactions,omitempty"`
+	Result        *ModelResult           `json:"result,omitempty"`
 	AnswerApplied bool                   `json:"answer_applied,omitempty"`
 	Canceled      bool                   `json:"canceled,omitempty"`
 	CancelOutcome string                 `json:"cancel_outcome,omitempty"`

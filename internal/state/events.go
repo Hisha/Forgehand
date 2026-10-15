@@ -23,6 +23,7 @@ const (
 	EventTypeInteractionAnswered        = "interaction.answered"
 	EventTypeExecutionWaitingForUser    = "execution.waiting_for_user"
 	EventTypeExecutionResumedAfterInput = "execution.resumed_after_input"
+	EventTypeModelResponseCompleted     = "model.response.completed"
 )
 
 type SessionEvent struct {
@@ -89,6 +90,21 @@ func (d *Database) CreateSessionWithEvent(
 	ctx context.Context,
 	title string,
 ) (Session, error) {
+	return d.CreateSessionWithDetails(ctx, title, nil, nil, "fake", "", "")
+}
+
+func (d *Database) CreateSessionWithDetails(
+	ctx context.Context,
+	title string,
+	projectID *int64,
+	task *string,
+	kind string,
+	provider string,
+	model string,
+) (Session, error) {
+	if kind == "" {
+		kind = "fake"
+	}
 	title = trimTitle(title)
 	if title == "" {
 		return Session{}, fmt.Errorf("session title must not be empty")
@@ -108,14 +124,24 @@ INSERT INTO sessions (
 	title,
 	state,
 	created_at,
-	updated_at
+	updated_at,
+	project_id,
+	task,
+	kind,
+	provider,
+	model
 )
-VALUES (?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		title,
 		SessionStateReady,
 		nowText,
 		nowText,
+		projectID,
+		task,
+		kind,
+		provider,
+		model,
 	)
 	if err != nil {
 		return Session{}, fmt.Errorf("create session: %w", err)
@@ -126,16 +152,31 @@ VALUES (?, ?, ?, ?)
 		return Session{}, fmt.Errorf("read session id: %w", err)
 	}
 
+	details := map[string]any{
+		"title": title,
+		"state": SessionStateReady,
+		"kind":  kind,
+	}
+	if projectID != nil {
+		details["project_id"] = *projectID
+	}
+	if task != nil {
+		details["task"] = *task
+	}
+	if provider != "" {
+		details["provider"] = provider
+	}
+	if model != "" {
+		details["model"] = model
+	}
+
 	if err := d.appendSessionEvent(
 		ctx,
 		tx,
 		id,
 		nil,
 		EventTypeSessionCreated,
-		map[string]any{
-			"title": title,
-			"state": SessionStateReady,
-		},
+		details,
 	); err != nil {
 		return Session{}, err
 	}
@@ -144,13 +185,24 @@ VALUES (?, ?, ?, ?)
 		return Session{}, fmt.Errorf("commit create session: %w", err)
 	}
 
-	return Session{
+	sess := Session{
 		ID:        id,
 		Title:     title,
 		State:     SessionStateReady,
 		CreatedAt: now,
 		UpdatedAt: now,
-	}, nil
+		Kind:      kind,
+		Provider:  provider,
+		Model:     model,
+	}
+	if projectID != nil {
+		pid := *projectID
+		sess.ProjectID = &pid
+	}
+	if task != nil {
+		sess.Task = *task
+	}
+	return sess, nil
 }
 
 func (d *Database) ListSessionEvents(

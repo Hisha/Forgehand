@@ -9,12 +9,14 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/Hisha/Forgehand/internal/config"
 	"github.com/Hisha/Forgehand/internal/ipc"
+	"github.com/Hisha/Forgehand/internal/provider"
 	"github.com/Hisha/Forgehand/internal/repository"
 	"github.com/Hisha/Forgehand/internal/state"
 	"github.com/Hisha/Forgehand/internal/version"
@@ -153,6 +155,7 @@ type Config struct {
 	SocketPath           string
 	SocketMode           os.FileMode
 	MaxConcurrentWorkers int
+	Provider             config.ProviderConfig
 }
 
 func LoadConfig() (Config, error) {
@@ -172,11 +175,16 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	providerConfig, err := config.Provider()
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		StateDir:             stateDir,
 		SocketPath:           socketPath,
 		SocketMode:           socketMode,
 		MaxConcurrentWorkers: maxWorkers,
+		Provider:             providerConfig,
 	}, nil
 }
 
@@ -299,8 +307,15 @@ func runConfigured(config Config) error {
 		return fmt.Errorf("record daemon run: %w", err)
 	}
 
+	model := buildModelRuntime(config.Provider, stateDB)
+	if model == nil {
+		fmt.Printf("Model provider not configured; coding sessions will fail\n")
+	} else {
+		fmt.Printf("Model provider configured: %s (model %s)\n", provider.ProviderID, config.Provider.Model)
+	}
+
 	var workers workerGroup
-	dispatcher := newDispatcher(stateDB, &workers, config.MaxConcurrentWorkers)
+	dispatcher := newDispatcher(stateDB, &workers, config.MaxConcurrentWorkers, model)
 
 	defer func() {
 		cancel()
@@ -705,6 +720,52 @@ func handleConnection(
 		})
 
 	case "session-start":
+		if request.Task != "" || request.ProjectID > 0 {
+			if request.ProjectID <= 0 {
+				_ = encoder.Encode(ipc.Response{
+					OK:      false,
+					Message: "a coding session requires a project id",
+				})
+				return
+			}
+			if strings.TrimSpace(request.Task) == "" {
+				_ = encoder.Encode(ipc.Response{
+					OK:      false,
+					Message: "a coding session requires a task",
+				})
+				return
+			}
+			var modelRuntimeRef *modelRuntime
+			if disp != nil {
+				modelRuntimeRef = disp.model
+			}
+			if modelRuntimeRef == nil {
+				_ = encoder.Encode(ipc.Response{
+					OK:      false,
+					Message: "no model provider is configured",
+				})
+				return
+			}
+			session, err := stateDB.CreateCodingSession(
+				context.Background(),
+				codingSessionTitle(request.Title, request.Task),
+				request.ProjectID,
+				request.Task,
+				provider.ProviderID,
+				codingModel(request.Model, modelRuntimeRef.defaultModel),
+			)
+			if err != nil {
+				_ = encoder.Encode(ipc.Response{
+					OK:      false,
+					Message: err.Error(),
+				})
+				return
+			}
+			encoded := sessionToIPC(session)
+			_ = encoder.Encode(ipc.Response{OK: true, Session: &encoded})
+			return
+		}
+
 		session, err := stateDB.CreateSession(
 			context.Background(),
 			request.Title,
@@ -717,13 +778,10 @@ func handleConnection(
 			return
 		}
 
+		encoded := sessionToIPC(session)
 		_ = encoder.Encode(ipc.Response{
-			OK: true,
-			Session: &ipc.Session{
-				ID:    session.ID,
-				Title: session.Title,
-				State: session.State,
-			},
+			OK:      true,
+			Session: &encoded,
 		})
 
 	case "session-run":
@@ -827,16 +885,13 @@ func handleConnection(
 		workers.cancel(result.Execution.ID)
 
 		encoded := executionToIPC(result.Execution)
+		encodedSession := sessionToIPC(result.Session)
 		_ = encoder.Encode(ipc.Response{
 			OK:            true,
 			Canceled:      true,
 			CancelOutcome: string(result.Outcome),
-			Session: &ipc.Session{
-				ID:    result.Session.ID,
-				Title: result.Session.Title,
-				State: result.Session.State,
-			},
-			Execution: &encoded,
+			Session:       &encodedSession,
+			Execution:     &encoded,
 		})
 
 	case "sessions":
@@ -857,11 +912,7 @@ func handleConnection(
 		for _, session := range sessions {
 			response.Sessions = append(
 				response.Sessions,
-				ipc.Session{
-					ID:    session.ID,
-					Title: session.Title,
-					State: session.State,
-				},
+				sessionToIPC(session),
 			)
 		}
 
@@ -880,13 +931,10 @@ func handleConnection(
 			return
 		}
 
+		encodedSession := sessionToIPC(session)
 		response := ipc.Response{
-			OK: true,
-			Session: &ipc.Session{
-				ID:    session.ID,
-				Title: session.Title,
-				State: session.State,
-			},
+			OK:      true,
+			Session: &encodedSession,
 		}
 
 		if execution != nil {
@@ -913,6 +961,29 @@ func handleConnection(
 		}
 
 		_ = encoder.Encode(response)
+
+	case "session-result":
+		result, err := stateDB.LatestModelResult(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			if errors.Is(err, state.ErrNoModelResult) {
+				_ = encoder.Encode(ipc.Response{
+					OK:      false,
+					Message: fmt.Sprintf("session %d has no model result", request.SessionID),
+				})
+				return
+			}
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		encoded := modelResultToIPC(result)
+		_ = encoder.Encode(ipc.Response{OK: true, Result: &encoded})
 
 	case "session-questions":
 		pending, err := stateDB.ListPendingHumanInteractions(
@@ -1042,6 +1113,7 @@ func launchExecutionWorker(
 	ctx context.Context,
 	stateDB *state.Database,
 	workers *workerGroup,
+	model *modelRuntime,
 	execution state.SessionExecution,
 	notify func(),
 ) error {
@@ -1063,13 +1135,27 @@ func launchExecutionWorker(
 
 	go func() {
 		defer cancel()
-		runFakeWorkerWithPause(
-			workerCtx,
-			stateDB,
-			execution,
-			fakeWorkerDelay,
-			config.FakeWorkerPauseStep(),
-		)
+		switch execution.Kind {
+		case "coding":
+			if model == nil {
+				fmt.Fprintf(
+					os.Stderr,
+					"forgehand: execution %d is a coding execution but no provider is configured\n",
+					execution.ID,
+				)
+				failExecution(stateDB, execution.ID)
+			} else {
+				model.runModelWorker(workerCtx, stateDB, execution)
+			}
+		default:
+			runFakeWorkerWithPause(
+				workerCtx,
+				stateDB,
+				execution,
+				fakeWorkerDelay,
+				config.FakeWorkerPauseStep(),
+			)
+		}
 		workers.release(execution.ID)
 		workers.done()
 		if notify != nil {
@@ -1100,7 +1186,61 @@ func executionToIPC(execution state.SessionExecution) ipc.Execution {
 		encoded.QueueSeq = &queueSeq
 	}
 	encoded.QueuePosition = execution.QueuePosition
+	encoded.Kind = execution.Kind
 	return encoded
+}
+
+func sessionToIPC(session state.Session) ipc.Session {
+	encoded := ipc.Session{
+		ID:       session.ID,
+		Title:    session.Title,
+		State:    session.State,
+		Task:     session.Task,
+		Kind:     session.Kind,
+		Provider: session.Provider,
+		Model:    session.Model,
+	}
+	if session.ProjectID != nil {
+		projectID := *session.ProjectID
+		encoded.ProjectID = &projectID
+	}
+	return encoded
+}
+
+// codingSessionTitle derives a non-empty title for a coding session, falling
+// back to a truncated form of the task when no explicit title is provided.
+func codingSessionTitle(title, task string) string {
+	if trimmed := strings.TrimSpace(title); trimmed != "" {
+		return trimmed
+	}
+	task = strings.TrimSpace(task)
+	if len(task) > 80 {
+		task = task[:80]
+	}
+	if task == "" {
+		return "coding session"
+	}
+	return task
+}
+
+// codingModel selects the model for a coding session, preferring the request's
+// explicit model and otherwise using the configured provider default.
+func codingModel(requestModel, defaultModel string) string {
+	if trimmed := strings.TrimSpace(requestModel); trimmed != "" {
+		return trimmed
+	}
+	return defaultModel
+}
+
+func modelResultToIPC(result state.ModelResult) ipc.ModelResult {
+	return ipc.ModelResult{
+		SessionID:   result.SessionID,
+		ExecutionID: result.ExecutionID,
+		Provider:    result.Provider,
+		Model:       result.Model,
+		Content:     result.Content,
+		CreatedAt:   result.CreatedAt.UTC().Format(time.RFC3339Nano),
+	}
 }
 
 func interactionToIPC(interaction state.HumanInteraction) ipc.Interaction {

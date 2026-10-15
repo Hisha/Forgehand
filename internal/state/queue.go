@@ -53,6 +53,7 @@ func latestExecutionForQueue(
 		execution   SessionExecution
 		startedText string
 		queueSeq    sql.NullInt64
+		kind        sql.NullString
 	)
 
 	err := tx.QueryRowContext(ctx, `
@@ -63,7 +64,8 @@ SELECT
 	current_step,
 	total_steps,
 	started_at,
-	queue_seq
+	queue_seq,
+	kind
 FROM session_executions
 WHERE session_id = ?
 ORDER BY id DESC
@@ -76,6 +78,7 @@ LIMIT 1
 		&execution.TotalSteps,
 		&startedText,
 		&queueSeq,
+		&kind,
 	)
 	if err != nil {
 		return SessionExecution{}, err
@@ -93,6 +96,9 @@ LIMIT 1
 	if queueSeq.Valid {
 		value := queueSeq.Int64
 		execution.QueueSeq = &value
+	}
+	if kind.Valid {
+		execution.Kind = kind.String
 	}
 
 	return execution, nil
@@ -118,11 +124,14 @@ func (d *Database) QueueSessionExecution(
 	}
 	defer tx.Rollback()
 
-	var state string
+	var (
+		state string
+		kind  sql.NullString
+	)
 	err = tx.QueryRowContext(ctx,
-		`SELECT state FROM sessions WHERE id = ?`,
+		`SELECT state, kind FROM sessions WHERE id = ?`,
 		sessionID,
-	).Scan(&state)
+	).Scan(&state, &kind)
 	if err == sql.ErrNoRows {
 		return SessionExecution{}, fmt.Errorf("session %d does not exist", sessionID)
 	}
@@ -136,6 +145,11 @@ func (d *Database) QueueSessionExecution(
 			state,
 			SessionStateReady,
 		)
+	}
+
+	executionKind := "fake"
+	if kind.Valid && kind.String != "" {
+		executionKind = kind.String
 	}
 
 	seq, err := nextQueueSeq(ctx, tx)
@@ -153,15 +167,17 @@ INSERT INTO session_executions (
 	current_step,
 	total_steps,
 	started_at,
-	queue_seq
+	queue_seq,
+	kind
 )
-VALUES (?, ?, 0, ?, ?, ?)
+VALUES (?, ?, 0, ?, ?, ?, ?)
 `,
 		sessionID,
 		ExecutionStatusQueued,
 		totalSteps,
 		nowText,
 		seq,
+		executionKind,
 	)
 	if err != nil {
 		return SessionExecution{}, fmt.Errorf(
@@ -225,6 +241,7 @@ VALUES (?, ?, 0, ?, ?, ?)
 		StartedAt:     now,
 		QueueSeq:      &queueSeq,
 		QueuePosition: position,
+		Kind:          executionKind,
 	}, nil
 }
 
@@ -618,6 +635,7 @@ func latestExecutionForQueueClaim(
 		execution   SessionExecution
 		startedText string
 		queueSeq    sql.NullInt64
+		kind        sql.NullString
 	)
 
 	err := tx.QueryRowContext(ctx, `
@@ -628,7 +646,8 @@ SELECT
 	current_step,
 	total_steps,
 	started_at,
-	queue_seq
+	queue_seq,
+	kind
 FROM session_executions
 WHERE status = ?
 ORDER BY queue_seq ASC, id ASC
@@ -641,6 +660,7 @@ LIMIT 1
 		&execution.TotalSteps,
 		&startedText,
 		&queueSeq,
+		&kind,
 	)
 	if err != nil {
 		return SessionExecution{}, err
@@ -658,6 +678,9 @@ LIMIT 1
 	if queueSeq.Valid {
 		value := queueSeq.Int64
 		execution.QueueSeq = &value
+	}
+	if kind.Valid {
+		execution.Kind = kind.String
 	}
 
 	return execution, nil

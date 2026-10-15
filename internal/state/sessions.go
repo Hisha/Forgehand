@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"strings"
 	"time"
@@ -24,6 +25,11 @@ type Session struct {
 	State     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
+	ProjectID *int64
+	Task      string
+	Kind      string
+	Provider  string
+	Model     string
 }
 
 func trimTitle(title string) string {
@@ -41,7 +47,12 @@ SELECT
 	title,
 	state,
 	created_at,
-	updated_at
+	updated_at,
+	project_id,
+	task,
+	kind,
+	provider,
+	model
 FROM sessions
 ORDER BY id
 `)
@@ -59,12 +70,25 @@ ORDER BY id
 			updatedText string
 		)
 
+		var (
+			projectID sql.NullInt64
+			task      sql.NullString
+			kind      sql.NullString
+			provider  sql.NullString
+			model     sql.NullString
+		)
+
 		if err := rows.Scan(
 			&session.ID,
 			&session.Title,
 			&session.State,
 			&createdText,
 			&updatedText,
+			&projectID,
+			&task,
+			&kind,
+			&provider,
+			&model,
 		); err != nil {
 			return nil, fmt.Errorf("scan session: %w", err)
 		}
@@ -85,6 +109,23 @@ ORDER BY id
 				session.ID,
 				err,
 			)
+		}
+
+		if projectID.Valid {
+			pid := projectID.Int64
+			session.ProjectID = &pid
+		}
+		if task.Valid {
+			session.Task = task.String
+		}
+		if kind.Valid {
+			session.Kind = kind.String
+		}
+		if provider.Valid {
+			session.Provider = provider.String
+		}
+		if model.Valid {
+			session.Model = model.String
 		}
 
 		sessions = append(sessions, session)
