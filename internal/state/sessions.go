@@ -9,6 +9,7 @@ import (
 
 const (
 	SessionStateReady          = "READY"
+	SessionStateQueued         = "QUEUED"
 	SessionStateRunning        = "RUNNING"
 	SessionStateWaitingForUser = "WAITING_FOR_USER"
 	SessionStateCompleted      = "COMPLETED"

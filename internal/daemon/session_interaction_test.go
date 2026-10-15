@@ -478,12 +478,13 @@ func TestSessionResumeIPCDispatchesWaitingSession(t *testing.T) {
 	if !resume.OK || resume.Execution == nil {
 		t.Fatalf("session-resume response = %#v", resume)
 	}
-	if resume.Execution.Status != state.ExecutionStatusRunning {
-		t.Fatalf("resumed status = %q, want %q", resume.Execution.Status, state.ExecutionStatusRunning)
+	if resume.Execution.Status != state.ExecutionStatusQueued {
+		t.Fatalf("resumed status = %q, want %q", resume.Execution.Status, state.ExecutionStatusQueued)
 	}
 	if resume.Execution.CurrentStep != 1 {
 		t.Fatalf("resumed current step = %d, want 1", resume.Execution.CurrentStep)
 	}
+	waitForExecutionStatus(t, db, interaction.SessionID, state.ExecutionStatusRunning, 6*time.Second)
 
 	cancel()
 	workers.stopAndWait()

@@ -48,6 +48,10 @@ Paths must be absolute; the filesystem root and a socket directly under `/` are
 rejected. Runtime directories must deny world access, and a `0660` socket
 requires group traversal on its directory.
 
+`FORGEHAND_MAX_CONCURRENT_WORKERS` bounds how many fake workers the daemon runs
+at once. It defaults to `2`; a non-integer value or a value below `1` is a
+configuration error (`docs/MILESTONE-2F-WORKER-SCHEDULING.md`).
+
 The service template explicitly selects `/var/lib/forgehand` and
 `/run/forgehand/forgehand.sock`; these are deployment values, not universal
 application defaults. Existing development state is not migrated or deleted.

@@ -19,7 +19,13 @@ const (
 	// step. A value of 0 (or an unset/invalid value) disables the pause, so
 	// normal fake-worker execution is unchanged.
 	FakeWorkerPauseStepEnvironment = "FORGEHAND_FAKE_WORKER_PAUSE_STEP"
-	defaultSocketMode              = 0o600
+	// MaxConcurrentWorkersEnvironment bounds how many fake workers the daemon
+	// runs at once. An unset or empty value uses DefaultMaxConcurrentWorkers;
+	// a non-integer or a value below 1 is a configuration error.
+	MaxConcurrentWorkersEnvironment = "FORGEHAND_MAX_CONCURRENT_WORKERS"
+	// DefaultMaxConcurrentWorkers is the conservative default worker capacity.
+	DefaultMaxConcurrentWorkers = 2
+	defaultSocketMode           = 0o600
 )
 
 func StateDir() (string, error) {
@@ -68,6 +74,34 @@ func FakeWorkerPauseStep() int {
 		return 0
 	}
 	return value
+}
+
+// MaxConcurrentWorkers returns the configured maximum number of simultaneously
+// running fake workers. It returns DefaultMaxConcurrentWorkers when the variable
+// is unset or empty, and an error when the configured value is not an integer or
+// is less than 1, so an invalid configuration fails closed instead of silently
+// changing scheduling behavior.
+func MaxConcurrentWorkers() (int, error) {
+	configured := strings.TrimSpace(os.Getenv(MaxConcurrentWorkersEnvironment))
+	if configured == "" {
+		return DefaultMaxConcurrentWorkers, nil
+	}
+
+	value, err := strconv.Atoi(configured)
+	if err != nil {
+		return 0, fmt.Errorf(
+			"parse %s as an integer: %w",
+			MaxConcurrentWorkersEnvironment,
+			err,
+		)
+	}
+	if value < 1 {
+		return 0, fmt.Errorf(
+			"%s must be at least 1",
+			MaxConcurrentWorkersEnvironment,
+		)
+	}
+	return value, nil
 }
 
 func SocketMode() (fs.FileMode, error) {

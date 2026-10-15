@@ -239,11 +239,19 @@ func roundTripRequest(
 ) ipc.Response {
 	t.Helper()
 
+	dispCtx, stopDispatcher := context.WithCancel(ctx)
+	dispatcher := newDispatcher(db, workers, 16)
+	go dispatcher.run(dispCtx)
+	t.Cleanup(func() {
+		stopDispatcher()
+		<-dispatcher.done
+	})
+
 	server, client := net.Pipe()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleConnection(ctx, db, workers, server, ClientIdentity{})
+		handleConnection(ctx, db, workers, dispatcher, server, ClientIdentity{})
 	}()
 
 	if err := json.NewEncoder(client).Encode(request); err != nil {
@@ -299,6 +307,8 @@ func TestSessionStatusIPCReportsExecutionProgress(t *testing.T) {
 	if !run.OK || run.Execution == nil {
 		t.Fatalf("session-run response = %#v", run)
 	}
+
+	waitForExecutionStatus(t, db, sessionID, state.ExecutionStatusRunning, 6*time.Second)
 
 	status := roundTripRequest(t, ctx, db, &workers, ipc.Request{
 		Command:   "session-status",

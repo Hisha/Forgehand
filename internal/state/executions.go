@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	ExecutionStatusQueued         = "QUEUED"
 	ExecutionStatusRunning        = "RUNNING"
 	ExecutionStatusWaitingForUser = "WAITING_FOR_USER"
 	ExecutionStatusCompleted      = "COMPLETED"
@@ -56,6 +57,16 @@ type SessionExecution struct {
 	CompletedAt  *time.Time
 	CanceledAt   *time.Time
 	CancelReason *string
+
+	// QueueSeq is the durable, globally monotonic sequence assigned when an
+	// execution is enqueued (QUEUED). It is nil for executions that never
+	// entered the queue (for example, legacy rows or direct-start executions)
+	// and is retained after dispatch so historical ordering stays auditable.
+	QueueSeq *int64
+	// QueuePosition is the 1-based position among currently QUEUED executions
+	// at the time the execution was read. It is 0 when the execution is not
+	// currently QUEUED.
+	QueuePosition int
 }
 
 func (d *Database) StartSessionExecution(
@@ -180,8 +191,6 @@ WHERE id = ?
 	); err != nil {
 		return SessionExecution{}, err
 	}
-
-
 
 	if err := tx.Commit(); err != nil {
 		return SessionExecution{}, fmt.Errorf(
@@ -655,8 +664,8 @@ WHERE id = ?
 		&executionID,
 		eventType,
 		map[string]any{
-			"execution_id": executionID,
-			"status":       executionStatus,
+			"execution_id":  executionID,
+			"status":        executionStatus,
 			"session_state": sessionStatus,
 		},
 	); err != nil {
@@ -736,6 +745,7 @@ WHERE id = ?
 		completedText sql.NullString
 		canceledText  sql.NullString
 		cancelReason  sql.NullString
+		queueSeq      sql.NullInt64
 	)
 
 	err = d.db.QueryRowContext(ctx, `
@@ -748,7 +758,8 @@ SELECT
 	started_at,
 	completed_at,
 	canceled_at,
-	cancel_reason
+	cancel_reason,
+	queue_seq
 FROM session_executions
 WHERE session_id = ?
 ORDER BY id DESC
@@ -765,6 +776,7 @@ LIMIT 1
 		&completedText,
 		&canceledText,
 		&cancelReason,
+		&queueSeq,
 	)
 	if err == sql.ErrNoRows {
 		return session, nil, nil
@@ -815,6 +827,18 @@ LIMIT 1
 		execution.CancelReason = &value
 	}
 
+	if queueSeq.Valid {
+		value := queueSeq.Int64
+		execution.QueueSeq = &value
+		if execution.Status == ExecutionStatusQueued {
+			position, err := queuePosition(ctx, d.db, value)
+			if err != nil {
+				return Session{}, nil, err
+			}
+			execution.QueuePosition = position
+		}
+	}
+
 	return session, &execution, nil
 }
 
@@ -824,9 +848,11 @@ LIMIT 1
 // COMPLETED (success), FAILED (error), INTERRUPTED (recoverable), and
 // WAITING_FOR_USER (awaiting a human).
 //
-// Cancellation is accepted from RUNNING, WAITING_FOR_USER, and INTERRUPTED.
-// INTERRUPTED is cancellable so a user can permanently abandon work they no
-// longer wish to resume. COMPLETED and FAILED are terminal and rejected with
+// Cancellation is accepted from QUEUED, RUNNING, WAITING_FOR_USER, and
+// INTERRUPTED. QUEUED is cancellable so a user can abandon scheduled work
+// before it starts. INTERRUPTED is cancellable so a user can permanently
+// abandon work they no longer wish to resume. COMPLETED and FAILED are terminal
+// and rejected with
 // CancellationRejectedTerminal. An execution that is already CANCELED returns
 // CancellationAlreadyCanceled without writing a second event or changing the
 // recorded reason, making repeated requests idempotent. A session with no
@@ -997,7 +1023,7 @@ LIMIT 1
 			Outcome:   CancellationAlreadyCanceled,
 		}, nil
 
-	case ExecutionStatusRunning, ExecutionStatusWaitingForUser, ExecutionStatusInterrupted:
+	case ExecutionStatusQueued, ExecutionStatusRunning, ExecutionStatusWaitingForUser, ExecutionStatusInterrupted:
 		// Cancellable.
 
 	case ExecutionStatusCompleted, ExecutionStatusFailed:
@@ -1296,10 +1322,10 @@ WHERE id = ?
 			&item.executionID,
 			EventTypeExecutionInterrupted,
 			map[string]any{
-				"execution_id": item.executionID,
-				"status":       ExecutionStatusInterrupted,
+				"execution_id":  item.executionID,
+				"status":        ExecutionStatusInterrupted,
 				"session_state": SessionStateInterrupted,
-				"recovery":     true,
+				"recovery":      true,
 			},
 		); err != nil {
 			return 0, err

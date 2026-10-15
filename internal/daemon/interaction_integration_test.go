@@ -135,13 +135,19 @@ func TestDaemonGracefulShutdownPreservesWaitingInteraction(t *testing.T) {
 	}
 
 	resume := sendDaemonRequest(t, socketPath, ipc.Request{Command: "session-resume", SessionID: sessionID})
-	if !resume.OK || resume.Execution == nil || resume.Execution.Status != state.ExecutionStatusRunning {
+	if !resume.OK || resume.Execution == nil || resume.Execution.Status != state.ExecutionStatusQueued {
 		stopDaemon(t, restarted, syscall.SIGTERM, true)
 		t.Fatalf("session-resume response = %#v", resume)
 	}
 	if resume.Execution.CurrentStep != 1 {
 		stopDaemon(t, restarted, syscall.SIGTERM, true)
 		t.Fatalf("resumed current step = %d, want 1", resume.Execution.CurrentStep)
+	}
+
+	running := waitForDaemonSessionState(t, socketPath, sessionID, state.SessionStateRunning, 5*time.Second)
+	if running.Execution == nil || running.Execution.Status != state.ExecutionStatusRunning {
+		stopDaemon(t, restarted, syscall.SIGTERM, true)
+		t.Fatalf("resumed execution = %#v", running.Execution)
 	}
 
 	stopDaemon(t, restarted, syscall.SIGTERM, true)

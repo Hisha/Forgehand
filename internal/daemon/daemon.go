@@ -149,9 +149,10 @@ func SocketPath() (string, error) {
 }
 
 type Config struct {
-	StateDir   string
-	SocketPath string
-	SocketMode os.FileMode
+	StateDir             string
+	SocketPath           string
+	SocketMode           os.FileMode
+	MaxConcurrentWorkers int
 }
 
 func LoadConfig() (Config, error) {
@@ -167,7 +168,16 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
-	return Config{StateDir: stateDir, SocketPath: socketPath, SocketMode: socketMode}, nil
+	maxWorkers, err := config.MaxConcurrentWorkers()
+	if err != nil {
+		return Config{}, err
+	}
+	return Config{
+		StateDir:             stateDir,
+		SocketPath:           socketPath,
+		SocketMode:           socketMode,
+		MaxConcurrentWorkers: maxWorkers,
+	}, nil
 }
 
 func Run() error {
@@ -290,6 +300,7 @@ func runConfigured(config Config) error {
 	}
 
 	var workers workerGroup
+	dispatcher := newDispatcher(stateDB, &workers, config.MaxConcurrentWorkers)
 
 	defer func() {
 		cancel()
@@ -299,6 +310,8 @@ func runConfigured(config Config) error {
 			fmt.Fprintf(os.Stderr, "forgehand: record clean shutdown: %v\n", err)
 		}
 	}()
+
+	go dispatcher.run(ctx)
 
 	for {
 		conn, err := listener.Accept()
@@ -318,7 +331,7 @@ func runConfigured(config Config) error {
 			continue
 		}
 
-		go handleConnection(ctx, stateDB, &workers, conn, client)
+		go handleConnection(ctx, stateDB, &workers, dispatcher, conn, client)
 	}
 }
 
@@ -326,6 +339,7 @@ func handleConnection(
 	ctx context.Context,
 	stateDB *state.Database,
 	workers *workerGroup,
+	disp *dispatcher,
 	conn net.Conn,
 	client ClientIdentity,
 ) {
@@ -663,11 +677,28 @@ func handleConnection(
 		})
 
 	case "status":
+		queued, err := stateDB.CountQueuedExecutions(context.Background())
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		capacity := 0
+		if disp != nil {
+			capacity = disp.capacity()
+		}
+
 		_ = encoder.Encode(ipc.Response{
-			OK:      true,
-			Message: "running",
-			Version: version.Version,
-			PID:     os.Getpid(),
+			OK:               true,
+			Message:          "running",
+			Version:          version.Version,
+			PID:              os.Getpid(),
+			WorkerCapacity:   capacity,
+			ActiveWorkers:    workers.ownerCount(),
+			QueuedExecutions: queued,
 		})
 
 	case "session-start":
@@ -693,21 +724,12 @@ func handleConnection(
 		})
 
 	case "session-run":
-		if !workers.start() {
-			_ = encoder.Encode(ipc.Response{
-				OK:      false,
-				Message: "daemon is shutting down",
-			})
-			return
-		}
-
-		execution, err := stateDB.StartSessionExecution(
+		execution, err := stateDB.QueueSessionExecution(
 			context.Background(),
 			request.SessionID,
 			fakeWorkerSteps,
 		)
 		if err != nil {
-			workers.done()
 			_ = encoder.Encode(ipc.Response{
 				OK:      false,
 				Message: err.Error(),
@@ -715,14 +737,8 @@ func handleConnection(
 			return
 		}
 
-		if err := launchExecutionWorker(ctx, stateDB, workers, execution); err != nil {
-			workers.done()
-			_ = stateDB.InterruptSessionExecution(context.Background(), execution.ID)
-			_ = encoder.Encode(ipc.Response{
-				OK:      false,
-				Message: err.Error(),
-			})
-			return
+		if disp != nil {
+			disp.notify()
 		}
 
 		encoded := executionToIPC(execution)
@@ -732,20 +748,11 @@ func handleConnection(
 		})
 
 	case "session-resume":
-		if !workers.start() {
-			_ = encoder.Encode(ipc.Response{
-				OK:      false,
-				Message: "daemon is shutting down",
-			})
-			return
-		}
-
 		session, _, err := stateDB.SessionExecutionStatus(
 			context.Background(),
 			request.SessionID,
 		)
 		if err != nil {
-			workers.done()
 			_ = encoder.Encode(ipc.Response{
 				OK:      false,
 				Message: err.Error(),
@@ -755,18 +762,17 @@ func handleConnection(
 
 		var execution state.SessionExecution
 		if session.State == state.SessionStateWaitingForUser {
-			execution, err = stateDB.ResumeAfterHumanInput(
+			execution, err = stateDB.QueueResumeAfterHumanInput(
 				context.Background(),
 				request.SessionID,
 			)
 		} else {
-			execution, err = stateDB.ResumeSessionExecution(
+			execution, err = stateDB.QueueResumeExecution(
 				context.Background(),
 				request.SessionID,
 			)
 		}
 		if err != nil {
-			workers.done()
 			_ = encoder.Encode(ipc.Response{
 				OK:      false,
 				Message: err.Error(),
@@ -774,14 +780,8 @@ func handleConnection(
 			return
 		}
 
-		if err := launchExecutionWorker(ctx, stateDB, workers, execution); err != nil {
-			workers.done()
-			_ = stateDB.InterruptSessionExecution(context.Background(), execution.ID)
-			_ = encoder.Encode(ipc.Response{
-				OK:      false,
-				Message: err.Error(),
-			})
-			return
+		if disp != nil {
+			disp.notify()
 		}
 
 		encoded := executionToIPC(execution)
@@ -930,7 +930,7 @@ func handleConnection(
 		}
 
 		_ = encoder.Encode(ipc.Response{
-			OK:          true,
+			OK:           true,
 			Interactions: interactions,
 		})
 
@@ -1027,20 +1027,30 @@ func handleConnection(
 	}
 }
 
-// launchExecutionWorker starts the deterministic fake worker for an execution
-// under daemon-local ownership. The caller must already have reserved a worker
-// slot with workerGroup.start. Ownership is claimed before the goroutine is
-// launched so a concurrent cancellation can always find and signal it. On any
-// error the caller is responsible for releasing the reserved slot and
-// reconciling the execution.
+// launchExecutionWorker reserves a worker slot and starts the deterministic
+// fake worker for an execution under daemon-local ownership. Ownership is
+// claimed before the goroutine is launched so a concurrent cancellation can
+// always find and signal it. When the worker finishes it releases the slot and
+// invokes notify so the dispatcher can start the next queued execution.
+//
+// On error the reserved slot is released; the caller remains responsible for
+// reconciling the execution, which is already committed as RUNNING.
 func launchExecutionWorker(
 	ctx context.Context,
 	stateDB *state.Database,
 	workers *workerGroup,
 	execution state.SessionExecution,
+	notify func(),
 ) error {
 	workerCtx, cancel := context.WithCancel(ctx)
+
+	if !workers.start() {
+		cancel()
+		return fmt.Errorf("daemon is shutting down")
+	}
+
 	if !workers.claim(execution.ID, cancel) {
+		workers.done()
 		cancel()
 		return fmt.Errorf(
 			"execution %d already has an active worker",
@@ -1049,8 +1059,6 @@ func launchExecutionWorker(
 	}
 
 	go func() {
-		defer workers.done()
-		defer workers.release(execution.ID)
 		defer cancel()
 		runFakeWorkerWithPause(
 			workerCtx,
@@ -1059,6 +1067,11 @@ func launchExecutionWorker(
 			fakeWorkerDelay,
 			config.FakeWorkerPauseStep(),
 		)
+		workers.release(execution.ID)
+		workers.done()
+		if notify != nil {
+			notify()
+		}
 	}()
 
 	return nil
@@ -1079,6 +1092,11 @@ func executionToIPC(execution state.SessionExecution) ipc.Execution {
 	if execution.CancelReason != nil {
 		encoded.CancelReason = execution.CancelReason
 	}
+	if execution.QueueSeq != nil {
+		queueSeq := *execution.QueueSeq
+		encoded.QueueSeq = &queueSeq
+	}
+	encoded.QueuePosition = execution.QueuePosition
 	return encoded
 }
 

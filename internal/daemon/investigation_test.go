@@ -104,7 +104,7 @@ func runInvestigation(t *testing.T, db *state.Database, request ipc.Request) ipc
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleConnection(context.Background(), db, &workerGroup{}, server, ClientIdentity{})
+		handleConnection(context.Background(), db, &workerGroup{}, nil, server, ClientIdentity{})
 	}()
 	if err := json.NewEncoder(client).Encode(request); err != nil {
 		t.Fatal(err)

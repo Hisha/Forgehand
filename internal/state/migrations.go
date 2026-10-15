@@ -248,6 +248,19 @@ ALTER TABLE session_executions ADD COLUMN canceled_at TEXT;
 ALTER TABLE session_executions ADD COLUMN cancel_reason TEXT;
 `,
 	},
+	{
+		version: 12,
+		sql: `
+ALTER TABLE session_executions ADD COLUMN queue_seq INTEGER;
+
+CREATE UNIQUE INDEX idx_session_executions_queue_seq
+ON session_executions(queue_seq)
+WHERE queue_seq IS NOT NULL;
+
+CREATE INDEX idx_session_executions_status_queue_seq
+ON session_executions(status, queue_seq);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

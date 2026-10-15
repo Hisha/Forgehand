@@ -140,3 +140,36 @@ func TestFakeWorkerPauseStepParsing(t *testing.T) {
 		}
 	})
 }
+
+func TestMaxConcurrentWorkersParsing(t *testing.T) {
+	t.Run("unset uses default", func(t *testing.T) {
+		t.Setenv(MaxConcurrentWorkersEnvironment, "")
+		got, err := MaxConcurrentWorkers()
+		if err != nil {
+			t.Fatalf("MaxConcurrentWorkers() error = %v", err)
+		}
+		if got != DefaultMaxConcurrentWorkers {
+			t.Fatalf("MaxConcurrentWorkers() = %d, want %d", got, DefaultMaxConcurrentWorkers)
+		}
+	})
+
+	t.Run("explicit value is used", func(t *testing.T) {
+		t.Setenv(MaxConcurrentWorkersEnvironment, "5")
+		got, err := MaxConcurrentWorkers()
+		if err != nil {
+			t.Fatalf("MaxConcurrentWorkers() error = %v", err)
+		}
+		if got != 5 {
+			t.Fatalf("MaxConcurrentWorkers() = %d, want 5", got)
+		}
+	})
+
+	t.Run("invalid values fail closed", func(t *testing.T) {
+		for _, value := range []string{"0", "-1", "nope", "2.5"} {
+			t.Setenv(MaxConcurrentWorkersEnvironment, value)
+			if _, err := MaxConcurrentWorkers(); err == nil {
+				t.Fatalf("MaxConcurrentWorkers(%q) unexpectedly succeeded", value)
+			}
+		}
+	})
+}

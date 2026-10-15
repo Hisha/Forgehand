@@ -42,6 +42,12 @@ type Execution struct {
 	TotalSteps   int     `json:"total_steps"`
 	CanceledAt   *string `json:"canceled_at,omitempty"`
 	CancelReason *string `json:"cancel_reason,omitempty"`
+	// QueueSeq is the durable FIFO sequence assigned on enqueue. It is retained
+	// after dispatch.
+	QueueSeq *int64 `json:"queue_seq,omitempty"`
+	// QueuePosition is the 1-based position among currently QUEUED executions;
+	// it is 0 when the execution is not queued.
+	QueuePosition int `json:"queue_position,omitempty"`
 }
 
 // Interaction is a durable worker-to-human question. Answer is populated only
@@ -83,6 +89,11 @@ type Response struct {
 	AnswerApplied bool                   `json:"answer_applied,omitempty"`
 	Canceled      bool                   `json:"canceled,omitempty"`
 	CancelOutcome string                 `json:"cancel_outcome,omitempty"`
+	// WorkerCapacity, ActiveWorkers, and QueuedExecutions report daemon
+	// scheduling state for the status command.
+	WorkerCapacity   int `json:"worker_capacity,omitempty"`
+	ActiveWorkers    int `json:"active_workers,omitempty"`
+	QueuedExecutions int `json:"queued_executions,omitempty"`
 }
 
 type Project struct {
@@ -372,11 +383,11 @@ type InvestigationResponse struct {
 }
 
 type SessionEvent struct {
-	ID          int64         `json:"id"`
-	SessionID   int64         `json:"session_id"`
-	ExecutionID *int64        `json:"execution_id,omitempty"`
-	Type        string        `json:"type"`
-	Timestamp   string        `json:"timestamp"`
+	ID          int64          `json:"id"`
+	SessionID   int64          `json:"session_id"`
+	ExecutionID *int64         `json:"execution_id,omitempty"`
+	Type        string         `json:"type"`
+	Timestamp   string         `json:"timestamp"`
 	Details     map[string]any `json:"details,omitempty"`
 }
 

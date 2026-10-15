@@ -11,6 +11,8 @@ import (
 const (
 	EventTypeSessionCreated             = "session.created"
 	EventTypeExecutionStarted           = "execution.started"
+	EventTypeExecutionQueued            = "execution.queued"
+	EventTypeExecutionDispatched        = "execution.dispatched"
 	EventTypeExecutionCheckpoint        = "execution.checkpoint"
 	EventTypeExecutionCompleted         = "execution.completed"
 	EventTypeExecutionInterrupted       = "execution.interrupted"

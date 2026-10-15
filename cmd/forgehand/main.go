@@ -78,6 +78,9 @@ func status() error {
 	fmt.Printf("Daemon: %s\n", response.Message)
 	fmt.Printf("Version: %s\n", response.Version)
 	fmt.Printf("PID: %d\n", response.PID)
+	fmt.Printf("Worker capacity: %d\n", response.WorkerCapacity)
+	fmt.Printf("Active workers: %d\n", response.ActiveWorkers)
+	fmt.Printf("Queued executions: %d\n", response.QueuedExecutions)
 
 	return nil
 }
@@ -262,13 +265,17 @@ func runSession(sessionID int64) error {
 		return fmt.Errorf("daemon returned no execution")
 	}
 
-	fmt.Printf("Started session %d\n", response.Execution.SessionID)
+	fmt.Printf("Queued session %d\n", response.Execution.SessionID)
 	fmt.Printf("Execution: %d\n", response.Execution.ID)
+	fmt.Printf("Status: %s\n", response.Execution.Status)
 	fmt.Printf(
 		"Progress: %d/%d\n",
 		response.Execution.CurrentStep,
 		response.Execution.TotalSteps,
 	)
+	if response.Execution.QueuePosition > 0 {
+		fmt.Printf("Queue position: %d\n", response.Execution.QueuePosition)
+	}
 
 	return nil
 }
@@ -286,13 +293,17 @@ func resumeSession(sessionID int64) error {
 		return fmt.Errorf("daemon returned no execution")
 	}
 
-	fmt.Printf("Resumed session %d\n", response.Execution.SessionID)
+	fmt.Printf("Queued resume for session %d\n", response.Execution.SessionID)
 	fmt.Printf("Execution: %d\n", response.Execution.ID)
+	fmt.Printf("Status: %s\n", response.Execution.Status)
 	fmt.Printf(
 		"Progress: %d/%d\n",
 		response.Execution.CurrentStep,
 		response.Execution.TotalSteps,
 	)
+	if response.Execution.QueuePosition > 0 {
+		fmt.Printf("Queue position: %d\n", response.Execution.QueuePosition)
+	}
 
 	return nil
 }
@@ -380,6 +391,9 @@ func sessionStatus(sessionID int64) error {
 		response.Execution.CurrentStep,
 		response.Execution.TotalSteps,
 	)
+	if response.Execution.QueuePosition > 0 {
+		fmt.Printf("Queue position: %d\n", response.Execution.QueuePosition)
+	}
 
 	if response.Execution.CanceledAt != nil {
 		fmt.Printf("Canceled: %s\n", *response.Execution.CanceledAt)
@@ -1239,7 +1253,6 @@ func listProjects() error {
 	return nil
 }
 
-
 func sessionEvents(sessionID int64, afterEventID int64, limit int) error {
 	response, err := request(ipc.Request{
 		Command:      "session-events",
@@ -1318,8 +1331,8 @@ func usage() {
 	fmt.Println("  investigate <id> --component <identity> [--analysis <id>] [--format text|json] [--limit <n>]  Investigate component")
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
-	fmt.Println("  session run <id>                Run a session")
-	fmt.Println("  session resume <id>             Resume an interrupted or answered waiting session")
+	fmt.Println("  session run <id>                Queue a session for a worker")
+	fmt.Println("  session resume <id>             Queue an interrupted or answered waiting session")
 	fmt.Println("  session status <id>             Show a session's execution progress")
 	fmt.Println("  session cancel <id> [--reason \"...\"]  Permanently cancel a session")
 	fmt.Println("  session questions <id>          List pending questions for a session")

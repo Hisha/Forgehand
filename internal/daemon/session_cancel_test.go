@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Hisha/Forgehand/internal/ipc"
 	"github.com/Hisha/Forgehand/internal/state"
@@ -290,6 +291,7 @@ func TestSessionCancelStopsRunningWorker(t *testing.T) {
 	if !run.OK || run.Execution == nil {
 		t.Fatalf("session-run = %#v", run)
 	}
+	waitForExecutionStatus(t, db, sessionID, state.ExecutionStatusRunning, 6*time.Second)
 	if workers.ownerCount() != 1 {
 		t.Fatalf("owner count = %d, want 1", workers.ownerCount())
 	}
