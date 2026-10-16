@@ -47,7 +47,11 @@ func buildModelRuntime(providerConfig config.ProviderConfig, db *state.Database)
 		providerConfig.Timeout,
 		providerConfig.MaxTokens,
 	)
-	runtime := newModelRuntime(client, repocontext.NewBuilder(db))
+	builder := repocontext.NewBuilder(db)
+	if providerConfig.MaxContextChars > 0 {
+		builder = builder.WithLimits(0, 0, providerConfig.MaxContextChars)
+	}
+	runtime := newModelRuntime(client, builder)
 	runtime.defaultModel = providerConfig.Model
 	return runtime
 }

@@ -60,6 +60,8 @@ These are deterministic persisted observations and retrieval tools, not a semant
 
 Introduce a real Forgehand-owned investigator that consumes evidence and repository knowledge, uses a replaceable model provider, requests targeted tools or human clarification as needed, and produces a falsifiable, evidence-backed diagnosis **without editing code**.
 
+**Status:** not complete. A first prelude slice exists: **Milestone 3A** adds a bounded, read-only, non-streaming model-backed *coding* worker (OpenAI-compatible provider, durable model results, `session start --project --task`, `session result`) executing through the existing dispatcher (see `docs/MILESTONE-3A-MODEL-WORKER.md`). It is implemented and tested, but it is not the evidence-backed investigator described above and does not edit code.
+
 **Exit condition:** demonstrate better, more efficient investigations than the same model exploring from scratch, with durable sessions and provenance. A deterministic `investigate` command alone does not meet this criterion.
 
 ## Phase 5 — Implementation and verification (PLANNED)

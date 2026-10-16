@@ -53,7 +53,7 @@
 | Capability | Status | Evidence | Notes |
 |---|---|---|---|
 | Independent TUI (client of engine) | N | No TUI implementation; CLI is simple command tool | Not present. |
-| Model provider interfaces/adapters | N | No provider code | Not implemented. |
+| Model provider interfaces/adapters | I | `internal/provider/provider.go` | Single OpenAI-compatible adapter (non-streaming) for Milestone 3A; no routing/multiple providers, no streaming/tool calls. |
 | Real AI investigator worker | N | Only deterministic investigation context/query | Deterministic `investigate` is read-only evidence assembly; not an AI worker. |
 | Coding worker / planner / verifier roles | N | None | Planned (Phase 5). |
 | Secure execution isolation / sandboxing | N | Template non-root but execution identity is service account | Non-root is safety invariant, not isolation/sandbox. |
@@ -65,8 +65,10 @@
 
 | Capability | Status | Evidence | Notes |
 |---|---|---|---|
-| Model provider (OpenAI-compatible) | I | `internal/provider/provider.go`, config `FORGEHAND_PROVIDER_*` | Non-streaming chat completions, timeouts, context cancellation, error handling with non-200 body summary (no credentials logged). |
-| Bounded repository context builder | I | `internal/repocontext/builder.go` | Deterministic selection with denylist, per-file/total/size limits, read-only via Git blobs; assembles system+user messages with structured response guidance. |
-| Coding session model (schema v13) | I | `internal/state/migrations.go` (v13), `model_results` table, sessions/project/task/kind/provider/model | Migration v13 adds coding session fields and durable model_results with unique execution_id; event `model.response.completed`. |
-| Model worker and dispatcher branching | I | `internal/daemon/model_worker.go`, `internal/daemon/dispatcher.go`, kind from execution | Single scheduling path: coding executions branch to model worker, others to fake worker; completion via `CompleteModelExecution` is atomic (result + completion event + terminal state). |
-| IPC/CLI for coding sessions | I | `internal/ipc/protocol.go` (Task/Model/Result), `cmd/forgehand/main.go`, daemon handlers (`session-start` coding branch, `session-result`) | `session start --project <id> --task "..." [--model <name>]`, `session status` includes new fields, `session result <id>` returns model result; backward compatible with existing fake sessions. |
+| Model provider (OpenAI-compatible) | I | `internal/provider/provider.go`, config `FORGEHAND_PROVIDER_*` | Non-streaming chat completions, timeouts, context cancellation, error handling with non-200 body summary (no credentials logged). Regression tests in `internal/provider/provider_test.go`. |
+| Bounded repository context builder | I | `internal/repocontext/builder.go` | Deterministic selection with denylist, per-file/file-count limits and a configurable prompt character budget (`FORGEHAND_PROVIDER_MAX_CONTEXT_CHARS`); reads the inventoried commit's blobs (never the dirty working tree); assembles untrusted system+user messages with structured response guidance. Tests in `internal/repocontext/content_test.go`. |
+| Coding session model (schema v13) | I | `internal/state/migrations.go` (v13), `model_results` table, sessions/project/task/kind/provider/model | Migration v13 adds coding session fields and durable model_results with unique execution_id; event `model.response.completed`. Durable completion tested in `internal/state/model_results_test.go`. |
+| Model worker and dispatcher branching | I | `internal/daemon/model_worker.go`, `internal/daemon/dispatcher.go`, kind from execution | Single scheduling path: coding executions branch to model worker, others to fake worker; completion via `CompleteModelExecution` is atomic (result + completion event + terminal state). Integration tests in `internal/daemon/model_worker_test.go`. |
+| IPC/CLI for coding sessions | I | `internal/ipc/protocol.go` (Task/Model/Result), `cmd/forgehand/main.go`, daemon handlers (`session-start` coding branch, `session-result`) | `session start --project <id> --task "..." [--model <name>]`, `session status` shows project/kind/task/provider/model, `session result <id>` returns model result; backward compatible with existing fake sessions. Tests in `cmd/forgehand/main_coding_test.go`. |
+
+Milestone 3A (see `docs/MILESTONE-3A-MODEL-WORKER.md`) is implemented and verified: `go test -count=1 ./...`, `go test -race -count=1 ./internal/state/... ./internal/daemon/...`, `go vet ./...`, and `go build ./...` pass, and disposable end-to-end acceptance (success, restart persistence, failing-provider queue continuation, in-flight cancellation with no commit) passed against an isolated daemon and a mock OpenAI-compatible provider. All repository access is read-only; no real local model endpoint was available for the optional scenario.

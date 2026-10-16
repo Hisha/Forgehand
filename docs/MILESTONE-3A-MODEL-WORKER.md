@@ -6,12 +6,12 @@ Milestone 3A introduces the first real model-backed AI coding worker that execut
 
 - Exactly one scheduling path: new and resumed coding sessions go through the dispatcher (no second worker-management system). The fake worker remains for deterministic tests.
 - Provider: OpenAI-compatible `POST /v1/chat/completions`, non-streaming only, standard `net/http`, no external SDK. Must send system+user messages, parse assistant responses, handle non-200, respect context cancellation, enforce timeouts, reject malformed/empty responses, and never log credentials.
-- Repository context must be bounded (limits on file count, per-file size, total size) and skip `.git` internals, binaries, build output, dependency caches, credentials/secrets, large generated files. Repo text is untrusted and must not override system instructions.
+- Repository context must be bounded (limits on file count, per-file size, and a configurable prompt character budget) and skip `.git` internals, binaries, build output, dependency caches, credentials/secrets, large generated files. Repo text is untrusted and must not override system instructions.
 - Session model extended with kind (`fake` or `coding`), associated `project_id`, `task`, and `model`/`provider` metadata.
 - Migration v13 adds columns to `sessions` and `session_executions`, creates `model_results` table with unique constraint on `execution_id`.
 - Execution completion for coding sessions writes the model result in one transaction with execution completion and the `model.response.completed` event (atomic). A failed/canceled model execution must not commit a result after cancellation and must release its worker slot.
 - CLI: `session start --project <id> --task "..."` creates/queues a coding session; existing `session start <title>` still creates a fake session. Add `session status` fields and `session result <id>`. IPC extended with corresponding fields.
-- Config env vars: `FORGEHAND_PROVIDER_BASE_URL`, `FORGEHAND_PROVIDER_MODEL`, `FORGEHAND_PROVIDER_API_KEY`, `FORGEHAND_PROVIDER_TIMEOUT`, `FORGEHAND_PROVIDER_MAX_TOKENS`.
+- Config env vars: `FORGEHAND_PROVIDER_BASE_URL`, `FORGEHAND_PROVIDER_MODEL`, `FORGEHAND_PROVIDER_API_KEY`, `FORGEHAND_PROVIDER_TIMEOUT`, `FORGEHAND_PROVIDER_MAX_TOKENS`, `FORGEHAND_PROVIDER_MAX_CONTEXT_CHARS`.
 - Isolated acceptance: everything under `/tmp`, no modifications to system paths or installed services; only kill exact verified disposable PIDs. No commit/push/install/deploy.
 - Verification commands: `go test -count=1 ./...`, `go test -race -count=1 ./internal/state/... ./internal/daemon/...`, `go vet ./...`, `go build ./...`, `git diff --check`.
 
@@ -27,9 +27,9 @@ Milestone 3A introduces the first real model-backed AI coding worker that execut
 
 ### Repository Context (internal/repocontext)
 
-- Bounded builder using state DB (latest inventory + component observation) and `repository` (Observe, ReadBlob). Read-only.
+- Bounded builder using state DB (latest inventory + component observation) and `repository` (Observe, ReadBlob). Read-only. Content is read from the inventoried commit's blob, never the dirty working tree.
 - Deterministic file selection strategy (documentation category, component evidence files, task-token matching on paths/identities), explicit path denylist (skip `.git`, build outputs, dependencies, caches, binaries, credentials/secrets, large generated files).
-- Enforce per-file size limit, total size limit, max file count. Record warnings/truncation when intelligence is missing or limits hit.
+- Enforce per-file size limit, max file count, and a prompt character budget (`DefaultMaxContextChars`, overridable via `FORGEHAND_PROVIDER_MAX_CONTEXT_CHARS`). Record exclusions/truncation when limits are hit.
 - System instructions must not be overridden by repo text; repo content is untrusted.
 - Output context assembled into `system + user` messages with clear section headers; preferred model response organization (informational): Summary / Relevant Files / Proposed Changes / Risks / Recommended Validation (not enforced as strict JSON). Preserve original model response verbatim.
 
@@ -85,6 +85,7 @@ Add env vars in `internal/config`:
 - `FORGEHAND_PROVIDER_API_KEY` (optional; send as Authorization Bearer if set)
 - `FORGEHAND_PROVIDER_TIMEOUT` (duration or seconds; default reasonable, e.g. 120s)
 - `FORGEHAND_PROVIDER_MAX_TOKENS` (int, default reasonable)
+- `FORGEHAND_PROVIDER_MAX_CONTEXT_CHARS` (optional int; character budget for the assembled repository-context prompt; unset uses the repocontext default)
 Follow existing validation style (absolute paths, format checks). Never log these values.
 
 ### Testing Constraints
@@ -108,3 +109,24 @@ Follow existing validation style (absolute paths, format checks). Never log thes
 ## Verification
 
 Run: `go test -count=1 ./...`, `go test -race -count=1 ./internal/state/... ./internal/daemon/...`, `go vet ./...`, `go build ./...`, `git diff --check`. Also verify acceptance per scenarios with isolated disposable setup.
+
+## Status
+
+Implemented and tested. All repository access remains read-only; no file editing, tool-calling loops, or multiple providers are introduced.
+
+Automated coverage:
+- Provider: `internal/provider/provider_test.go` (success parsing, request model/max_tokens overrides, auth omission, 400/401/500/502 handling without secret leakage, connection refused, timeout, context cancellation, malformed/empty responses).
+- Repository context: `internal/repocontext/content_test.go` (exact committed blob content in the prompt, untrusted system framing, binary/sensitive skipping, committed-blob-not-working-tree, deterministic budget truncation and prioritization).
+- Config: `internal/config/provider_test.go` (unconfigured, explicit values, model required with base URL, invalid values, URL scheme, context budget).
+- State durability: `internal/state/model_results_test.go` (atomic completion, non-running rejection, duplicate rejection, sentinel on missing, survives reopen).
+- Daemon integration: `internal/daemon/model_worker_test.go` (success end-to-end via dispatcher, provider failure releases capacity and queue continues, cancellation leaves no result, late response cannot complete a canceled execution).
+- CLI: `cmd/forgehand/main_coding_test.go` (coding-session start output, coding fields in `session status`, `session result` content, input validation).
+
+Disposable end-to-end acceptance (isolated under `/tmp`, mock OpenAI-compatible server, no `/usr/bin/forgehand` involvement):
+- **A — successful coding task:** session created, queued, dispatched, `model.response.completed`; `session result` returned the model content; the provider received `POST /v1/chat/completions` with `stream=false` and repository file content in the user message.
+- **B — restart persistence:** after a clean daemon restart, the completed session and its result persisted with unchanged content and timestamp.
+- **C — failing provider:** the first execution failed (HTTP 500) with no result, its worker capacity was released, and the queued second execution then completed.
+- **D — cancellation in flight:** canceling a RUNNING model execution left the session/execution CANCELED with no model result and no completion event, and released the worker slot.
+- **E — real local model:** no configured (`FORGEHAND_PROVIDER_BASE_URL`) or discoverable local OpenAI-compatible endpoint was available, so this optional scenario was not exercised (no install/start performed).
+
+Known limitations (intentionally out of scope for 3A): no streaming, tool-calling, retries beyond transport/context, multiple providers/routing, autonomous editing, TUI, or background repository modification; worker ownership is in-memory only and does not survive a daemon restart.

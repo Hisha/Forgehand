@@ -423,6 +423,22 @@ func sessionStatus(sessionID int64) error {
 	fmt.Printf("Title: %s\n", response.Session.Title)
 	fmt.Printf("State: %s\n", response.Session.State)
 
+	if response.Session.ProjectID != nil {
+		fmt.Printf("Project: %d\n", *response.Session.ProjectID)
+	}
+	if response.Session.Kind != "" {
+		fmt.Printf("Kind: %s\n", response.Session.Kind)
+	}
+	if response.Session.Task != "" {
+		fmt.Printf("Task: %s\n", response.Session.Task)
+	}
+	if response.Session.Provider != "" {
+		fmt.Printf("Provider: %s\n", response.Session.Provider)
+	}
+	if response.Session.Model != "" {
+		fmt.Printf("Model: %s\n", response.Session.Model)
+	}
+
 	if response.Execution == nil {
 		fmt.Println("Execution: none")
 		return nil
@@ -1406,7 +1422,9 @@ func startCodingSession(title, task, model string, projectID int64) error {
 	fmt.Printf("Created coding session %d\n", response.Session.ID)
 	fmt.Printf("State: %s\n", response.Session.State)
 	fmt.Printf("Title: %s\n", response.Session.Title)
-	fmt.Printf("Project: %d\n", response.Session.ProjectID)
+	if response.Session.ProjectID != nil {
+		fmt.Printf("Project: %d\n", *response.Session.ProjectID)
+	}
 	fmt.Printf("Task: %s\n", response.Session.Task)
 	fmt.Printf("Kind: %s\n", response.Session.Kind)
 	if response.Session.Provider != "" {

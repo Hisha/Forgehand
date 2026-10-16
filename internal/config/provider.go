@@ -23,6 +23,10 @@ const (
 	ProviderTimeoutEnvironment = "FORGEHAND_PROVIDER_TIMEOUT"
 	// ProviderMaxTokensEnvironment configures the max_tokens request field.
 	ProviderMaxTokensEnvironment = "FORGEHAND_PROVIDER_MAX_TOKENS"
+	// ProviderMaxContextCharsEnvironment configures the character budget for the
+	// assembled repository-context prompt. When unset, the repocontext package
+	// default is used.
+	ProviderMaxContextCharsEnvironment = "FORGEHAND_PROVIDER_MAX_CONTEXT_CHARS"
 
 	// DefaultProviderTimeout is used when no timeout is configured.
 	DefaultProviderTimeout = 120 * time.Second
@@ -37,6 +41,9 @@ type ProviderConfig struct {
 	APIKey    string
 	Timeout   time.Duration
 	MaxTokens int
+	// MaxContextChars bounds the assembled repository-context prompt. Zero means
+	// the repocontext package default applies.
+	MaxContextChars int
 }
 
 // Configured reports whether a provider base URL is set. Without a base URL the
@@ -91,6 +98,24 @@ func Provider() (ProviderConfig, error) {
 			)
 		}
 		config.MaxTokens = maxTokens
+	}
+
+	if configured := strings.TrimSpace(os.Getenv(ProviderMaxContextCharsEnvironment)); configured != "" {
+		maxContextChars, err := strconv.Atoi(configured)
+		if err != nil {
+			return ProviderConfig{}, fmt.Errorf(
+				"parse %s as an integer: %w",
+				ProviderMaxContextCharsEnvironment,
+				err,
+			)
+		}
+		if maxContextChars <= 0 {
+			return ProviderConfig{}, fmt.Errorf(
+				"%s must be positive",
+				ProviderMaxContextCharsEnvironment,
+			)
+		}
+		config.MaxContextChars = maxContextChars
 	}
 
 	if config.Configured() {
