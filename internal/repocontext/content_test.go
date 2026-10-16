@@ -3,6 +3,7 @@ package repocontext
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -12,22 +13,12 @@ import (
 	"github.com/Hisha/Forgehand/internal/state"
 )
 
-func inventoryForTest(repo string) inventory.Result {
-	obs, _ := repository.Observe(context.Background(), repo)
-	paths := []string{"README.md"}
-	res := inventory.Build(context.Background(), repo, obs.HeadCommit, obs.Dirty, paths, inventory.Options{BudgetMB: 1, MaxFiles: 100})
-	return res
-}
-
 func TestBuilderIncludesFileContentInPrompt(t *testing.T) {
 	tmp := t.TempDir()
-	repo := filepath.Join(tmp, "repo")
-	if err := os.MkdirAll(repo, 0755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("# test\nhello world"), 0644); err != nil {
-		t.Fatal(err)
-	}
+	repo := newContextRepository(t, map[string]string{
+		"README.md": "# test\nhello world",
+	})
+
 	obs, err := repository.Observe(context.Background(), repo)
 	if err != nil {
 		t.Fatal(err)
@@ -39,10 +30,7 @@ func TestBuilderIncludesFileContentInPrompt(t *testing.T) {
 	}
 	defer db.Close()
 
-	project, err := db.CreateProject(context.Background(), state.Project{
-		Name:     "test",
-		RootPath: repo,
-	})
+	project, err := db.CreateProject(context.Background(), "test", repo)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -59,7 +47,25 @@ func TestBuilderIncludesFileContentInPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err = db.CreateProjectInventory(context.Background(), project.ID, obs.HeadCommit, obs.HeadCommit, obs.Dirty, 1, inventoryForTest(repo))
+	result, err := inventory.Build(
+		context.Background(),
+		repo,
+		obs.HeadCommit,
+		inventory.DefaultBudget(),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = db.CreateProjectInventory(
+		context.Background(),
+		project.ID,
+		obs.HeadCommit,
+		obs.HeadCommit,
+		obs.Dirty,
+		inventory.EngineVersion,
+		result,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,5 +80,36 @@ func TestBuilderIncludesFileContentInPrompt(t *testing.T) {
 	}
 	if !strings.Contains(ctx.User, "--- BEGIN FILE: README.md") {
 		t.Fatalf("expected file boundary in prompt")
+	}
+}
+
+func newContextRepository(t *testing.T, files map[string]string) string {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "repository")
+	if err := os.Mkdir(root, 0o755); err != nil {
+		t.Fatalf("create repository: %v", err)
+	}
+	runContextGit(t, root, "init")
+	runContextGit(t, root, "config", "user.email", "context@example.invalid")
+	runContextGit(t, root, "config", "user.name", "Context Test")
+	for filePath, content := range files {
+		fullPath := filepath.Join(root, filePath)
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0o755); err != nil {
+			t.Fatalf("create parent for %s: %v", filePath, err)
+		}
+		if err := os.WriteFile(fullPath, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", filePath, err)
+		}
+	}
+	runContextGit(t, root, "add", "--all")
+	runContextGit(t, root, "commit", "-m", "initial")
+	return root
+}
+
+func runContextGit(t *testing.T, root string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git %v: %v\n%s", args, err, output)
 	}
 }
