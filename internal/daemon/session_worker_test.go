@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -136,6 +137,9 @@ func TestFakeWorkerInjectedFailureLeavesNoRunningExecution(t *testing.T) {
 	}
 	if latest.CurrentStep != 2 {
 		t.Fatalf("current step = %d, want 2 (last committed checkpoint)", latest.CurrentStep)
+	}
+	if latest.FailureKind != state.FailureKindWorker || !strings.Contains(latest.FailureReason, "injected execution failure") {
+		t.Fatalf("failure diagnostic = %#v", latest)
 	}
 	if sessionState.State != state.SessionStateFailed {
 		t.Fatalf("session state = %q, want %q", sessionState.State, state.SessionStateFailed)

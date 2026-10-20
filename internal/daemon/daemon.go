@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/Hisha/Forgehand/internal/config"
 	"github.com/Hisha/Forgehand/internal/ipc"
+	"github.com/Hisha/Forgehand/internal/planner"
 	"github.com/Hisha/Forgehand/internal/provider"
 	"github.com/Hisha/Forgehand/internal/repository"
 	"github.com/Hisha/Forgehand/internal/state"
@@ -45,6 +47,7 @@ type executionStore interface {
 	CompleteSessionExecution(ctx context.Context, executionID int64) error
 	InterruptSessionExecution(ctx context.Context, executionID int64) error
 	FailSessionExecution(ctx context.Context, executionID int64) error
+	FailSessionExecutionWithReason(ctx context.Context, executionID int64, failureKind string, failureReason string) error
 	RequestHumanInput(ctx context.Context, executionID int64, question string, contextDetails map[string]any) (state.HumanInteraction, bool, error)
 	SessionExecutionStatus(ctx context.Context, sessionID int64) (state.Session, *state.SessionExecution, error)
 }
@@ -333,13 +336,8 @@ func runConfigured(config Config) error {
 		return err
 	}
 
-	if conn, err := net.Dial("unix", config.SocketPath); err == nil {
-		conn.Close()
-		return fmt.Errorf("Forgehand daemon is already running")
-	}
-
-	if err := os.Remove(config.SocketPath); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove stale socket: %w", err)
+	if err := prepareSocketPath(config.SocketPath); err != nil {
+		return err
 	}
 
 	listener, err := net.Listen("unix", config.SocketPath)
@@ -380,6 +378,9 @@ func runConfigured(config Config) error {
 			"Marked %d orphaned execution(s) as interrupted\n",
 			interrupted,
 		)
+	}
+	if _, err := stateDB.RecoverRunningWorkPlanTasks(ctx); err != nil {
+		return fmt.Errorf("recover interrupted work plan tasks: %w", err)
 	}
 
 	signals := make(chan os.Signal, 1)
@@ -479,6 +480,20 @@ func handleConnection(
 				Message: "invalid request",
 			})
 		}
+		return
+	}
+	if request.ProtocolVersion != 0 && request.ProtocolVersion != ipc.ProtocolVersion {
+		_ = encoder.Encode(ipc.Response{
+			OK:      false,
+			Message: fmt.Sprintf("incompatible IPC protocol: daemon supports %d, client requested %d", ipc.ProtocolVersion, request.ProtocolVersion),
+		})
+		return
+	}
+	if request.Command != "status" && request.ClientBuildIdentity != "" && request.ClientBuildIdentity != version.BuildIdentity() {
+		_ = encoder.Encode(ipc.Response{
+			OK:      false,
+			Message: fmt.Sprintf("incompatible Forgehand build: daemon is %q, client is %q; update or restart the daemon", version.BuildIdentity(), request.ClientBuildIdentity),
+		})
 		return
 	}
 
@@ -826,11 +841,21 @@ func handleConnection(
 			capacity = disp.capacity()
 		}
 
+		executable, _ := os.Executable()
+		if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
+			executable = resolved
+		}
+		socketPath, _ := config.SocketPath()
+		stateDir, _ := config.StateDir()
 		_ = encoder.Encode(ipc.Response{
 			OK:                        true,
 			Message:                   "running",
 			Version:                   version.Version,
+			BuildIdentity:             version.BuildIdentity(),
 			PID:                       os.Getpid(),
+			Executable:                executable,
+			SocketPath:                socketPath,
+			StateDir:                  stateDir,
 			WorkerCapacity:            capacity,
 			ActiveWorkers:             workers.ownerCount(),
 			QueuedExecutions:          queued,
@@ -838,6 +863,25 @@ func handleConnection(
 		})
 
 	case "session-start":
+		if request.Kind == "work-plan" {
+			if request.ProjectID <= 0 || strings.TrimSpace(request.Task) == "" {
+				_ = encoder.Encode(ipc.Response{OK: false, Message: "a work plan requires a project id and request"})
+				return
+			}
+			interpreted := planner.Interpret(request.Task)
+			spec := state.WorkPlanSpec{Objective: interpreted.Objective, OriginalRequest: interpreted.Original, ReadOnly: interpreted.ReadOnly, Clarification: interpreted.Clarification}
+			for _, task := range interpreted.Tasks {
+				spec.Tasks = append(spec.Tasks, state.WorkPlanTaskSpec{Key: task.Key, Objective: task.Objective, ExecutionMethod: task.Method, Dependencies: task.DependsOn, Inputs: task.Inputs, RequiredEvidence: task.RequiredEvidence, CompletionCriteria: task.CompletionCriteria, RequiresModel: task.RequiresModel, BlockedReason: task.BlockedReason})
+			}
+			session, plan, err := stateDB.CreateWorkPlanSession(context.Background(), codingSessionTitle(request.Title, request.Task), request.ProjectID, spec)
+			if err != nil {
+				_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+				return
+			}
+			encodedSession, encodedPlan := sessionToIPC(session), workPlanToIPC(plan)
+			_ = encoder.Encode(ipc.Response{OK: true, Session: &encodedSession, WorkPlan: &encodedPlan})
+			return
+		}
 		if request.Task != "" || request.ProjectID > 0 {
 			if request.ProjectID <= 0 {
 				_ = encoder.Encode(ipc.Response{
@@ -904,10 +948,22 @@ func handleConnection(
 		})
 
 	case "session-run":
+		totalSteps := fakeWorkerSteps
+		if session, getErr := stateDB.GetSession(context.Background(), request.SessionID); getErr == nil && session.Kind == "work-plan" {
+			plan, planErr := stateDB.GetWorkPlanBySession(context.Background(), request.SessionID)
+			if planErr != nil || plan == nil {
+				if planErr == nil {
+					planErr = fmt.Errorf("session %d has no work plan", request.SessionID)
+				}
+				_ = encoder.Encode(ipc.Response{OK: false, Message: planErr.Error()})
+				return
+			}
+			totalSteps = len(plan.Tasks)
+		}
 		execution, err := stateDB.QueueSessionExecution(
 			context.Background(),
 			request.SessionID,
-			fakeWorkerSteps,
+			totalSteps,
 			request.Resources...,
 		)
 		if err != nil {
@@ -1051,6 +1107,11 @@ func handleConnection(
 			})
 			return
 		}
+		// SessionExecutionStatus preserves the historical lightweight query;
+		// load the full session metadata needed by typed workers and clients.
+		if fullSession, fullErr := stateDB.GetSession(context.Background(), request.SessionID); fullErr == nil {
+			session = fullSession
+		}
 
 		encodedSession := sessionToIPC(session)
 		response := ipc.Response{
@@ -1094,6 +1155,10 @@ func handleConnection(
 				encodedEvidence := investigationEvidenceToIPC(evidence)
 				response.Evidence = &encodedEvidence
 			}
+		}
+		if plan, err := stateDB.GetWorkPlanBySession(context.Background(), session.ID); err == nil && plan != nil {
+			encodedPlan := workPlanToIPC(*plan)
+			response.WorkPlan = &encodedPlan
 		}
 
 		_ = encoder.Encode(response)
@@ -1766,17 +1831,19 @@ func launchExecutionWorker(
 					"forgehand: execution %d is a coding execution but no provider is configured\n",
 					execution.ID,
 				)
-				failExecution(stateDB, execution.ID)
+				failExecutionWithReason(stateDB, execution.ID, state.FailureKindProvider, "provider is not configured")
 			} else {
 				model.runModelWorker(workerCtx, stateDB, execution)
 			}
 		case "investigation":
 			if model == nil {
 				fmt.Fprintf(os.Stderr, "forgehand: execution %d is an investigation but no provider is configured\n", execution.ID)
-				failExecution(stateDB, execution.ID)
+				failExecutionWithReason(stateDB, execution.ID, state.FailureKindProvider, "provider is not configured")
 			} else {
 				model.runInvestigationWorker(workerCtx, stateDB, execution)
 			}
+		case "work-plan":
+			runWorkPlanWorker(workerCtx, stateDB, execution)
 		case "task":
 			if task == nil {
 				fmt.Fprintf(
@@ -1784,7 +1851,7 @@ func launchExecutionWorker(
 					"forgehand: execution %d is a task execution but no provider is configured\n",
 					execution.ID,
 				)
-				failExecution(stateDB, execution.ID)
+				failExecutionWithReason(stateDB, execution.ID, state.FailureKindProvider, "provider is not configured")
 			} else {
 				task.runTaskWorker(workerCtx, stateDB, execution)
 			}
@@ -1828,13 +1895,27 @@ func annotateResourceBlocks(workers *workerGroup, execution *ipc.Execution) {
 	}
 }
 
+func workPlanToIPC(plan state.WorkPlan) ipc.WorkPlan {
+	out := ipc.WorkPlan{ID: plan.ID, ProjectID: plan.ProjectID, SessionID: plan.SessionID, Objective: plan.Objective, OriginalRequest: plan.OriginalRequest, ReadOnly: plan.ReadOnly, Status: plan.Status, Clarification: plan.Clarification, CommitHash: plan.CommitHash}
+	for _, task := range plan.Tasks {
+		encoded := ipc.WorkPlanTask{ID: task.ID, Key: task.Key, Position: task.Position, Objective: task.Objective, ExecutionMethod: task.ExecutionMethod, Dependencies: append([]string(nil), task.Dependencies...), RequiredEvidence: task.RequiredEvidence, CompletionCriteria: task.CompletionCriteria, Status: task.Status, RequiresModel: task.RequiresModel, Result: task.Result, BlockedReason: task.BlockedReason, FailureReason: task.FailureReason}
+		for _, evidence := range task.Evidence {
+			encoded.Evidence = append(encoded.Evidence, ipc.WorkEvidence{Kind: evidence.Kind, Path: evidence.Path, BlobHash: evidence.BlobHash, Line: evidence.Line, EndLine: evidence.EndLine, Excerpt: evidence.Excerpt, Detail: evidence.Detail})
+		}
+		out.Tasks = append(out.Tasks, encoded)
+	}
+	return out
+}
+
 func executionToIPC(execution state.SessionExecution) ipc.Execution {
 	encoded := ipc.Execution{
-		ID:          execution.ID,
-		SessionID:   execution.SessionID,
-		Status:      execution.Status,
-		CurrentStep: execution.CurrentStep,
-		TotalSteps:  execution.TotalSteps,
+		ID:            execution.ID,
+		SessionID:     execution.SessionID,
+		Status:        execution.Status,
+		CurrentStep:   execution.CurrentStep,
+		TotalSteps:    execution.TotalSteps,
+		FailureKind:   execution.FailureKind,
+		FailureReason: execution.FailureReason,
 	}
 	if execution.CanceledAt != nil {
 		canceledAt := execution.CanceledAt.UTC().Format(time.RFC3339Nano)
@@ -1975,7 +2056,7 @@ func runFakeWorkerWithPause(
 				step,
 				err,
 			)
-			handleWorkerStop(store, execution, ctx)
+			handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, fmt.Sprintf("advance execution step %d: %v", step, err))
 			return
 		}
 
@@ -2006,7 +2087,7 @@ func runFakeWorkerWithPause(
 			execution.ID,
 			err,
 		)
-		handleWorkerStop(store, execution, ctx)
+		handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, "complete execution: "+err.Error())
 		return
 	}
 
@@ -2022,6 +2103,22 @@ func handleWorkerStop(
 	store executionStore,
 	execution state.SessionExecution,
 	ctx context.Context,
+) {
+	handleWorkerStopWithFailure(
+		store,
+		execution,
+		ctx,
+		state.FailureKindWorker,
+		"worker failed without a more specific diagnostic",
+	)
+}
+
+func handleWorkerStopWithFailure(
+	store executionStore,
+	execution state.SessionExecution,
+	ctx context.Context,
+	failureKind string,
+	failureReason string,
 ) {
 	_, latest, err := store.SessionExecutionStatus(
 		context.Background(),
@@ -2045,7 +2142,7 @@ func handleWorkerStop(
 		if ctx.Err() != nil {
 			interruptExecution(store, execution.ID)
 		} else {
-			failExecution(store, execution.ID)
+			failExecutionWithReason(store, execution.ID, failureKind, failureReason)
 		}
 	default:
 		// CANCELED, COMPLETED, FAILED, INTERRUPTED, or WAITING_FOR_USER are
@@ -2087,7 +2184,7 @@ func requestHumanInput(
 			execution.ID,
 			err,
 		)
-		handleWorkerStop(store, execution, ctx)
+		handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, "request human input: "+err.Error())
 		return
 	}
 
@@ -2128,9 +2225,25 @@ func interruptExecution(store executionStore, executionID int64) {
 // failExecution records a terminal execution failure, preserving the last
 // committed checkpoint rather than leaving the execution in RUNNING.
 func failExecution(store executionStore, executionID int64) {
-	if err := store.FailSessionExecution(
+	failExecutionWithReason(
+		store,
+		executionID,
+		state.FailureKindWorker,
+		"worker failed without a more specific diagnostic",
+	)
+}
+
+func failExecutionWithReason(
+	store executionStore,
+	executionID int64,
+	failureKind string,
+	failureReason string,
+) {
+	if err := store.FailSessionExecutionWithReason(
 		context.Background(),
 		executionID,
+		failureKind,
+		failureReason,
 	); err != nil {
 		fmt.Fprintf(
 			os.Stderr,

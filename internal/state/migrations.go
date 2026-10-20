@@ -352,6 +352,60 @@ CREATE TABLE execution_resources (
 );
 `,
 	},
+	{
+		version: 17,
+		sql: `
+ALTER TABLE session_executions ADD COLUMN failure_kind TEXT;
+ALTER TABLE session_executions ADD COLUMN failure_reason TEXT;
+`,
+	},
+	{
+		version: 18,
+		sql: `
+CREATE TABLE work_plans (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	project_id INTEGER NOT NULL,
+	session_id INTEGER NOT NULL UNIQUE,
+	objective TEXT NOT NULL,
+	original_request TEXT NOT NULL,
+	read_only INTEGER NOT NULL DEFAULT 1,
+	status TEXT NOT NULL,
+	clarification TEXT NOT NULL DEFAULT '',
+	commit_hash TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	FOREIGN KEY(project_id) REFERENCES projects(id),
+	FOREIGN KEY(session_id) REFERENCES sessions(id)
+);
+
+CREATE TABLE work_plan_tasks (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	plan_id INTEGER NOT NULL,
+	task_key TEXT NOT NULL,
+	position INTEGER NOT NULL,
+	objective TEXT NOT NULL,
+	execution_method TEXT NOT NULL,
+	dependencies_json TEXT NOT NULL DEFAULT '[]',
+	inputs_json TEXT NOT NULL DEFAULT '{}',
+	required_evidence TEXT NOT NULL,
+	completion_criteria TEXT NOT NULL,
+	status TEXT NOT NULL,
+	requires_model INTEGER NOT NULL DEFAULT 0,
+	result TEXT NOT NULL DEFAULT '',
+	evidence_json TEXT NOT NULL DEFAULT '[]',
+	blocked_reason TEXT NOT NULL DEFAULT '',
+	failure_reason TEXT NOT NULL DEFAULT '',
+	started_at TEXT,
+	completed_at TEXT,
+	FOREIGN KEY(plan_id) REFERENCES work_plans(id),
+	UNIQUE(plan_id, task_key),
+	UNIQUE(plan_id, position)
+);
+
+CREATE INDEX idx_work_plan_tasks_plan_position
+ON work_plan_tasks(plan_id, position);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

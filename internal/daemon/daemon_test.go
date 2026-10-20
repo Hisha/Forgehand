@@ -1,10 +1,58 @@
 package daemon
 
 import (
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestPrepareSocketPathRemovesOnlyOwnedStaleSocket(t *testing.T) {
+	dir := shortSocketTestDir(t)
+	path := filepath.Join(dir, "stale.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareSocketPath(path); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("stale socket remains: %v", err)
+	}
+}
+
+func TestPrepareSocketPathRefusesNonSocket(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "forgehand.sock")
+	if err := os.WriteFile(path, []byte("do not delete"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := prepareSocketPath(path); err == nil || !strings.Contains(err.Error(), "refusing to remove") {
+		t.Fatalf("error = %v", err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != "do not delete" {
+		t.Fatalf("file changed: %q %v", data, err)
+	}
+}
+
+func TestPrepareSocketPathRefusesActiveSocket(t *testing.T) {
+	path := filepath.Join(shortSocketTestDir(t), "active.sock")
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	if err := prepareSocketPath(path); err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("error = %v", err)
+	}
+	if _, err := os.Lstat(path); err != nil {
+		t.Fatalf("active socket removed: %v", err)
+	}
+}
 
 func TestSocketPathUsesXDGRuntimeDir(t *testing.T) {
 	temp := shortSocketTestDir(t)

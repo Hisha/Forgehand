@@ -114,6 +114,26 @@ func TestSessionStatusPrintsCodingFields(t *testing.T) {
 	}
 }
 
+func TestSessionStatusPrintsFailureDiagnostic(t *testing.T) {
+	startFakeDaemonSocket(t, func(request ipc.Request) ipc.Response {
+		return ipc.Response{
+			OK:        true,
+			Session:   &ipc.Session{ID: 3, Title: "failed investigation", State: "FAILED", Kind: "investigation"},
+			Execution: &ipc.Execution{ID: 3, Status: "FAILED", TotalSteps: 5, FailureKind: "repository_context", FailureReason: "no readable committed source evidence"},
+		}
+	})
+	output := captureStdout(t, func() {
+		if err := sessionStatus(3); err != nil {
+			t.Fatal(err)
+		}
+	})
+	for _, want := range []string{"Failure kind: repository_context", "Failure reason: no readable committed source evidence"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("status output missing %q:\n%s", want, output)
+		}
+	}
+}
+
 func TestSessionResultPrintsContent(t *testing.T) {
 	startFakeDaemonSocket(t, func(request ipc.Request) ipc.Response {
 		if request.Command != "session-result" || request.SessionID != 4 {

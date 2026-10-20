@@ -74,6 +74,39 @@ func TestRequestUsesConfiguredSocketPath(t *testing.T) {
 	}
 }
 
+func TestRequestRejectsOlderDaemonWithoutProtocolIdentity(t *testing.T) {
+	dir, err := os.MkdirTemp(".", ".fh-cli-old-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(abs) })
+	socketPath := filepath.Join(abs, "forgehand.sock")
+	t.Setenv("FORGEHAND_SOCKET_PATH", socketPath)
+	listener, err := net.Listen("unix", socketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	go func() {
+		conn, acceptErr := listener.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		var ignored map[string]any
+		_ = json.NewDecoder(conn).Decode(&ignored)
+		_, _ = io.WriteString(conn, `{"ok":true,"message":"running","version":"old"}`+"\n")
+	}()
+	_, err = request(ipc.Request{Command: "status"})
+	if err == nil || !strings.Contains(err.Error(), "incompatible daemon IPC protocol 0") {
+		t.Fatalf("request error = %v", err)
+	}
+}
+
 func TestFormatProjectDiscovery(t *testing.T) {
 	result := ipc.ProjectDiscovery{
 		ObservationID: 7,

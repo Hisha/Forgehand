@@ -10,13 +10,14 @@
 | Capability | Status | Evidence | Notes |
 |---|---|---|---|
 | Go CLI (`forgehand`) | I | `cmd/forgehand/main.go`, `cmd/forgehand/*.go` | Commands: project, inspect, query, investigate, status, session, sessions; CLI tests exist. |
-| Unix domain socket IPC | I | `internal/ipc/protocol.go`, daemon accepts/encodes JSON | Protocol defined; request/response types exist. |
+| Unix domain socket IPC | I | `internal/ipc/protocol.go`, daemon accepts/encodes JSON | Versioned protocol; the CLI/TUI rejects incompatible daemons. |
 | Daemon (long-running) | I | `internal/daemon/daemon.go` | Runs, handles commands, manages workers, graceful SIGTERM, recovers ownership. |
 | Non-root enforcement | I | `internal/daemon/daemon.go:55-66` (`TestRootDaemonRefusalOccursBeforeFilesystemChanges`) | Refuses real/effective UID 0 before filesystem changes. |
 | Socket/ownership locking | I | `internal/daemon/ownership_linux.go`, `internal/daemon/daemon_integration_test.go` | Single-daemon via advisory lock on state dir; rejects duplicates; recovers after crash. |
 | SQLite persistence | I | `internal/state/database.go`, migrations v1-12 | Migrations tested; foreign keys enabled. |
 | System service template (systemd) | I | `packaging/systemd/forgehand@.service`, `internal/config/*systemd*` | Template provided; config/systemd validation/tests. |
 | Linux installer (Go) | I | `packaging/linux/installer/*.go`, tests | Commands install/upgrade/status/uninstall; wrapper `install.sh`; packaged `forgehand-installer` binary present. |
+| Linux user service | I | `internal/service`, `forgehand service ...`, `docs/USER-SERVICE.md` | Unprivileged install/update/uninstall/start/stop/restart/status; preserves state and refuses unmanaged unit overwrite. |
 
 ## 2. Git Projects & Repository State
 | Capability | Status | Evidence | Notes |
@@ -43,7 +44,7 @@
 | Interrupt running executions on crash/start | I | `InterruptRunningExecutions`, daemon startup checks previous run; integration `TestDaemonPreservesExistingSessionRecovery` | Marks orphaned RUNNING executions as INTERRUPTED and sessions to INTERRUPTED on unclean shutdown detection. |
 | Multi-session management | I | Sessions table, durable FIFO queue, `internal/daemon/dispatcher.go`, `internal/daemon/dispatcher_test.go` | Dispatcher schedules multiple sessions across bounded worker capacity (default 2); capacity/FIFO verified by unit and isolated E2E tests. |
 | Bounded worker concurrency / FIFO queue | I | `internal/state/queue.go`, migration v12, `internal/daemon/dispatcher.go`, `FORGEHAND_MAX_CONCURRENT_WORKERS`, `docs/MILESTONE-2F-WORKER-SCHEDULING.md` | Durable QUEUED state with monotonic `queue_seq`; single dispatcher enforces max concurrent workers (default 2, env-configurable, min 1); FIFO dispatch; wake on enqueue/completion; queue positions reported in `status`/CLI. |
-| Detach/reattach client | N | No client detach/reconnect event stream/state beyond process disconnect | IPC is request-response over Unix socket; no session attachment tracking or event subscription shown. |
+| Detach/reattach client | I | `internal/tui`, persistent daemon sessions | TUI exits independently and reopens durable sessions; status uses polling because IPC has no event stream. |
 | WAITING_FOR_USER / human input | I | `internal/state/interactions.go`, migration v10, `internal/daemon/daemon.go`, CLI `session questions`/`session answer`, `docs/MILESTONE-2D-HUMAN-INTERACTION.md` | Durable pending question; atomic RUNNING->WAITING_FOR_USER; idempotent request/answer; resume after answer preserving checkpoint; survives graceful and unclean restart without auto-resume. |
 | Explicit session cancellation | I | `internal/state/executions.go` (`CancelSessionExecution`), migration v11, daemon `session-cancel`, CLI `session cancel`, `docs/MILESTONE-2E-SESSION-LIFECYCLE.md` | Terminal CANCELED from RUNNING/WAITING_FOR_USER/INTERRUPTED; idempotent; rejects COMPLETED/FAILED; atomic event; daemon-local worker ownership stops live workers safely; survives restart. |
 | Safe scheduling checkpoints | I | Step-based checkpointing in fake worker; dispatcher (2F) start/capacity/FIFO; resource claims (2G) in `internal/state/queue.go`, `internal/daemon/daemon.go` worker group, migration v16, `docs/MILESTONE-2G-RESOURCE-SCHEDULING.md` | Checkpoints at step boundaries; queued executions declare exclusive named resources; all-or-nothing acquisition at dispatch; FIFO among eligible with skip-ahead past blocked work; release on completion/failure/cancel/human-wait; no stale ownership after restart. No priority policy (out of scope). |
@@ -52,7 +53,7 @@
 ## 5. Workers, TUI, Providers, AI Investigation (later phases)
 | Capability | Status | Evidence | Notes |
 |---|---|---|---|
-| Independent TUI (client of engine) | N | No TUI implementation; CLI is simple command tool | Not present. |
+| Independent TUI (client of engine) | I | `internal/tui`, `forgehand`/`forgehand tui` | Bubble Tea client lists/selects projects and sessions, registers repositories, starts investigations, polls progress, and renders findings/evidence. |
 | Model provider interfaces/adapters | I | `internal/provider/provider.go` | Single OpenAI-compatible adapter (non-streaming) for Milestone 3A; no routing/multiple providers, no streaming/tool calls. |
 | Real AI investigator worker | N | Only deterministic investigation context/query | Deterministic `investigate` is read-only evidence assembly; not an AI worker. |
 | Coding worker / planner / verifier roles | N | None | Planned (Phase 5). |

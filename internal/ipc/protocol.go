@@ -1,8 +1,19 @@
 package ipc
 
-import "encoding/json"
+import (
+	"encoding/json"
+
+	"github.com/Hisha/Forgehand/internal/version"
+)
+
+// ProtocolVersion changes only when CLI/daemon IPC compatibility breaks.
+// It is intentionally independent from the user-facing release version.
+const ProtocolVersion = 1
 
 type Request struct {
+	ProtocolVersion     int    `json:"protocol_version,omitempty"`
+	ClientVersion       string `json:"client_version,omitempty"`
+	ClientBuildIdentity string `json:"client_build_identity,omitempty"`
 	Command             string `json:"command"`
 	Title               string `json:"title,omitempty"`
 	SessionID           int64  `json:"session_id,omitempty"`
@@ -101,13 +112,15 @@ type TaskOperation struct {
 }
 
 type Execution struct {
-	ID           int64   `json:"id"`
-	SessionID    int64   `json:"session_id"`
-	Status       string  `json:"status"`
-	CurrentStep  int     `json:"current_step"`
-	TotalSteps   int     `json:"total_steps"`
-	CanceledAt   *string `json:"canceled_at,omitempty"`
-	CancelReason *string `json:"cancel_reason,omitempty"`
+	ID            int64   `json:"id"`
+	SessionID     int64   `json:"session_id"`
+	Status        string  `json:"status"`
+	CurrentStep   int     `json:"current_step"`
+	TotalSteps    int     `json:"total_steps"`
+	CanceledAt    *string `json:"canceled_at,omitempty"`
+	CancelReason  *string `json:"cancel_reason,omitempty"`
+	FailureKind   string  `json:"failure_kind,omitempty"`
+	FailureReason string  `json:"failure_reason,omitempty"`
 	// QueueSeq is the durable FIFO sequence assigned on enqueue. It is retained
 	// after dispatch.
 	QueueSeq *int64 `json:"queue_seq,omitempty"`
@@ -143,31 +156,37 @@ type Interaction struct {
 }
 
 type Response struct {
-	OK             bool                   `json:"ok"`
-	Message        string                 `json:"message,omitempty"`
-	Version        string                 `json:"version,omitempty"`
-	PID            int                    `json:"pid,omitempty"`
-	Session        *Session               `json:"session,omitempty"`
-	Sessions       []Session              `json:"sessions,omitempty"`
-	Execution      *Execution             `json:"execution,omitempty"`
-	Project        *Project               `json:"project,omitempty"`
-	Projects       []Project              `json:"projects,omitempty"`
-	Snapshot       *RepositorySnapshot    `json:"snapshot,omitempty"`
-	Intake         *ProjectIntake         `json:"intake,omitempty"`
-	Discovery      *ProjectDiscovery      `json:"discovery,omitempty"`
-	Inventory      *Inventory             `json:"inventory,omitempty"`
-	Inspection     *Inspection            `json:"inspection,omitempty"`
-	Analysis       *ComponentAnalysis     `json:"analysis,omitempty"`
-	Query          *QueryResponse         `json:"query,omitempty"`
-	Investigation  *InvestigationResponse `json:"investigation,omitempty"`
-	Events         []SessionEvent         `json:"events,omitempty"`
-	NextEventID    int64                  `json:"next_event_id,omitempty"`
-	Interaction    *Interaction           `json:"interaction,omitempty"`
-	Interactions   []Interaction          `json:"interactions,omitempty"`
-	Result         *ModelResult           `json:"result,omitempty"`
-	Evidence       *InvestigationEvidence `json:"investigation_evidence,omitempty"`
-	TaskRun        *TaskRun               `json:"task_run,omitempty"`
-	TaskOperations []TaskOperation        `json:"task_operations,omitempty"`
+	ProtocolVersion int                    `json:"protocol_version,omitempty"`
+	OK              bool                   `json:"ok"`
+	Message         string                 `json:"message,omitempty"`
+	Version         string                 `json:"version,omitempty"`
+	BuildIdentity   string                 `json:"build_identity,omitempty"`
+	PID             int                    `json:"pid,omitempty"`
+	Executable      string                 `json:"executable,omitempty"`
+	SocketPath      string                 `json:"socket_path,omitempty"`
+	StateDir        string                 `json:"state_dir,omitempty"`
+	Session         *Session               `json:"session,omitempty"`
+	Sessions        []Session              `json:"sessions,omitempty"`
+	Execution       *Execution             `json:"execution,omitempty"`
+	Project         *Project               `json:"project,omitempty"`
+	Projects        []Project              `json:"projects,omitempty"`
+	Snapshot        *RepositorySnapshot    `json:"snapshot,omitempty"`
+	Intake          *ProjectIntake         `json:"intake,omitempty"`
+	Discovery       *ProjectDiscovery      `json:"discovery,omitempty"`
+	Inventory       *Inventory             `json:"inventory,omitempty"`
+	Inspection      *Inspection            `json:"inspection,omitempty"`
+	Analysis        *ComponentAnalysis     `json:"analysis,omitempty"`
+	Query           *QueryResponse         `json:"query,omitempty"`
+	Investigation   *InvestigationResponse `json:"investigation,omitempty"`
+	Events          []SessionEvent         `json:"events,omitempty"`
+	NextEventID     int64                  `json:"next_event_id,omitempty"`
+	Interaction     *Interaction           `json:"interaction,omitempty"`
+	Interactions    []Interaction          `json:"interactions,omitempty"`
+	Result          *ModelResult           `json:"result,omitempty"`
+	Evidence        *InvestigationEvidence `json:"investigation_evidence,omitempty"`
+	TaskRun         *TaskRun               `json:"task_run,omitempty"`
+	TaskOperations  []TaskOperation        `json:"task_operations,omitempty"`
+	WorkPlan        *WorkPlan              `json:"work_plan,omitempty"`
 	// Diff holds a rendered unified diff for the task-diff command. DiffSource
 	// reports whether it is a proposed preview or the applied workspace diff.
 	Diff          string `json:"diff,omitempty"`
@@ -183,6 +202,73 @@ type Response struct {
 	// ResourceBlockedExecutions counts QUEUED executions currently blocked by
 	// an exclusive resource held by a running execution.
 	ResourceBlockedExecutions int `json:"resource_blocked_executions,omitempty"`
+}
+
+// WorkPlan is the durable decomposition of a repository request. Task IDs and
+// keys are stable for the life of the plan; dependencies refer to task keys.
+type WorkPlan struct {
+	ID              int64          `json:"id"`
+	ProjectID       int64          `json:"project_id"`
+	SessionID       int64          `json:"session_id"`
+	Objective       string         `json:"objective"`
+	OriginalRequest string         `json:"original_request"`
+	ReadOnly        bool           `json:"read_only"`
+	Status          string         `json:"status"`
+	Clarification   string         `json:"clarification,omitempty"`
+	CommitHash      string         `json:"commit_hash,omitempty"`
+	Tasks           []WorkPlanTask `json:"tasks"`
+}
+
+type WorkPlanTask struct {
+	ID                 int64          `json:"id"`
+	Key                string         `json:"key"`
+	Position           int            `json:"position"`
+	Objective          string         `json:"objective"`
+	ExecutionMethod    string         `json:"execution_method"`
+	Dependencies       []string       `json:"dependencies,omitempty"`
+	RequiredEvidence   string         `json:"required_evidence"`
+	CompletionCriteria string         `json:"completion_criteria"`
+	Status             string         `json:"status"`
+	RequiresModel      bool           `json:"requires_model"`
+	Result             string         `json:"result,omitempty"`
+	Evidence           []WorkEvidence `json:"evidence,omitempty"`
+	BlockedReason      string         `json:"blocked_reason,omitempty"`
+	FailureReason      string         `json:"failure_reason,omitempty"`
+}
+
+type WorkEvidence struct {
+	Kind     string `json:"kind"`
+	Path     string `json:"path,omitempty"`
+	BlobHash string `json:"blob_hash,omitempty"`
+	Line     int    `json:"line,omitempty"`
+	EndLine  int    `json:"end_line,omitempty"`
+	Excerpt  string `json:"excerpt,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+// MarshalJSON stamps all requests and responses produced by this build. This
+// keeps call sites concise and makes an older daemon (which omits the field)
+// unambiguously detectable by a newer CLI.
+func (r Request) MarshalJSON() ([]byte, error) {
+	type wire Request
+	if r.ProtocolVersion == 0 {
+		r.ProtocolVersion = ProtocolVersion
+	}
+	if r.ClientVersion == "" {
+		r.ClientVersion = version.Version
+	}
+	if r.ClientBuildIdentity == "" {
+		r.ClientBuildIdentity = version.BuildIdentity()
+	}
+	return json.Marshal(wire(r))
+}
+
+func (r Response) MarshalJSON() ([]byte, error) {
+	type wire Response
+	if r.ProtocolVersion == 0 {
+		r.ProtocolVersion = ProtocolVersion
+	}
+	return json.Marshal(wire(r))
 }
 
 type Project struct {

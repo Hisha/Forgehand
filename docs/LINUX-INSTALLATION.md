@@ -1,6 +1,9 @@
 # Linux Installation Guide
 
-Forgehand provides a supported Linux installer for installing, upgrading, checking status, and uninstalling the systemd service. This replaces manual deployment steps while preserving the existing security architecture and application state.
+This guide covers the administrator-managed system service for dedicated or
+multi-user hosts. Normal personal installations should use the unprivileged
+[Linux user-service lifecycle](USER-SERVICE.md). The two service models must not
+target the same state directory simultaneously.
 
 ## Implementation choice
 

@@ -71,25 +71,25 @@ func (r *taskRuntime) runTaskWorker(
 	session, err := store.GetSession(ctx, execution.SessionID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "forgehand: load task session %d: %v\n", execution.SessionID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindWorker, "load task session: "+err.Error())
 		return
 	}
 	if session.ProjectID == nil {
 		fmt.Fprintf(os.Stderr, "forgehand: task session %d has no project\n", session.ID)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindValidation, "task session has no project")
 		return
 	}
 	project, err := store.GetProject(ctx, *session.ProjectID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "forgehand: load project %d: %v\n", *session.ProjectID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindRepositoryContext, "load task project: "+err.Error())
 		return
 	}
 
 	existing, err := store.GetTaskRunByExecution(ctx, execution.ID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "forgehand: load task run for execution %d: %v\n", execution.ID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindWorker, "load task run: "+err.Error())
 		return
 	}
 
@@ -178,7 +178,7 @@ func (r *taskRuntime) executeTask(
 	saved, err := store.PrepareTaskRun(ctx, run)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "forgehand: record task run for execution %d: %v\n", execution.ID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindWorker, "persist task run: "+err.Error())
 		return
 	}
 
@@ -228,7 +228,7 @@ func (r *taskRuntime) executeTask(
 			return store.CompleteTaskExecution(context.Background(), execution.ID, saved)
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "forgehand: complete task execution %d: %v\n", execution.ID, err)
-			handleWorkerStop(store, execution, ctx)
+			handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, "persist completed task: "+err.Error())
 			return
 		}
 		fmt.Printf("Execution %d completed with no changes\n", execution.ID)
@@ -270,7 +270,7 @@ func (r *taskRuntime) executeTask(
 	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "forgehand: request task approval for execution %d: %v\n", execution.ID, err)
-		handleWorkerStop(store, execution, ctx)
+		handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, "request task approval: "+err.Error())
 		return
 	}
 	if created {
@@ -326,7 +326,7 @@ func (r *taskRuntime) resolveProposal(
 			)
 		}); err != nil {
 			fmt.Fprintf(os.Stderr, "forgehand: reject task execution %d: %v\n", execution.ID, err)
-			handleWorkerStop(store, execution, ctx)
+			handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, "persist task rejection: "+err.Error())
 			return
 		}
 		fmt.Printf("Execution %d rejected proposal; no changes applied\n", execution.ID)
@@ -339,7 +339,7 @@ func (r *taskRuntime) resolveProposal(
 			return store.RejectTaskExecution(context.Background(), execution.ID, run, err.Error())
 		}); rerr != nil {
 			fmt.Fprintf(os.Stderr, "forgehand: reject stale task execution %d: %v\n", execution.ID, rerr)
-			handleWorkerStop(store, execution, ctx)
+			handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, "persist stale task rejection: "+rerr.Error())
 		}
 		return
 	}
@@ -382,7 +382,7 @@ func (r *taskRuntime) resolveProposal(
 		return store.CompleteTaskExecution(context.Background(), execution.ID, run)
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "forgehand: complete applied task execution %d: %v\n", execution.ID, err)
-		handleWorkerStop(store, execution, ctx)
+		handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, "persist applied task: "+err.Error())
 		return
 	}
 
@@ -499,7 +499,7 @@ func (r *taskRuntime) finalizeCompleted(
 		return store.CompleteTaskExecution(context.Background(), execution.ID, run)
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "forgehand: finalize completed task execution %d: %v\n", execution.ID, err)
-		handleWorkerStop(store, execution, ctx)
+		handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, "finalize completed task: "+err.Error())
 	}
 }
 
@@ -515,7 +515,7 @@ func (r *taskRuntime) finalizeRejected(
 		return store.RejectTaskExecution(context.Background(), execution.ID, run, run.Error)
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "forgehand: finalize rejected task execution %d: %v\n", execution.ID, err)
-		handleWorkerStop(store, execution, ctx)
+		handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, "finalize rejected task: "+err.Error())
 	}
 }
 
@@ -535,7 +535,7 @@ func failTask(
 		return store.FailTaskExecution(context.Background(), execution.ID, run, cause)
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "forgehand: fail task execution %d: %v\n", execution.ID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindWorker, "persist task failure: "+err.Error())
 	}
 }
 

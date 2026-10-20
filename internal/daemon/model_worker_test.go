@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -251,6 +252,9 @@ func TestModelWorkerProviderFailureFailsAndContinuesQueue(t *testing.T) {
 		}
 		if _, err := db.LatestModelResult(ctx, sessionID); !errors.Is(err, state.ErrNoModelResult) {
 			t.Fatalf("session %d unexpectedly has a model result: %v", sessionID, err)
+		}
+		if execution.FailureKind != state.FailureKindProvider || !strings.Contains(execution.FailureReason, "provider unavailable") {
+			t.Fatalf("session %d failure diagnostic = %#v", sessionID, execution)
 		}
 	}
 

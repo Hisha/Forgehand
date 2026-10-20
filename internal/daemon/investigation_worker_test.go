@@ -40,6 +40,29 @@ func cppInvestigationFixture(t *testing.T, db *state.Database) (state.Project, s
 	return project, root
 }
 
+func TestInvestigationImmediateValidationFailurePersistsReason(t *testing.T) {
+	ctx := context.Background()
+	db := openWorkerTestDatabase(t)
+	session, err := db.CreateSessionWithDetails(ctx, "invalid investigation", nil, nil, "investigation", "stub", "stub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	execution, err := db.StartSessionExecution(ctx, session.ID, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := newModelRuntime(&stubProvider{}, repocontext.NewBuilder(db))
+	runtime.runInvestigationWorker(ctx, db, execution)
+
+	_, latest, err := db.SessionExecutionStatus(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if latest == nil || latest.Status != state.ExecutionStatusFailed || latest.FailureKind != state.FailureKindValidation || latest.FailureReason != "investigation session has no project" {
+		t.Fatalf("immediate failure diagnostic = %#v", latest)
+	}
+}
+
 func TestInvestigationSessionCppFixturePersistsEvidenceAndFlagsInventedReference(t *testing.T) {
 	ctx := context.Background()
 	stateDir := t.TempDir()

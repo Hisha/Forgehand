@@ -20,9 +20,14 @@ var evidenceCitationPattern = regexp.MustCompile(`\[([^\]\n]+):(\d+)\]`)
 
 func (r *modelRuntime) runInvestigationWorker(ctx context.Context, store *state.Database, execution state.SessionExecution) {
 	session, err := store.GetSession(ctx, execution.SessionID)
-	if err != nil || session.ProjectID == nil {
+	if err != nil {
 		fmt.Fprintf(os.Stderr, "forgehand: load investigation session %d: %v\n", execution.SessionID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindWorker, "load investigation session: "+err.Error())
+		return
+	}
+	if session.ProjectID == nil {
+		fmt.Fprintf(os.Stderr, "forgehand: investigation session %d has no project\n", execution.SessionID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindValidation, "investigation session has no project")
 		return
 	}
 
@@ -45,7 +50,7 @@ func (r *modelRuntime) runInvestigationWorker(ctx context.Context, store *state.
 			return
 		}
 		fmt.Fprintf(os.Stderr, "forgehand: prepare investigation %d: %v\n", execution.ID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindRepositoryContext, "prepare investigation evidence: "+err.Error())
 		return
 	}
 
@@ -62,7 +67,7 @@ func (r *modelRuntime) runInvestigationWorker(ctx context.Context, store *state.
 			return
 		}
 		fmt.Fprintf(os.Stderr, "forgehand: rebuild investigation evidence %d: %v\n", execution.ID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindRepositoryContext, "rebuild investigation evidence: "+err.Error())
 		return
 	}
 	repoContext.System = investigationSystemPrompt()
@@ -74,7 +79,7 @@ func (r *modelRuntime) runInvestigationWorker(ctx context.Context, store *state.
 			return
 		}
 		fmt.Fprintf(os.Stderr, "forgehand: investigation %d provider error: %v\n", execution.ID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindProvider, "provider request failed: "+err.Error())
 		return
 	}
 
@@ -91,7 +96,7 @@ func (r *modelRuntime) runInvestigationWorker(ctx context.Context, store *state.
 			return
 		}
 		fmt.Fprintf(os.Stderr, "forgehand: complete investigation %d: %v\n", execution.ID, err)
-		handleWorkerStop(store, execution, ctx)
+		handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, "persist investigation result: "+err.Error())
 	}
 }
 

@@ -62,6 +62,10 @@ type SessionExecution struct {
 	CompletedAt  *time.Time
 	CanceledAt   *time.Time
 	CancelReason *string
+	// FailureKind is a stable, display-oriented category for a terminal
+	// failure. FailureReason is the sanitized human-readable diagnostic.
+	FailureKind   string
+	FailureReason string
 
 	// QueueSeq is the durable, globally monotonic sequence assigned when an
 	// execution is enqueued (QUEUED). It is nil for executions that never
@@ -564,11 +568,31 @@ func (d *Database) FailSessionExecution(
 	ctx context.Context,
 	executionID int64,
 ) error {
+	return d.FailSessionExecutionWithReason(
+		ctx,
+		executionID,
+		FailureKindWorker,
+		"worker failed without a more specific diagnostic",
+	)
+}
+
+// FailSessionExecutionWithReason atomically persists a sanitized diagnostic,
+// transitions the execution and session, and publishes the same diagnostic on
+// execution.failed. The compatibility wrapper above remains for older callers.
+func (d *Database) FailSessionExecutionWithReason(
+	ctx context.Context,
+	executionID int64,
+	failureKind string,
+	failureReason string,
+) error {
+	failureKind, failureReason = normalizeFailure(failureKind, failureReason)
 	return d.transitionRunningExecution(
 		ctx,
 		executionID,
 		ExecutionStatusFailed,
 		SessionStateFailed,
+		failureKind,
+		failureReason,
 	)
 }
 
@@ -577,6 +601,7 @@ func (d *Database) transitionRunningExecution(
 	executionID int64,
 	executionStatus string,
 	sessionStatus string,
+	failureKindAndReason ...string,
 ) error {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -617,13 +642,26 @@ WHERE id = ?
 
 	nowText := time.Now().UTC().Format(time.RFC3339Nano)
 
+	failureKind := ""
+	failureReason := ""
+	if len(failureKindAndReason) == 2 {
+		failureKind = failureKindAndReason[0]
+		failureReason = failureKindAndReason[1]
+	}
+
 	result, err := tx.ExecContext(ctx, `
 UPDATE session_executions
-SET status = ?
+SET status = ?,
+    failure_kind = CASE WHEN ? = '' THEN failure_kind ELSE ? END,
+    failure_reason = CASE WHEN ? = '' THEN failure_reason ELSE ? END
 WHERE id = ?
   AND status = ?
 `,
 		executionStatus,
+		failureKind,
+		failureKind,
+		failureReason,
+		failureReason,
 		executionID,
 		ExecutionStatusRunning,
 	)
@@ -695,17 +733,22 @@ WHERE id = ?
 	if executionStatus == ExecutionStatusFailed {
 		eventType = EventTypeExecutionFailed
 	}
+	details := map[string]any{
+		"execution_id":  executionID,
+		"status":        executionStatus,
+		"session_state": sessionStatus,
+	}
+	if executionStatus == ExecutionStatusFailed {
+		details["failure_kind"] = failureKind
+		details["failure_reason"] = failureReason
+	}
 	if err := d.appendSessionEvent(
 		ctx,
 		tx,
 		sessionID,
 		&executionID,
 		eventType,
-		map[string]any{
-			"execution_id":  executionID,
-			"status":        executionStatus,
-			"session_state": sessionStatus,
-		},
+		details,
 	); err != nil {
 		return err
 	}
@@ -783,6 +826,8 @@ WHERE id = ?
 		completedText sql.NullString
 		canceledText  sql.NullString
 		cancelReason  sql.NullString
+		failureKind   sql.NullString
+		failureReason sql.NullString
 		queueSeq      sql.NullInt64
 	)
 
@@ -797,6 +842,8 @@ SELECT
 	completed_at,
 	canceled_at,
 	cancel_reason,
+	failure_kind,
+	failure_reason,
 	queue_seq
 FROM session_executions
 WHERE session_id = ?
@@ -814,6 +861,8 @@ LIMIT 1
 		&completedText,
 		&canceledText,
 		&cancelReason,
+		&failureKind,
+		&failureReason,
 		&queueSeq,
 	)
 	if err == sql.ErrNoRows {
@@ -863,6 +912,12 @@ LIMIT 1
 	if cancelReason.Valid {
 		value := cancelReason.String
 		execution.CancelReason = &value
+	}
+	if failureKind.Valid {
+		execution.FailureKind = failureKind.String
+	}
+	if failureReason.Valid {
+		execution.FailureReason = failureReason.String
 	}
 
 	if queueSeq.Valid {

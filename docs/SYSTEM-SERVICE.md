@@ -1,9 +1,10 @@
 # Linux system-service foundation
 
-Forgehand includes a systemd **system service template** at
-`packaging/systemd/forgehand@.service`. It is an example deployment artifact,
-not an installer. The repository does not create accounts or groups, install or
-enable the unit, change group membership, or alter repository permissions.
+Forgehand's supported personal lifecycle is the unprivileged systemd user
+service managed by `forgehand service ...`; see
+[Linux user-service lifecycle](USER-SERVICE.md). Forgehand also retains the
+administrator-managed **system service template** at
+`packaging/systemd/forgehand@.service` for dedicated multi-user hosts.
 
 ## Identity boundaries
 
@@ -172,7 +173,8 @@ preserve these boundaries:
 
 ## Installation and upgrades
 
-**Documentation scope:** this page describes the service and identity foundation. `LINUX-INSTALLATION.md` describes the supported installer. The earlier statement that the systemd template is "not an installer" remains true of the template itself, but no longer means that Forgehand lacks an installer.
-
-
-A supported Linux installer is available in `packaging/linux/` with commands `install`, `upgrade`, `status`, and `uninstall`. See [Linux Installation Guide](LINUX-INSTALLATION.md) for details. The installer preserves existing state (`/var/lib/forgehand`), supports personal and dedicated deployments, validates readiness, and provides rollback on upgrade failure. These capabilities build on the existing systemd template and non-root daemon.
+For a normal single-user installation, use the built-in unprivileged lifecycle
+documented in [USER-SERVICE.md](USER-SERVICE.md). It installs no executable and
+requires no root access. The separate privileged installer in
+[LINUX-INSTALLATION.md](LINUX-INSTALLATION.md) is retained for dedicated
+administrator-managed system services.

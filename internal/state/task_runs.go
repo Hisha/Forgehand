@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -667,6 +668,17 @@ WHERE execution_id = ?
 		return err
 	}
 
+	if executionStatus == ExecutionStatusFailed {
+		failureKind, failureReason := normalizeFailure(taskFailureKind(run), run.Error)
+		if _, err := tx.ExecContext(ctx, `
+UPDATE session_executions
+SET failure_kind = ?, failure_reason = ?
+WHERE id = ?
+`, failureKind, failureReason, executionID); err != nil {
+			return fmt.Errorf("record execution %d failure diagnostic: %w", executionID, err)
+		}
+	}
+
 	if executionStatus == ExecutionStatusCompleted {
 		if _, err := tx.ExecContext(ctx,
 			`UPDATE session_executions SET completed_at = ? WHERE id = ?`,
@@ -693,6 +705,17 @@ WHERE execution_id = ?
 		return err
 	}
 
+	execDetails := map[string]any{
+		"execution_id":  executionID,
+		"status":        executionStatus,
+		"session_state": sessionState,
+		"phase":         run.Phase,
+	}
+	if executionStatus == ExecutionStatusFailed {
+		failureKind, failureReason := normalizeFailure(taskFailureKind(run), run.Error)
+		execDetails["failure_kind"] = failureKind
+		execDetails["failure_reason"] = failureReason
+	}
 	if err := d.appendSessionEvent(
 		ctx,
 		tx,
@@ -715,12 +738,7 @@ WHERE execution_id = ?
 		sessionID,
 		&executionID,
 		execEventType,
-		map[string]any{
-			"execution_id":  executionID,
-			"status":        executionStatus,
-			"session_state": sessionState,
-			"phase":         run.Phase,
-		},
+		execDetails,
 	); err != nil {
 		return err
 	}
@@ -768,6 +786,8 @@ func (d *Database) FailTaskExecution(
 	run TaskRun,
 	cause string,
 ) error {
+	failureKind := taskFailureKind(TaskRun{ValidationStatus: run.ValidationStatus, Error: cause})
+	_, cause = normalizeFailure(failureKind, cause)
 	run.Error = cause
 	run.Phase = TaskPhaseFailed
 
@@ -780,6 +800,16 @@ func (d *Database) FailTaskExecution(
 		EventTypeTaskFailed,
 		EventTypeExecutionFailed,
 	)
+}
+
+func taskFailureKind(run TaskRun) string {
+	if run.ValidationStatus == TaskValidationFailed || run.ValidationStatus == TaskValidationError {
+		return FailureKindValidation
+	}
+	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(run.Error)), "provider:") {
+		return FailureKindProvider
+	}
+	return FailureKindWorker
 }
 
 // RejectTaskExecution finalizes a task execution whose proposal was declined.

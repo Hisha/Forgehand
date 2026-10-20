@@ -72,7 +72,7 @@ func (r *modelRuntime) runModelWorker(
 	session, err := store.GetSession(ctx, execution.SessionID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "forgehand: load session %d: %v\n", execution.SessionID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindWorker, "load coding session: "+err.Error())
 		return
 	}
 
@@ -88,7 +88,7 @@ func (r *modelRuntime) runModelWorker(
 			return
 		}
 		fmt.Fprintf(os.Stderr, "forgehand: build context for execution %d: %v\n", execution.ID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindRepositoryContext, "build repository context: "+err.Error())
 		return
 	}
 	for _, warning := range repoContext.Warnings {
@@ -106,7 +106,7 @@ func (r *modelRuntime) runModelWorker(
 			return
 		}
 		fmt.Fprintf(os.Stderr, "forgehand: execution %d provider error: %v\n", execution.ID, err)
-		failExecution(store, execution.ID)
+		failExecutionWithReason(store, execution.ID, state.FailureKindProvider, "provider request failed: "+err.Error())
 		return
 	}
 
@@ -129,7 +129,7 @@ func (r *modelRuntime) runModelWorker(
 			return
 		}
 		fmt.Fprintf(os.Stderr, "forgehand: complete model execution %d: %v\n", execution.ID, err)
-		handleWorkerStop(store, execution, ctx)
+		handleWorkerStopWithFailure(store, execution, ctx, state.FailureKindWorker, "persist model result: "+err.Error())
 		return
 	}
 

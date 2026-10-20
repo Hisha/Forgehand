@@ -39,6 +39,11 @@ func TestConfiguredDaemonStartupSocketAndCleanSIGTERM(t *testing.T) {
 	}
 	process := startDaemonProcess(t, stateDir, socketPath, "0660")
 	waitForDaemon(t, process, socketPath)
+	status := sendDaemonRequest(t, socketPath, ipc.Request{Command: "status"})
+	if status.ProtocolVersion != ipc.ProtocolVersion || status.PID != process.command.Process.Pid || status.Executable == "" || status.BuildIdentity == "" || status.SocketPath != socketPath || status.StateDir != stateDir {
+		stopDaemon(t, process, syscall.SIGTERM, true)
+		t.Fatalf("incomplete daemon identity: %#v", status)
+	}
 
 	info, err := os.Stat(socketPath)
 	if err != nil {

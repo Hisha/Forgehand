@@ -2,9 +2,19 @@
 
 Forgehand is a persistent, local-first AI software engineering system for understanding, planning, building, and verifying code over long-running development sessions.
 
-## Status
+## Quick start
 
-Forgehand is in its initial architecture and research phase. The project is intentionally avoiding premature implementation choices while its core requirements and technical approach are validated.
+After building Forgehand, install and start its unprivileged user service, then
+launch the terminal interface:
+
+```sh
+forgehand service install
+forgehand service start
+forgehand
+```
+
+The TUI lists projects and persistent investigations without requiring database
+IDs. See the [terminal interface guide](docs/TUI.md).
 
 ## Core idea
 
@@ -23,6 +33,9 @@ The system will maintain durable project knowledge, coordinate specialized worke
 - [Research Agenda](docs/RESEARCH.md)
 - [Roadmap](docs/ROADMAP.md)
 - [Linux system-service foundation](docs/SYSTEM-SERVICE.md)
+- [Linux user-service lifecycle](docs/USER-SERVICE.md)
+- [Terminal interface](docs/TUI.md)
+- [Deterministic work planner](docs/WORK-PLANNER.md)
 - [Linux Installation Guide](docs/LINUX-INSTALLATION.md)
 
 ## Security

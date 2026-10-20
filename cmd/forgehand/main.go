@@ -7,26 +7,33 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/Hisha/Forgehand/internal/daemon"
 	"github.com/Hisha/Forgehand/internal/ipc"
+	"github.com/Hisha/Forgehand/internal/service"
+	forgetui "github.com/Hisha/Forgehand/internal/tui"
 	"github.com/Hisha/Forgehand/internal/version"
 )
 
 func main() {
 	if len(os.Args) < 2 {
-		usage()
-		os.Exit(1)
+		if err := forgetui.Run(); err != nil {
+			fmt.Fprintf(os.Stderr, "forgehand: %v\n", err)
+			os.Exit(1)
+		}
+		return
 	}
 
 	var err error
 
 	switch os.Args[1] {
 	case "version":
-		fmt.Printf("%s %s\n", version.Name, version.Version)
+		fmt.Println(version.String())
 
 	case "daemon":
 		err = daemon.Run()
@@ -48,6 +55,12 @@ func main() {
 
 	case "status":
 		err = status()
+
+	case "service":
+		err = serviceCommand(os.Args[2:])
+
+	case "tui":
+		err = forgetui.Run()
 
 	case "session":
 		err = sessionCommand(os.Args[2:])
@@ -71,22 +84,139 @@ func main() {
 }
 
 func status() error {
-	response, err := request(ipc.Request{
+	response, socketPath, err := requestRaw(ipc.Request{
 		Command: "status",
 	})
 	if err != nil {
-		return err
+		return fmt.Errorf("daemon stopped or unavailable at %s: %w; run `forgehand service start` if the user service is installed", socketPath, err)
 	}
 
-	fmt.Printf("Daemon: %s\n", response.Message)
-	fmt.Printf("Version: %s\n", response.Version)
+	compatible := response.ProtocolVersion == ipc.ProtocolVersion
+	fmt.Printf("Daemon: %s\n", map[bool]string{true: "running", false: "running but incompatible"}[compatible])
+	fmt.Printf("CLI: %s\n", version.BuildIdentity())
+	fmt.Printf("Daemon version: %s\n", response.Version)
+	fmt.Printf("Daemon build: %s\n", response.BuildIdentity)
 	fmt.Printf("PID: %d\n", response.PID)
+	fmt.Printf("Executable: %s\n", response.Executable)
+	if response.SocketPath == "" {
+		response.SocketPath = socketPath
+	}
+	fmt.Printf("Socket: %s\n", response.SocketPath)
+	if response.StateDir != "" {
+		fmt.Printf("State directory: %s\n", response.StateDir)
+	}
+	fmt.Printf("IPC protocol: daemon %d, CLI %d\n", response.ProtocolVersion, ipc.ProtocolVersion)
+	if !compatible {
+		return fmt.Errorf("incompatible daemon: use `forgehand service update` to run this executable")
+	}
+	if !response.OK {
+		return fmt.Errorf("daemon error: %s", response.Message)
+	}
 	fmt.Printf("Worker capacity: %d\n", response.WorkerCapacity)
 	fmt.Printf("Active workers: %d\n", response.ActiveWorkers)
 	fmt.Printf("Queued executions: %d\n", response.QueuedExecutions)
 	fmt.Printf("Resource-blocked executions: %d\n", response.ResourceBlockedExecutions)
 
 	return nil
+}
+
+func serviceCommand(args []string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("usage: forgehand service <install|update|uninstall|start|stop|restart|status>")
+	}
+	manager, err := service.NewManager()
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "install":
+		if err := manager.Install(); err != nil {
+			return err
+		}
+		fmt.Printf("Installed and enabled user service: %s\n", manager.UnitPath())
+		fmt.Println("The daemon was not started; run `forgehand service start`.")
+	case "update":
+		if err := manager.Update(); err != nil {
+			return err
+		}
+		fmt.Printf("Updated user service to %s\n", executablePath())
+		state, stateErr := manager.Status()
+		if stateErr == nil && state.ActiveState == "active" {
+			return waitForManagedDaemon(manager)
+		}
+	case "uninstall":
+		if err := manager.Uninstall(); err != nil {
+			return err
+		}
+		fmt.Println("Uninstalled user service; Forgehand state and registered projects were preserved.")
+	case "start":
+		if err := manager.Start(); err != nil {
+			return err
+		}
+		return waitForManagedDaemon(manager)
+	case "stop":
+		if err := manager.Stop(); err != nil {
+			return err
+		}
+		fmt.Println("Forgehand user service stopped.")
+	case "restart":
+		if err := manager.Restart(); err != nil {
+			return err
+		}
+		return waitForManagedDaemon(manager)
+	case "status":
+		state, err := manager.Status()
+		if err != nil {
+			return err
+		}
+		fmt.Printf("User unit: %s\n", state.UnitPath)
+		fmt.Printf("Installed: %t\n", state.Installed)
+		if !state.Installed {
+			fmt.Println("Recovery: run `forgehand service install`, then `forgehand service start`.")
+			return nil
+		}
+		fmt.Printf("systemd: %s (%s), main PID %s\n", state.ActiveState, state.SubState, state.MainPID)
+		return status()
+	default:
+		return fmt.Errorf("unknown service command %q", args[0])
+	}
+	return nil
+}
+
+func waitForManagedDaemon(manager *service.Manager) error {
+	deadline := time.Now().Add(10 * time.Second)
+	var last string
+	for time.Now().Before(deadline) {
+		state, err := manager.Status()
+		if err != nil {
+			last = err.Error()
+		} else if state.ActiveState == "active" && state.MainPID != "" && state.MainPID != "0" {
+			response, _, requestErr := requestRaw(ipc.Request{Command: "status"})
+			if requestErr == nil && response.OK && response.ProtocolVersion == ipc.ProtocolVersion && strconv.Itoa(response.PID) == state.MainPID {
+				return status()
+			}
+			if requestErr != nil {
+				last = requestErr.Error()
+			} else {
+				last = fmt.Sprintf("systemd PID %s, socket PID %d", state.MainPID, response.PID)
+			}
+		} else {
+			last = fmt.Sprintf("systemd state %s/%s", state.ActiveState, state.SubState)
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("user service did not become ready within 10s: %s; inspect `journalctl --user -u %s`", last, service.UnitName)
+}
+
+func executablePath() string {
+	path, err := os.Executable()
+	if err != nil {
+		return "the current executable"
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
+	return path
 }
 
 func sessionCommand(args []string) error {
@@ -797,6 +927,12 @@ func sessionStatus(sessionID int64) error {
 	if response.Execution.CancelReason != nil {
 		fmt.Printf("Cancel reason: %s\n", *response.Execution.CancelReason)
 	}
+	if response.Execution.FailureReason != "" {
+		if response.Execution.FailureKind != "" {
+			fmt.Printf("Failure kind: %s\n", response.Execution.FailureKind)
+		}
+		fmt.Printf("Failure reason: %s\n", response.Execution.FailureReason)
+	}
 
 	if response.Interaction != nil {
 		fmt.Printf("Awaiting input: interaction %d\n", response.Interaction.ID)
@@ -883,31 +1019,40 @@ func listSessions() error {
 }
 
 func request(req ipc.Request) (ipc.Response, error) {
-	socketPath, err := daemon.SocketPath()
+	response, _, err := requestRaw(req)
 	if err != nil {
 		return ipc.Response{}, err
 	}
+	if response.ProtocolVersion != ipc.ProtocolVersion {
+		return ipc.Response{}, fmt.Errorf("incompatible daemon IPC protocol %d (CLI requires %d); run `forgehand service update` or stop the manually managed daemon", response.ProtocolVersion, ipc.ProtocolVersion)
+	}
+	if !response.OK {
+		return ipc.Response{}, fmt.Errorf("daemon error: %s", response.Message)
+	}
+	return response, nil
+}
 
-	conn, err := net.Dial("unix", socketPath)
+func requestRaw(req ipc.Request) (ipc.Response, string, error) {
+	socketPath, err := daemon.SocketPath()
 	if err != nil {
-		return ipc.Response{}, fmt.Errorf("daemon is not running")
+		return ipc.Response{}, "(unresolved)", err
+	}
+
+	conn, err := net.DialTimeout("unix", socketPath, 2*time.Second)
+	if err != nil {
+		return ipc.Response{}, socketPath, err
 	}
 	defer conn.Close()
 
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
-		return ipc.Response{}, fmt.Errorf("send request: %w", err)
+		return ipc.Response{}, socketPath, fmt.Errorf("send request: %w", err)
 	}
 
 	var response ipc.Response
 	if err := json.NewDecoder(conn).Decode(&response); err != nil {
-		return ipc.Response{}, fmt.Errorf("read response: %w", err)
+		return ipc.Response{}, socketPath, fmt.Errorf("read response: %w", err)
 	}
-
-	if !response.OK {
-		return ipc.Response{}, fmt.Errorf("daemon error: %s", response.Message)
-	}
-
-	return response, nil
+	return response, socketPath, nil
 }
 
 func projectCommand(args []string) error {
@@ -1727,6 +1872,8 @@ func usage() {
 	fmt.Println("  query changes <id> --from N --to N  Compare two analyses")
 	fmt.Println("  investigate <id> --component <identity> [--analysis <id>] [--format text|json] [--limit <n>]  Investigate component")
 	fmt.Println("  status                          Query the Forgehand daemon")
+	fmt.Println("  service <action>                Install, update, uninstall, start, stop, restart, or inspect the user service")
+	fmt.Println("  tui                             Open the terminal interface (also the default with no command)")
 	fmt.Println("  session start <title>           Create a session")
 	fmt.Println("  session start --investigate --project <id> --task \"question\" [--component <identity>] [--analysis <id>] [--title <t>] [--model <m>]  Create a read-only model investigation")
 	fmt.Println("  session run <id> [--resource <name>]...  Queue a session for a worker, optionally holding exclusive resources")
