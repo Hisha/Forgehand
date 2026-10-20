@@ -96,7 +96,7 @@ func startModelDispatcher(
 	t.Helper()
 
 	dispCtx, stop := context.WithCancel(context.Background())
-	disp := newDispatcher(db, workers, 4, model)
+	disp := newDispatcher(db, workers, 4, model, nil)
 	go disp.run(dispCtx)
 	t.Cleanup(func() {
 		stop()

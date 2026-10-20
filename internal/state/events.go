@@ -24,6 +24,16 @@ const (
 	EventTypeExecutionWaitingForUser    = "execution.waiting_for_user"
 	EventTypeExecutionResumedAfterInput = "execution.resumed_after_input"
 	EventTypeModelResponseCompleted     = "model.response.completed"
+
+	// Task worker lifecycle events. They distinguish a task that only produced
+	// a proposal from one whose authorized changes were applied to the isolated
+	// workspace.
+	EventTypeTaskPrepared  = "task.prepared"
+	EventTypeTaskProposed  = "task.proposed"
+	EventTypeTaskApplied   = "task.applied"
+	EventTypeTaskRejected  = "task.rejected"
+	EventTypeTaskFailed    = "task.failed"
+	EventTypeTaskCompleted = "task.completed"
 )
 
 type SessionEvent struct {

@@ -201,18 +201,12 @@ func TestDaemonSessionStatusAndShutdownInterruptsRunningExecution(t *testing.T) 
 		t.Fatalf("session-run response = %#v", run)
 	}
 
-	status := sendDaemonRequest(t, socketPath, ipc.Request{
-		Command:   "session-status",
-		SessionID: sessionID,
-	})
-	if !status.OK || status.Session == nil || status.Execution == nil {
-		stopDaemon(t, process, syscall.SIGTERM, true)
-		t.Fatalf("session-status while running = %#v", status)
-	}
-	if status.Session.State != state.SessionStateRunning {
-		stopDaemon(t, process, syscall.SIGTERM, true)
-		t.Fatalf("session state = %q, want %q", status.Session.State, state.SessionStateRunning)
-	}
+	// session-run only commits the execution as QUEUED; the dispatcher claims
+	// it and transitions the session/execution to RUNNING asynchronously on
+	// its own goroutine. Poll (bounded) for that transition rather than
+	// asserting on the transient QUEUED window immediately after the request
+	// returns, which is a scheduling race and not a durability guarantee.
+	status := waitForSessionRunning(t, socketPath, sessionID)
 	if status.Execution.Status != state.ExecutionStatusRunning {
 		stopDaemon(t, process, syscall.SIGTERM, true)
 		t.Fatalf("execution status = %q, want %q", status.Execution.Status, state.ExecutionStatusRunning)
@@ -267,6 +261,38 @@ func sendDaemonRequest(t *testing.T, socketPath string, request ipc.Request) ipc
 	}
 
 	return response
+}
+
+// waitForSessionRunning polls session-status until the session reports RUNNING
+// or the deadline elapses. It is used where a prior request only enqueues work
+// and the dispatcher transitions the session asynchronously, so the test does
+// not depend on goroutine scheduling.
+func waitForSessionRunning(t *testing.T, socketPath string, sessionID int64) ipc.Response {
+	t.Helper()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var last ipc.Response
+	for time.Now().Before(deadline) {
+		last = sendDaemonRequest(t, socketPath, ipc.Request{
+			Command:   "session-status",
+			SessionID: sessionID,
+		})
+		if last.OK && last.Session != nil && last.Execution != nil &&
+			last.Session.State == state.SessionStateRunning &&
+			last.Execution.Status == state.ExecutionStatusRunning {
+			return last
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !last.OK || last.Session == nil || last.Execution == nil {
+		t.Fatalf("session-status while running = %#v", last)
+	}
+	t.Fatalf(
+		"session did not reach RUNNING within deadline: state = %q, execution = %q",
+		last.Session.State,
+		last.Execution.Status,
+	)
+	return last
 }
 
 type daemonProcess struct {

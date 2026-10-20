@@ -288,6 +288,59 @@ CREATE INDEX idx_model_results_session_id
 ON model_results(session_id);
 `,
 	},
+	{
+		version: 14,
+		sql: `
+CREATE TABLE task_runs (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id INTEGER NOT NULL,
+	execution_id INTEGER NOT NULL UNIQUE,
+	project_id INTEGER NOT NULL,
+	repo_root TEXT NOT NULL,
+	workspace_path TEXT NOT NULL DEFAULT '',
+	base_commit TEXT NOT NULL,
+	phase TEXT NOT NULL,
+	applied INTEGER NOT NULL DEFAULT 0,
+	summary TEXT NOT NULL DEFAULT '',
+	workspace_fingerprint TEXT NOT NULL DEFAULT '',
+	proposal_json TEXT NOT NULL DEFAULT '[]',
+	proposal_hash TEXT NOT NULL DEFAULT '',
+	workspace_diff TEXT NOT NULL DEFAULT '',
+	error TEXT NOT NULL DEFAULT '',
+	cleaned_at TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	FOREIGN KEY(session_id) REFERENCES sessions(id),
+	FOREIGN KEY(execution_id) REFERENCES session_executions(id)
+);
+
+CREATE INDEX idx_task_runs_session_id
+ON task_runs(session_id);
+
+CREATE TABLE task_operations (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	run_id INTEGER NOT NULL,
+	sequence INTEGER NOT NULL,
+	kind TEXT NOT NULL,
+	path TEXT NOT NULL DEFAULT '',
+	detail TEXT NOT NULL DEFAULT '',
+	outcome TEXT NOT NULL,
+	error TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	FOREIGN KEY(run_id) REFERENCES task_runs(id)
+);
+
+CREATE INDEX idx_task_operations_run_id
+ON task_operations(run_id);
+`,
+	},
+	{
+		version: 15,
+		sql: `
+ALTER TABLE task_runs ADD COLUMN validation_status TEXT NOT NULL DEFAULT '';
+ALTER TABLE task_runs ADD COLUMN validation_json TEXT NOT NULL DEFAULT '';
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

@@ -1,5 +1,7 @@
 package ipc
 
+import "encoding/json"
+
 type Request struct {
 	Command             string `json:"command"`
 	Title               string `json:"title,omitempty"`
@@ -52,6 +54,49 @@ type ModelResult struct {
 	CreatedAt   string `json:"created_at"`
 }
 
+// TaskChange is a single proposed or applied file change, without content.
+type TaskChange struct {
+	Op   string `json:"op"`
+	Path string `json:"path"`
+}
+
+// TaskRun is the durable record of a controlled coding task, exposed over IPC.
+type TaskRun struct {
+	ID            int64  `json:"id"`
+	SessionID     int64  `json:"session_id"`
+	ExecutionID   int64  `json:"execution_id"`
+	ProjectID     int64  `json:"project_id"`
+	WorkspacePath string `json:"workspace_path,omitempty"`
+	BaseCommit    string `json:"base_commit,omitempty"`
+	Phase         string `json:"phase"`
+	Applied       bool   `json:"applied"`
+	Summary       string `json:"summary,omitempty"`
+	ProposalHash  string `json:"proposal_hash,omitempty"`
+	WorkspaceDiff string `json:"workspace_diff,omitempty"`
+	Error         string `json:"error,omitempty"`
+	// ValidationStatus is one of skipped, passed, failed, error, or empty when
+	// the post-apply validation stage has not run.
+	ValidationStatus string `json:"validation_status,omitempty"`
+	// Validation is the persisted detail of the validation stage (commands,
+	// exit codes, bounded output). It is present when ValidationStatus is set.
+	Validation json.RawMessage `json:"validation,omitempty"`
+	Changes    []TaskChange    `json:"changes,omitempty"`
+	CleanedAt  *string         `json:"cleaned_at,omitempty"`
+	CreatedAt  string          `json:"created_at"`
+	UpdatedAt  string          `json:"updated_at"`
+}
+
+// TaskOperation is one recorded inspect step of a task run.
+type TaskOperation struct {
+	Sequence  int    `json:"sequence"`
+	Kind      string `json:"kind"`
+	Path      string `json:"path,omitempty"`
+	Detail    string `json:"detail,omitempty"`
+	Outcome   string `json:"outcome,omitempty"`
+	Error     string `json:"error,omitempty"`
+	CreatedAt string `json:"created_at"`
+}
+
 type Execution struct {
 	ID           int64   `json:"id"`
 	SessionID    int64   `json:"session_id"`
@@ -84,31 +129,37 @@ type Interaction struct {
 }
 
 type Response struct {
-	OK            bool                   `json:"ok"`
-	Message       string                 `json:"message,omitempty"`
-	Version       string                 `json:"version,omitempty"`
-	PID           int                    `json:"pid,omitempty"`
-	Session       *Session               `json:"session,omitempty"`
-	Sessions      []Session              `json:"sessions,omitempty"`
-	Execution     *Execution             `json:"execution,omitempty"`
-	Project       *Project               `json:"project,omitempty"`
-	Projects      []Project              `json:"projects,omitempty"`
-	Snapshot      *RepositorySnapshot    `json:"snapshot,omitempty"`
-	Intake        *ProjectIntake         `json:"intake,omitempty"`
-	Discovery     *ProjectDiscovery      `json:"discovery,omitempty"`
-	Inventory     *Inventory             `json:"inventory,omitempty"`
-	Inspection    *Inspection            `json:"inspection,omitempty"`
-	Analysis      *ComponentAnalysis     `json:"analysis,omitempty"`
-	Query         *QueryResponse         `json:"query,omitempty"`
-	Investigation *InvestigationResponse `json:"investigation,omitempty"`
-	Events        []SessionEvent         `json:"events,omitempty"`
-	NextEventID   int64                  `json:"next_event_id,omitempty"`
-	Interaction   *Interaction           `json:"interaction,omitempty"`
-	Interactions  []Interaction          `json:"interactions,omitempty"`
-	Result        *ModelResult           `json:"result,omitempty"`
-	AnswerApplied bool                   `json:"answer_applied,omitempty"`
-	Canceled      bool                   `json:"canceled,omitempty"`
-	CancelOutcome string                 `json:"cancel_outcome,omitempty"`
+	OK             bool                   `json:"ok"`
+	Message        string                 `json:"message,omitempty"`
+	Version        string                 `json:"version,omitempty"`
+	PID            int                    `json:"pid,omitempty"`
+	Session        *Session               `json:"session,omitempty"`
+	Sessions       []Session              `json:"sessions,omitempty"`
+	Execution      *Execution             `json:"execution,omitempty"`
+	Project        *Project               `json:"project,omitempty"`
+	Projects       []Project              `json:"projects,omitempty"`
+	Snapshot       *RepositorySnapshot    `json:"snapshot,omitempty"`
+	Intake         *ProjectIntake         `json:"intake,omitempty"`
+	Discovery      *ProjectDiscovery      `json:"discovery,omitempty"`
+	Inventory      *Inventory             `json:"inventory,omitempty"`
+	Inspection     *Inspection            `json:"inspection,omitempty"`
+	Analysis       *ComponentAnalysis     `json:"analysis,omitempty"`
+	Query          *QueryResponse         `json:"query,omitempty"`
+	Investigation  *InvestigationResponse `json:"investigation,omitempty"`
+	Events         []SessionEvent         `json:"events,omitempty"`
+	NextEventID    int64                  `json:"next_event_id,omitempty"`
+	Interaction    *Interaction           `json:"interaction,omitempty"`
+	Interactions   []Interaction          `json:"interactions,omitempty"`
+	Result         *ModelResult           `json:"result,omitempty"`
+	TaskRun        *TaskRun               `json:"task_run,omitempty"`
+	TaskOperations []TaskOperation        `json:"task_operations,omitempty"`
+	// Diff holds a rendered unified diff for the task-diff command. DiffSource
+	// reports whether it is a proposed preview or the applied workspace diff.
+	Diff          string `json:"diff,omitempty"`
+	DiffSource    string `json:"diff_source,omitempty"`
+	AnswerApplied bool   `json:"answer_applied,omitempty"`
+	Canceled      bool   `json:"canceled,omitempty"`
+	CancelOutcome string `json:"cancel_outcome,omitempty"`
 	// WorkerCapacity, ActiveWorkers, and QueuedExecutions report daemon
 	// scheduling state for the status command.
 	WorkerCapacity   int `json:"worker_capacity,omitempty"`

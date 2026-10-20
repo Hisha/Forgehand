@@ -52,6 +52,9 @@ func main() {
 	case "session":
 		err = sessionCommand(os.Args[2:])
 
+	case "task":
+		err = taskCommand(os.Args[2:])
+
 	case "sessions":
 		err = listSessions()
 
@@ -195,7 +198,6 @@ func sessionCommand(args []string) error {
 
 		return sessionStatus(sessionID)
 
-
 	case "result":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: forgehand session result <id>")
@@ -274,6 +276,272 @@ func sessionCommand(args []string) error {
 	default:
 		return fmt.Errorf("unknown session command: %s", args[0])
 	}
+}
+
+func taskCommand(args []string) error {
+	if len(args) < 1 {
+		return fmt.Errorf("usage: forgehand task start --project <id> --task \"...\" [--title <title>] [--model <name>]")
+	}
+
+	switch args[0] {
+	case "start":
+		var title, task, model string
+		var projectID int64
+		for i := 1; i < len(args); i++ {
+			switch args[i] {
+			case "--project":
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --project")
+				}
+				id, err := strconv.ParseInt(args[i+1], 10, 64)
+				if err != nil || id <= 0 {
+					return fmt.Errorf("invalid project ID: %s", args[i+1])
+				}
+				projectID = id
+				i++
+			case "--task":
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --task")
+				}
+				task = args[i+1]
+				i++
+			case "--title":
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --title")
+				}
+				title = args[i+1]
+				i++
+			case "--model":
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --model")
+				}
+				model = args[i+1]
+				i++
+			default:
+				return fmt.Errorf("unknown flag: %s", args[i])
+			}
+		}
+		if projectID <= 0 || strings.TrimSpace(task) == "" {
+			return fmt.Errorf("project and task are required for a task session")
+		}
+		return startTaskSession(title, task, model, projectID)
+	case "status":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand task status <session-id>")
+		}
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+		return taskStatus(sessionID)
+	case "cleanup":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand task cleanup <session-id>")
+		}
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+		return taskCleanup(sessionID)
+	case "diff":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand task diff <session-id>")
+		}
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+		return taskDiff(sessionID)
+	case "approve":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand task approve <session-id>")
+		}
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+		return taskApprove(sessionID)
+	case "reject":
+		if len(args) != 2 {
+			return fmt.Errorf("usage: forgehand task reject <session-id>")
+		}
+		sessionID, err := strconv.ParseInt(args[1], 10, 64)
+		if err != nil || sessionID <= 0 {
+			return fmt.Errorf("invalid session ID: %s", args[1])
+		}
+		return taskReject(sessionID)
+	default:
+		return fmt.Errorf("unknown task command: %s", args[0])
+	}
+}
+
+func startTaskSession(title, task, model string, projectID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "task-start",
+		Title:     title,
+		Task:      task,
+		Model:     model,
+		ProjectID: projectID,
+	})
+	if err != nil {
+		return err
+	}
+	if response.Session == nil {
+		return fmt.Errorf("daemon returned no session")
+	}
+	if response.Execution == nil {
+		return fmt.Errorf("daemon returned no execution")
+	}
+
+	fmt.Printf("Created task session %d\n", response.Session.ID)
+	fmt.Printf("State: %s\n", response.Session.State)
+	if response.Session.Title != "" {
+		fmt.Printf("Title: %s\n", response.Session.Title)
+	}
+	fmt.Printf("Project: %d\n", response.Session.ProjectID)
+	fmt.Printf("Task: %s\n", response.Session.Task)
+	fmt.Printf("Execution: %d (%s)\n", response.Execution.ID, response.Execution.Status)
+	return nil
+}
+
+func taskStatus(sessionID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "task-status",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return err
+	}
+	if response.TaskRun == nil {
+		return fmt.Errorf("daemon returned no task run")
+	}
+
+	run := response.TaskRun
+	fmt.Printf("Session %d task run %d (exec %d)\n", run.SessionID, run.ID, run.ExecutionID)
+	fmt.Printf("Phase: %s\n", run.Phase)
+	switch run.Phase {
+	case "PROPOSED":
+		fmt.Println("Status: awaiting approval — run `task diff` to review, then `task approve` or `task reject`")
+	case "APPLIED":
+		fmt.Println("Status: approved changes applied")
+	case "REJECTED":
+		fmt.Println("Status: proposal rejected; no changes were applied")
+	case "FAILED":
+		fmt.Println("Status: task failed")
+	}
+	if run.BaseCommit != "" {
+		fmt.Printf("Base commit: %s\n", run.BaseCommit)
+	}
+	if run.WorkspacePath != "" {
+		fmt.Printf("Workspace: %s\n", run.WorkspacePath)
+	}
+	if run.ProposalHash != "" {
+		fmt.Printf("Proposal hash: %s\n", run.ProposalHash)
+	}
+	if run.Summary != "" {
+		fmt.Printf("Summary: %s\n", run.Summary)
+	}
+	if run.Error != "" {
+		fmt.Printf("Error: %s\n", run.Error)
+	}
+	printValidationStatus(run)
+	if run.CleanedAt != nil {
+		fmt.Printf("Cleaned at: %s\n", *run.CleanedAt)
+	}
+	fmt.Printf("Created: %s\n", run.CreatedAt)
+	fmt.Printf("Updated: %s\n", run.UpdatedAt)
+	if len(run.Changes) > 0 {
+		fmt.Println("Proposed changes:")
+		for _, ch := range run.Changes {
+			fmt.Printf("  %s %s\n", ch.Op, ch.Path)
+		}
+	}
+	if len(response.TaskOperations) > 0 {
+		fmt.Printf("Operations (%d):\n", len(response.TaskOperations))
+		for _, op := range response.TaskOperations {
+			fmt.Printf("  %d. %s %s %s (%s)\n", op.Sequence, op.Kind, op.Path, op.Detail, op.Outcome)
+			if op.Error != "" {
+				fmt.Printf("     err: %s\n", op.Error)
+			}
+		}
+	}
+	return nil
+}
+
+// printValidationStatus renders the post-apply validation outcome, including
+// each recorded check, so a failure is visible without digging through logs.
+func printValidationStatus(run *ipc.TaskRun) {
+	switch run.ValidationStatus {
+	case "":
+		return
+	case "skipped":
+		fmt.Println("Validation: skipped (not enabled or nothing to validate)")
+		return
+	case "passed":
+		fmt.Println("Validation: passed")
+	case "failed":
+		fmt.Println("Validation: FAILED — the changes were applied but did not pass gofmt/go test")
+	case "error":
+		fmt.Println("Validation: ERROR — the validation stage could not run")
+	}
+	if len(run.Validation) == 0 {
+		return
+	}
+	var result struct {
+		Checks []struct {
+			Name      string   `json:"name"`
+			Command   string   `json:"command"`
+			ExitCode  int      `json:"exit_code"`
+			Duration  string   `json:"duration"`
+			Stdout    string   `json:"stdout"`
+			Stderr    string   `json:"stderr"`
+			Error     string   `json:"error"`
+			Formatted []string `json:"formatted"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(run.Validation, &result); err != nil {
+		return
+	}
+	for _, check := range result.Checks {
+		outcome := "ok"
+		if check.ExitCode != 0 {
+			outcome = fmt.Sprintf("exit %d", check.ExitCode)
+		}
+		fmt.Printf("  %s (%s) %s in %s\n", check.Name, check.Command, outcome, check.Duration)
+		for _, path := range check.Formatted {
+			fmt.Printf("    formatted: %s\n", path)
+		}
+		if check.Error != "" {
+			fmt.Printf("    err: %s\n", check.Error)
+		}
+		if check.Stderr != "" {
+			for _, line := range strings.SplitN(strings.TrimSpace(check.Stderr), "\n", 15) {
+				fmt.Printf("    | %s\n", line)
+			}
+		}
+	}
+}
+
+func taskCleanup(sessionID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "task-cleanup",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return err
+	}
+	if response.OK {
+		if response.Message != "" {
+			fmt.Println(response.Message)
+			return nil
+		}
+		fmt.Println("Task workspace cleaned")
+		return nil
+	}
+	if response.Message != "" {
+		return fmt.Errorf("%s", response.Message)
+	}
+	return fmt.Errorf("task cleanup failed")
 }
 
 func startSession(title string) error {
@@ -1399,8 +1667,13 @@ func usage() {
 	fmt.Println("  session answer <interaction-id> \"answer text\"  Answer a pending question")
 	fmt.Println("  session events <id> [--after N] [--limit N]  List session events")
 	fmt.Println("  sessions                        List sessions")
+	fmt.Println("  task start --project <id> --task \"...\" [--title <t>] [--model <m>]  Start a controlled coding task")
+	fmt.Println("  task status <session-id>        Show task run state, proposal, and validation")
+	fmt.Println("  task diff <session-id>          Show the proposed or applied changes as a unified diff")
+	fmt.Println("  task approve <session-id>       Approve the pending proposal and resume the task")
+	fmt.Println("  task reject <session-id>        Reject the pending proposal and resume the task")
+	fmt.Println("  task cleanup <session-id>       Remove the isolated task workspace")
 }
-
 
 func startCodingSession(title, task, model string, projectID int64) error {
 	if projectID <= 0 || strings.TrimSpace(task) == "" {
@@ -1457,5 +1730,88 @@ func sessionResult(sessionID int64) error {
 	}
 	fmt.Printf("Created: %s\n", response.Result.CreatedAt)
 	fmt.Printf("Content:\n%s\n", response.Result.Content)
+	return nil
+}
+
+func taskDiff(sessionID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "task-diff",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return err
+	}
+	if !response.OK {
+		if response.Message != "" {
+			return fmt.Errorf("%s", response.Message)
+		}
+		return fmt.Errorf("task diff failed")
+	}
+	switch response.DiffSource {
+	case "proposed":
+		fmt.Println("# Proposed changes (awaiting approval) — this is exactly what task approve would apply")
+	case "applied":
+		fmt.Println("# Applied workspace changes")
+	}
+	if response.Diff == "" {
+		fmt.Println("(no changes)")
+		return nil
+	}
+	fmt.Print(response.Diff)
+	if !strings.HasSuffix(response.Diff, "\n") {
+		fmt.Println()
+	}
+	return nil
+}
+
+func taskApprove(sessionID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "task-approve",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return err
+	}
+	if !response.OK {
+		if response.Message != "" {
+			return fmt.Errorf("%s", response.Message)
+		}
+		return fmt.Errorf("task approve failed")
+	}
+	if !response.AnswerApplied && response.Message != "" {
+		fmt.Println(response.Message)
+		return nil
+	}
+	if response.TaskRun != nil {
+		fmt.Printf("Approved task run %d; resuming\n", response.TaskRun.ID)
+		return nil
+	}
+	fmt.Println("Approved; resuming task")
+	return nil
+}
+
+func taskReject(sessionID int64) error {
+	response, err := request(ipc.Request{
+		Command:   "task-reject",
+		SessionID: sessionID,
+	})
+	if err != nil {
+		return err
+	}
+	if !response.OK {
+		if response.Message != "" {
+			return fmt.Errorf("%s", response.Message)
+		}
+		return fmt.Errorf("task reject failed")
+	}
+	if !response.AnswerApplied && response.Message != "" {
+		fmt.Println(response.Message)
+		return nil
+	}
+	if response.TaskRun != nil {
+		fmt.Printf("Rejected task run %d; resuming\n", response.TaskRun.ID)
+		return nil
+	}
+	fmt.Println("Rejected; resuming task")
 	return nil
 }

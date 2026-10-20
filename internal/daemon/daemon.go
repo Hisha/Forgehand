@@ -21,6 +21,8 @@ import (
 	"github.com/Hisha/Forgehand/internal/state"
 	"github.com/Hisha/Forgehand/internal/version"
 
+	"github.com/Hisha/Forgehand/internal/workspace"
+
 	"modernc.org/sqlite"
 	sqlite3 "modernc.org/sqlite/lib"
 )
@@ -156,6 +158,7 @@ type Config struct {
 	SocketMode           os.FileMode
 	MaxConcurrentWorkers int
 	Provider             config.ProviderConfig
+	Task                 config.TaskConfig
 }
 
 func LoadConfig() (Config, error) {
@@ -179,12 +182,17 @@ func LoadConfig() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	taskConfig, err := config.Task(stateDir)
+	if err != nil {
+		return Config{}, err
+	}
 	return Config{
 		StateDir:             stateDir,
 		SocketPath:           socketPath,
 		SocketMode:           socketMode,
 		MaxConcurrentWorkers: maxWorkers,
 		Provider:             providerConfig,
+		Task:                 taskConfig,
 	}, nil
 }
 
@@ -314,8 +322,15 @@ func runConfigured(config Config) error {
 		fmt.Printf("Model provider configured: %s (model %s)\n", provider.ProviderID, config.Provider.Model)
 	}
 
+	task := buildTaskRuntime(model, config.Task)
+	if task == nil {
+		fmt.Printf("Task worker not configured; task sessions will fail\n")
+	} else {
+		fmt.Printf("Task workspaces: %s\n", task.workspacesDir)
+	}
+
 	var workers workerGroup
-	dispatcher := newDispatcher(stateDB, &workers, config.MaxConcurrentWorkers, model)
+	dispatcher := newDispatcher(stateDB, &workers, config.MaxConcurrentWorkers, model, task)
 
 	defer func() {
 		cancel()
@@ -939,6 +954,14 @@ func handleConnection(
 
 		if execution != nil {
 			encoded := executionToIPC(*execution)
+			// A task execution reports progress derived from its durable
+			// phase rather than the placeholder step counter.
+			if run, _ := stateDB.GetTaskRunByExecution(
+				context.Background(),
+				execution.ID,
+			); run != nil {
+				applyTaskProgress(&encoded, run.Phase)
+			}
 			response.Execution = &encoded
 		}
 
@@ -1048,6 +1071,476 @@ func handleConnection(
 			AnswerApplied: applied,
 		})
 
+	case "task-start":
+		if request.ProjectID <= 0 {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: "a task requires a project id",
+			})
+			return
+		}
+		if strings.TrimSpace(request.Task) == "" {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: "a task requires a task description",
+			})
+			return
+		}
+		var taskRuntimeRef *taskRuntime
+		if disp != nil {
+			taskRuntimeRef = disp.task
+		}
+		if taskRuntimeRef == nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: "no model provider is configured",
+			})
+			return
+		}
+		if _, err := stateDB.GetProject(context.Background(), request.ProjectID); err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		projectID := request.ProjectID
+		taskText := request.Task
+		session, err := stateDB.CreateSessionWithDetails(
+			context.Background(),
+			codingSessionTitle(request.Title, request.Task),
+			&projectID,
+			&taskText,
+			"task",
+			provider.ProviderID,
+			codingModel(request.Model, taskRuntimeRef.defaultModel),
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		execution, err := stateDB.QueueSessionExecution(
+			context.Background(),
+			session.ID,
+			1,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if disp != nil {
+			disp.notify()
+		}
+		encodedSession := sessionToIPC(session)
+		encodedExecution := executionToIPC(execution)
+		applyTaskProgress(&encodedExecution, state.TaskPhasePrepared)
+		_ = encoder.Encode(ipc.Response{
+			OK:        true,
+			Session:   &encodedSession,
+			Execution: &encodedExecution,
+		})
+
+	case "task-status":
+		run, err := stateDB.GetTaskRunBySession(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if run == nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: fmt.Sprintf("session %d has no task run", request.SessionID),
+			})
+			return
+		}
+		operations, err := stateDB.ListTaskOperations(
+			context.Background(),
+			run.ID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		encodedRun := taskRunToIPC(*run)
+		encodedOps := make([]ipc.TaskOperation, 0, len(operations))
+		for _, op := range operations {
+			encodedOps = append(encodedOps, taskOperationToIPC(op))
+		}
+		_ = encoder.Encode(ipc.Response{
+			OK:             true,
+			TaskRun:        &encodedRun,
+			TaskOperations: encodedOps,
+		})
+
+	case "task-cleanup":
+		run, err := stateDB.GetTaskRunBySession(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if run == nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: fmt.Sprintf("session %d has no task run", request.SessionID),
+			})
+			return
+		}
+		if run.CleanedAt != nil || run.WorkspacePath == "" {
+			_ = encoder.Encode(ipc.Response{
+				OK:      true,
+				Message: "workspace already cleaned",
+			})
+			return
+		}
+		// Never remove a workspace that a live worker is still using. Only
+		// non-terminal executions can be actively reading or writing the
+		// worktree; a completed/failed/canceled run's workspace is safe to
+		// remove at the user's explicit request.
+		_, latest, err := stateDB.SessionExecutionStatus(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if latest != nil &&
+			(latest.Status == state.ExecutionStatusRunning ||
+				latest.Status == state.ExecutionStatusQueued) {
+			_ = encoder.Encode(ipc.Response{
+				OK: false,
+				Message: fmt.Sprintf(
+					"session %d has an active task execution; cancel it before cleaning up its workspace",
+					request.SessionID,
+				),
+			})
+			return
+		}
+		if err := workspace.Remove(
+			context.Background(),
+			run.RepoRoot,
+			run.WorkspacePath,
+		); err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if err := stateDB.MarkTaskRunCleaned(
+			context.Background(),
+			run.ID,
+		); err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		_ = encoder.Encode(ipc.Response{
+			OK:      true,
+			Message: fmt.Sprintf("removed workspace for task run %d", run.ID),
+		})
+
+	case "task-diff":
+		run, err := stateDB.GetTaskRunBySession(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if run == nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: fmt.Sprintf("session %d has no task run", request.SessionID),
+			})
+			return
+		}
+		encodedRun := taskRunToIPC(*run)
+		response := ipc.Response{OK: true, TaskRun: &encodedRun}
+		switch {
+		case run.Applied || run.Phase == state.TaskPhaseApplied:
+			// The authoritative applied diff is the persisted workspace diff.
+			response.Diff = run.WorkspaceDiff
+			response.DiffSource = "applied"
+		case run.Phase == state.TaskPhaseProposed:
+			diff, derr := renderProposedDiff(context.Background(), *run)
+			if derr != nil {
+				_ = encoder.Encode(ipc.Response{
+					OK:      false,
+					Message: derr.Error(),
+				})
+				return
+			}
+			response.Diff = diff
+			response.DiffSource = "proposed"
+		case run.Phase == state.TaskPhaseRejected:
+			// A rejected proposal was never applied; show the proposal that was
+			// declined so the history stays inspectable.
+			diff, derr := renderProposedDiff(context.Background(), *run)
+			if derr != nil {
+				_ = encoder.Encode(ipc.Response{
+					OK:      false,
+					Message: derr.Error(),
+				})
+				return
+			}
+			response.Diff = diff
+			response.DiffSource = "proposed"
+		default:
+			_ = encoder.Encode(ipc.Response{
+				OK: false,
+				Message: fmt.Sprintf(
+					"session %d task is %s; no proposal or applied diff to show",
+					request.SessionID,
+					run.Phase,
+				),
+			})
+			return
+		}
+		_ = encoder.Encode(response)
+
+	case "task-approve":
+		run, err := stateDB.GetTaskRunBySession(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if run == nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: fmt.Sprintf("session %d has no task run", request.SessionID),
+			})
+			return
+		}
+		if run.Phase != state.TaskPhaseProposed {
+			_ = encoder.Encode(ipc.Response{
+				OK: false,
+				Message: fmt.Sprintf(
+					"session %d task is %s, not awaiting approval",
+					request.SessionID,
+					run.Phase,
+				),
+			})
+			return
+		}
+		interaction, err := stateDB.GetPendingHumanInput(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if interaction == nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: fmt.Sprintf("session %d has no pending approval interaction", request.SessionID),
+			})
+			return
+		}
+		// Guard the approval binding: the pending interaction must authorize
+		// exactly the currently persisted proposal. A changed proposal is
+		// refused so the user must review it again.
+		if err := verifyApprovalBinding(*run, *interaction); err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		_, applied, err := stateDB.AnswerHumanInput(
+			context.Background(),
+			interaction.ID,
+			"approve",
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if !applied {
+			// The interaction was already answered; report the current state
+			// rather than silently authorizing a different proposal.
+			_ = encoder.Encode(ipc.Response{
+				OK:            true,
+				AnswerApplied: false,
+				Message:       fmt.Sprintf("interaction %d was already answered", interaction.ID),
+			})
+			return
+		}
+		if _, err := stateDB.QueueResumeAfterHumanInput(
+			context.Background(),
+			request.SessionID,
+		); err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if disp != nil {
+			disp.notify()
+		}
+		updated, err := stateDB.GetTaskRunBySession(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil || updated == nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      true,
+				Message: "approved; resuming task",
+			})
+			return
+		}
+		encodedRun := taskRunToIPC(*updated)
+		_ = encoder.Encode(ipc.Response{
+			OK:            true,
+			AnswerApplied: true,
+			TaskRun:       &encodedRun,
+			Message:       "approved; resuming task",
+		})
+
+	case "task-reject":
+		run, err := stateDB.GetTaskRunBySession(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if run == nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: fmt.Sprintf("session %d has no task run", request.SessionID),
+			})
+			return
+		}
+		if run.Phase != state.TaskPhaseProposed {
+			_ = encoder.Encode(ipc.Response{
+				OK: false,
+				Message: fmt.Sprintf(
+					"session %d task is %s, not awaiting approval",
+					request.SessionID,
+					run.Phase,
+				),
+			})
+			return
+		}
+		interaction, err := stateDB.GetPendingHumanInput(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if interaction == nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: fmt.Sprintf("session %d has no pending approval interaction", request.SessionID),
+			})
+			return
+		}
+		_, applied, err := stateDB.AnswerHumanInput(
+			context.Background(),
+			interaction.ID,
+			"reject",
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if !applied {
+			_ = encoder.Encode(ipc.Response{
+				OK:            true,
+				AnswerApplied: false,
+				Message:       fmt.Sprintf("interaction %d was already answered", interaction.ID),
+			})
+			return
+		}
+		if _, err := stateDB.QueueResumeAfterHumanInput(
+			context.Background(),
+			request.SessionID,
+		); err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+		if disp != nil {
+			disp.notify()
+		}
+		updated, err := stateDB.GetTaskRunBySession(
+			context.Background(),
+			request.SessionID,
+		)
+		if err != nil || updated == nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      true,
+				Message: "rejected; resuming task",
+			})
+			return
+		}
+		encodedRun := taskRunToIPC(*updated)
+		_ = encoder.Encode(ipc.Response{
+			OK:            true,
+			AnswerApplied: true,
+			TaskRun:       &encodedRun,
+			Message:       "rejected; resuming task",
+		})
+
 	case "session-events":
 		limit := request.Limit
 		if limit <= 0 {
@@ -1114,6 +1607,7 @@ func launchExecutionWorker(
 	stateDB *state.Database,
 	workers *workerGroup,
 	model *modelRuntime,
+	task *taskRuntime,
 	execution state.SessionExecution,
 	notify func(),
 ) error {
@@ -1146,6 +1640,17 @@ func launchExecutionWorker(
 				failExecution(stateDB, execution.ID)
 			} else {
 				model.runModelWorker(workerCtx, stateDB, execution)
+			}
+		case "task":
+			if task == nil {
+				fmt.Fprintf(
+					os.Stderr,
+					"forgehand: execution %d is a task execution but no provider is configured\n",
+					execution.ID,
+				)
+				failExecution(stateDB, execution.ID)
+			} else {
+				task.runTaskWorker(workerCtx, stateDB, execution)
 			}
 		default:
 			runFakeWorkerWithPause(

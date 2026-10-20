@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestExplicitConfigurationOverridesDevelopmentDefaults(t *testing.T) {
@@ -172,4 +173,46 @@ func TestMaxConcurrentWorkersParsing(t *testing.T) {
 			}
 		}
 	})
+}
+
+func TestTaskValidationConfig(t *testing.T) {
+	t.Setenv(TaskValidateEnvironment, "")
+	t.Setenv(TaskValidateTimeoutEnvironment, "")
+
+	config, err := Task(t.TempDir())
+	if err != nil {
+		t.Fatalf("Task: %v", err)
+	}
+	if config.Validate {
+		t.Fatal("validation must be disabled by default")
+	}
+
+	t.Setenv(TaskValidateEnvironment, "true")
+	t.Setenv(TaskValidateTimeoutEnvironment, "45s")
+	config, err = Task(t.TempDir())
+	if err != nil {
+		t.Fatalf("Task with validation: %v", err)
+	}
+	if !config.Validate {
+		t.Fatal("expected validation to be enabled")
+	}
+	if config.ValidateTimeout != 45*time.Second {
+		t.Fatalf("ValidateTimeout = %v, want 45s", config.ValidateTimeout)
+	}
+
+	t.Setenv(TaskValidateEnvironment, "not-a-bool")
+	if _, err := Task(t.TempDir()); err == nil {
+		t.Fatal("expected error for invalid boolean")
+	}
+
+	t.Setenv(TaskValidateEnvironment, "true")
+	t.Setenv(TaskValidateTimeoutEnvironment, "not-a-duration")
+	if _, err := Task(t.TempDir()); err == nil {
+		t.Fatal("expected error for invalid duration")
+	}
+
+	t.Setenv(TaskValidateTimeoutEnvironment, "-5s")
+	if _, err := Task(t.TempDir()); err == nil {
+		t.Fatal("expected error for non-positive duration")
+	}
 }

@@ -72,8 +72,8 @@ VALUES (1, ?, 5, 5, ?, ?)
 	).Scan(&version); err != nil {
 		t.Fatalf("read migrated schema version: %v", err)
 	}
-	if version != 13 {
-		t.Fatalf("migrated schema version = %d, want 13", version)
+	if version != 15 {
+		t.Fatalf("migrated schema version = %d, want 15", version)
 	}
 
 	var queueSeq sql.NullInt64
