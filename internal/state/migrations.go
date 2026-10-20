@@ -341,6 +341,17 @@ ALTER TABLE task_runs ADD COLUMN validation_status TEXT NOT NULL DEFAULT '';
 ALTER TABLE task_runs ADD COLUMN validation_json TEXT NOT NULL DEFAULT '';
 `,
 	},
+	{
+		version: 16,
+		sql: `
+CREATE TABLE execution_resources (
+	execution_id TEXT NOT NULL,
+	resource TEXT NOT NULL,
+	PRIMARY KEY (execution_id, resource),
+	FOREIGN KEY (execution_id) REFERENCES session_executions(id) ON DELETE CASCADE
+);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

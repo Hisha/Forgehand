@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
@@ -57,10 +58,11 @@ type executionStore interface {
 // and therefore cannot survive a daemon restart, which is exactly the intended
 // lifetime for Milestone 2E (no distributed leases).
 type workerGroup struct {
-	mu      sync.Mutex
-	group   sync.WaitGroup
-	stopped bool
-	owners  map[int64]context.CancelFunc
+	mu        sync.Mutex
+	group     sync.WaitGroup
+	stopped   bool
+	owners    map[int64]context.CancelFunc
+	resources map[int64][]string
 }
 
 func (w *workerGroup) start() bool {
@@ -101,13 +103,101 @@ func (w *workerGroup) claim(executionID int64, cancel context.CancelFunc) bool {
 	return true
 }
 
-// release removes a worker's ownership record so a later run or resume of the
-// same execution is not blocked.
+// acquireResources records exclusive resource ownership for a claimed
+// execution. It is all-or-nothing: when any required resource is already held
+// by another execution, nothing is recorded and it returns false, so a claim
+// can never partially hold its resource set. Callers pair it with claim and
+// rely on release to free the resources with the execution ownership record.
+func (w *workerGroup) acquireResources(executionID int64, resources []string) bool {
+	if len(resources) == 0 {
+		return true
+	}
+
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	for _, held := range w.resources {
+		for _, have := range held {
+			for _, want := range resources {
+				if have == want {
+					return false
+				}
+			}
+		}
+	}
+
+	if w.resources == nil {
+		w.resources = make(map[int64][]string)
+	}
+	w.resources[executionID] = append([]string(nil), resources...)
+	return true
+}
+
+// heldResources returns a sorted snapshot of every exclusive resource currently
+// held by running workers. The dispatcher passes it into claiming so a blocked
+// execution is skipped, and status reporting uses it to name blockers.
+func (w *workerGroup) heldResources() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	seen := make(map[string]struct{})
+	for _, resources := range w.resources {
+		for _, resource := range resources {
+			seen[resource] = struct{}{}
+		}
+	}
+
+	sorted := make([]string, 0, len(seen))
+	for resource := range seen {
+		sorted = append(sorted, resource)
+	}
+	sort.Strings(sorted)
+	return sorted
+}
+
+// resourceBlock pairs a held exclusive resource with the execution that holds
+// it, for status annotation of resource-blocked queued executions.
+type resourceBlock struct {
+	resource string
+	holder   int64
+}
+
+// resourceBlocks reports which of the required resources are currently held by
+// running executions, paired with the holding execution's ID and sorted by
+// resource name for deterministic status output.
+func (w *workerGroup) resourceBlocks(required []string) []resourceBlock {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	holders := make(map[string]int64)
+	for executionID, resources := range w.resources {
+		for _, resource := range resources {
+			holders[resource] = executionID
+		}
+	}
+
+	var blocks []resourceBlock
+	for _, resource := range required {
+		if holder, ok := holders[resource]; ok {
+			blocks = append(blocks, resourceBlock{resource: resource, holder: holder})
+		}
+	}
+	sort.Slice(blocks, func(i, j int) bool {
+		return blocks[i].resource < blocks[j].resource
+	})
+	return blocks
+}
+
+// release removes a worker's ownership record and frees its held resources so
+// a later run or resume of the same execution is not blocked. Every worker
+// exit path ends here, so finish, failure, cancellation, and human-wait all
+// release resources at the same single point.
 func (w *workerGroup) release(executionID int64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
 	delete(w.owners, executionID)
+	delete(w.resources, executionID)
 }
 
 // cancel signals the worker that owns an execution, if any. It reports whether
@@ -719,19 +809,32 @@ func handleConnection(
 			return
 		}
 
+		blocked, err := stateDB.CountResourceBlockedQueuedExecutions(
+			context.Background(),
+			workers.heldResources(),
+		)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
 		capacity := 0
 		if disp != nil {
 			capacity = disp.capacity()
 		}
 
 		_ = encoder.Encode(ipc.Response{
-			OK:               true,
-			Message:          "running",
-			Version:          version.Version,
-			PID:              os.Getpid(),
-			WorkerCapacity:   capacity,
-			ActiveWorkers:    workers.ownerCount(),
-			QueuedExecutions: queued,
+			OK:                        true,
+			Message:                   "running",
+			Version:                   version.Version,
+			PID:                       os.Getpid(),
+			WorkerCapacity:            capacity,
+			ActiveWorkers:             workers.ownerCount(),
+			QueuedExecutions:          queued,
+			ResourceBlockedExecutions: blocked,
 		})
 
 	case "session-start":
@@ -804,6 +907,7 @@ func handleConnection(
 			context.Background(),
 			request.SessionID,
 			fakeWorkerSteps,
+			request.Resources...,
 		)
 		if err != nil {
 			_ = encoder.Encode(ipc.Response{
@@ -818,6 +922,7 @@ func handleConnection(
 		}
 
 		encoded := executionToIPC(execution)
+		annotateResourceBlocks(workers, &encoded)
 		_ = encoder.Encode(ipc.Response{
 			OK:        true,
 			Execution: &encoded,
@@ -861,6 +966,7 @@ func handleConnection(
 		}
 
 		encoded := executionToIPC(execution)
+		annotateResourceBlocks(workers, &encoded)
 		_ = encoder.Encode(ipc.Response{
 			OK:        true,
 			Execution: &encoded,
@@ -962,6 +1068,7 @@ func handleConnection(
 			); run != nil {
 				applyTaskProgress(&encoded, run.Phase)
 			}
+			annotateResourceBlocks(workers, &encoded)
 			response.Execution = &encoded
 		}
 
@@ -1627,6 +1734,17 @@ func launchExecutionWorker(
 		)
 	}
 
+	if !workers.acquireResources(execution.ID, execution.Resources) {
+		workers.release(execution.ID)
+		workers.done()
+		cancel()
+		return fmt.Errorf(
+			"execution %d could not acquire resources %v",
+			execution.ID,
+			execution.Resources,
+		)
+	}
+
 	go func() {
 		defer cancel()
 		switch execution.Kind {
@@ -1671,6 +1789,27 @@ func launchExecutionWorker(
 	return nil
 }
 
+// annotateResourceBlocks attaches to a QUEUED execution's IPC encoding the
+// currently held resources that keep it from dispatching, paired with the
+// holding execution's ID. It is a no-op for executions in any other status.
+// A block naming the execution itself is skipped: that only occurs in the
+// instant between a state read and the dispatcher's claim.
+func annotateResourceBlocks(workers *workerGroup, execution *ipc.Execution) {
+	if execution == nil || execution.Status != state.ExecutionStatusQueued {
+		return
+	}
+
+	for _, block := range workers.resourceBlocks(execution.Resources) {
+		if block.holder == execution.ID {
+			continue
+		}
+		execution.BlockedBy = append(execution.BlockedBy, ipc.ResourceBlock{
+			Resource:          block.resource,
+			HeldByExecutionID: block.holder,
+		})
+	}
+}
+
 func executionToIPC(execution state.SessionExecution) ipc.Execution {
 	encoded := ipc.Execution{
 		ID:          execution.ID,
@@ -1692,6 +1831,7 @@ func executionToIPC(execution state.SessionExecution) ipc.Execution {
 	}
 	encoded.QueuePosition = execution.QueuePosition
 	encoded.Kind = execution.Kind
+	encoded.Resources = append([]string(nil), execution.Resources...)
 	return encoded
 }
 

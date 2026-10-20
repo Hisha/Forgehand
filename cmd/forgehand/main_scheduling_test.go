@@ -12,13 +12,14 @@ func TestStatusPrintsWorkerScheduling(t *testing.T) {
 	startFakeDaemonSocket(t, func(request ipc.Request) ipc.Response {
 		received <- request
 		return ipc.Response{
-			OK:               true,
-			Message:          "running",
-			Version:          "test",
-			PID:              4242,
-			WorkerCapacity:   2,
-			ActiveWorkers:    1,
-			QueuedExecutions: 3,
+			OK:                        true,
+			Message:                   "running",
+			Version:                   "test",
+			PID:                       4242,
+			WorkerCapacity:            2,
+			ActiveWorkers:             1,
+			QueuedExecutions:          3,
+			ResourceBlockedExecutions: 1,
 		}
 	})
 
@@ -35,6 +36,7 @@ func TestStatusPrintsWorkerScheduling(t *testing.T) {
 		"Worker capacity: 2",
 		"Active workers: 1",
 		"Queued executions: 3",
+		"Resource-blocked executions: 1",
 	} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("status output missing %q:\n%s", want, output)
@@ -74,6 +76,57 @@ func TestSessionRunPrintsQueuePosition(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("run output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestSessionRunPassesResourcesAndPrintsBlocker(t *testing.T) {
+	received := make(chan ipc.Request, 1)
+	startFakeDaemonSocket(t, func(request ipc.Request) ipc.Response {
+		received <- request
+		return ipc.Response{
+			OK: true,
+			Execution: &ipc.Execution{
+				ID:         9,
+				SessionID:  7,
+				Status:     "QUEUED",
+				TotalSteps: 5,
+				Resources:  []string{"cpu", "gpu"},
+				BlockedBy:  []ipc.ResourceBlock{{Resource: "gpu", HeldByExecutionID: 4}},
+			},
+		}
+	})
+
+	output := captureStdout(t, func() {
+		err := sessionCommand([]string{"run", "7", "--resource", "gpu", "--resource", "cpu"})
+		if err != nil {
+			t.Fatalf("sessionCommand run: %v", err)
+		}
+	})
+
+	request := <-received
+	if request.Command != "session-run" || request.SessionID != 7 {
+		t.Fatalf("request = %#v", request)
+	}
+	if len(request.Resources) != 2 ||
+		request.Resources[0] != "gpu" ||
+		request.Resources[1] != "cpu" {
+		t.Fatalf("request resources = %v, want [gpu cpu]", request.Resources)
+	}
+
+	for _, want := range []string{
+		"Resources: cpu, gpu",
+		"Blocked by resource gpu (execution 4)",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("run output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestSessionRunRejectsMissingResourceValue(t *testing.T) {
+	err := sessionCommand([]string{"run", "7", "--resource"})
+	if err == nil {
+		t.Fatal("missing --resource value was accepted")
 	}
 }
 

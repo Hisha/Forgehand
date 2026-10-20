@@ -84,6 +84,7 @@ func status() error {
 	fmt.Printf("Worker capacity: %d\n", response.WorkerCapacity)
 	fmt.Printf("Active workers: %d\n", response.ActiveWorkers)
 	fmt.Printf("Queued executions: %d\n", response.QueuedExecutions)
+	fmt.Printf("Resource-blocked executions: %d\n", response.ResourceBlockedExecutions)
 
 	return nil
 }
@@ -139,16 +140,33 @@ func sessionCommand(args []string) error {
 		return startCodingSession(title, task, model, projectID)
 
 	case "run":
-		if len(args) != 2 {
-			return fmt.Errorf("usage: forgehand session run <id>")
+		var sessionID int64
+		var resources []string
+		for i := 1; i < len(args); i++ {
+			switch {
+			case args[i] == "--resource":
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --resource")
+				}
+				resources = append(resources, args[i+1])
+				i++
+			default:
+				if sessionID == 0 && !strings.HasPrefix(args[i], "-") {
+					id, err := strconv.ParseInt(args[i], 10, 64)
+					if err != nil || id <= 0 {
+						return fmt.Errorf("invalid session ID: %s", args[i])
+					}
+					sessionID = id
+					continue
+				}
+				return fmt.Errorf("unknown flag: %s", args[i])
+			}
+		}
+		if sessionID == 0 {
+			return fmt.Errorf("usage: forgehand session run <id> [--resource <name>]...")
 		}
 
-		sessionID, err := strconv.ParseInt(args[1], 10, 64)
-		if err != nil || sessionID <= 0 {
-			return fmt.Errorf("invalid session ID: %s", args[1])
-		}
-
-		return runSession(sessionID)
+		return runSession(sessionID, resources)
 
 	case "resume":
 		if len(args) != 2 {
@@ -564,10 +582,11 @@ func startSession(title string) error {
 	return nil
 }
 
-func runSession(sessionID int64) error {
+func runSession(sessionID int64, resources []string) error {
 	response, err := request(ipc.Request{
 		Command:   "session-run",
 		SessionID: sessionID,
+		Resources: resources,
 	})
 	if err != nil {
 		return err
@@ -588,8 +607,25 @@ func runSession(sessionID int64) error {
 	if response.Execution.QueuePosition > 0 {
 		fmt.Printf("Queue position: %d\n", response.Execution.QueuePosition)
 	}
+	printExecutionResources(response.Execution)
 
 	return nil
+}
+
+// printExecutionResources reports an execution's exclusive resource
+// requirements and, for a blocked queued execution, which running execution
+// holds each resource.
+func printExecutionResources(execution *ipc.Execution) {
+	if len(execution.Resources) > 0 {
+		fmt.Printf("Resources: %s\n", strings.Join(execution.Resources, ", "))
+	}
+	for _, block := range execution.BlockedBy {
+		fmt.Printf(
+			"Blocked by resource %s (execution %d)\n",
+			block.Resource,
+			block.HeldByExecutionID,
+		)
+	}
 }
 
 func resumeSession(sessionID int64) error {
@@ -616,6 +652,7 @@ func resumeSession(sessionID int64) error {
 	if response.Execution.QueuePosition > 0 {
 		fmt.Printf("Queue position: %d\n", response.Execution.QueuePosition)
 	}
+	printExecutionResources(response.Execution)
 
 	return nil
 }
@@ -722,6 +759,7 @@ func sessionStatus(sessionID int64) error {
 	if response.Execution.QueuePosition > 0 {
 		fmt.Printf("Queue position: %d\n", response.Execution.QueuePosition)
 	}
+	printExecutionResources(response.Execution)
 
 	if response.Execution.CanceledAt != nil {
 		fmt.Printf("Canceled: %s\n", *response.Execution.CanceledAt)
@@ -1659,7 +1697,7 @@ func usage() {
 	fmt.Println("  investigate <id> --component <identity> [--analysis <id>] [--format text|json] [--limit <n>]  Investigate component")
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
-	fmt.Println("  session run <id>                Queue a session for a worker")
+	fmt.Println("  session run <id> [--resource <name>]...  Queue a session for a worker, optionally holding exclusive resources")
 	fmt.Println("  session resume <id>             Queue an interrupted or answered waiting session")
 	fmt.Println("  session status <id>             Show a session's execution progress")
 	fmt.Println("  session cancel <id> [--reason \"...\"]  Permanently cancel a session")

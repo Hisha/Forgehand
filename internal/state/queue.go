@@ -11,6 +11,163 @@ import (
 // run inside or outside a transaction.
 type rowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
+// executionResources reads the persisted exclusive resource requirements for a
+// single execution, sorted for deterministic scheduling and display.
+func executionResources(
+	ctx context.Context,
+	q rowQuerier,
+	executionID int64,
+) ([]string, error) {
+	rows, err := q.QueryContext(ctx, `
+SELECT resource
+FROM execution_resources
+WHERE execution_id = ?
+ORDER BY resource ASC
+`, executionID)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"read resources for execution %d: %w",
+			executionID,
+			err,
+		)
+	}
+	defer rows.Close()
+
+	var resources []string
+	for rows.Next() {
+		var resource string
+		if err := rows.Scan(&resource); err != nil {
+			return nil, fmt.Errorf(
+				"scan resource for execution %d: %w",
+				executionID,
+				err,
+			)
+		}
+		resources = append(resources, resource)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf(
+			"iterate resources for execution %d: %w",
+			executionID,
+			err,
+		)
+	}
+	return resources, nil
+}
+
+// queuedExecutionsWithResources reads every QUEUED execution in FIFO order
+// (queue sequence, then row id) together with its resource requirements. It is
+// the selection input for resource-aware claiming and for the resource-blocked
+// status count. A single joined query avoids nested queries on one transaction
+// connection.
+func queuedExecutionsWithResources(
+	ctx context.Context,
+	q rowQuerier,
+) ([]SessionExecution, error) {
+	rows, err := q.QueryContext(ctx, `
+SELECT
+	e.id,
+	e.session_id,
+	e.status,
+	e.current_step,
+	e.total_steps,
+	e.started_at,
+	e.queue_seq,
+	e.kind,
+	r.resource
+FROM session_executions e
+LEFT JOIN execution_resources r ON r.execution_id = e.id
+WHERE e.status = ?
+ORDER BY e.queue_seq ASC, e.id ASC, r.resource ASC
+`, ExecutionStatusQueued)
+	if err != nil {
+		return nil, fmt.Errorf("read queued executions: %w", err)
+	}
+	defer rows.Close()
+
+	var executions []SessionExecution
+	indices := make(map[int64]int)
+	for rows.Next() {
+		var (
+			execution   SessionExecution
+			startedText string
+			queueSeq    sql.NullInt64
+			kind        sql.NullString
+			resource    sql.NullString
+		)
+		if err := rows.Scan(
+			&execution.ID,
+			&execution.SessionID,
+			&execution.Status,
+			&execution.CurrentStep,
+			&execution.TotalSteps,
+			&startedText,
+			&queueSeq,
+			&kind,
+			&resource,
+		); err != nil {
+			return nil, fmt.Errorf("scan queued execution: %w", err)
+		}
+
+		if index, ok := indices[execution.ID]; ok {
+			if resource.Valid {
+				executions[index].Resources = append(
+					executions[index].Resources,
+					resource.String,
+				)
+			}
+			continue
+		}
+
+		startedAt, err := time.Parse(time.RFC3339Nano, startedText)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"parse execution %d start time: %w",
+				execution.ID,
+				err,
+			)
+		}
+		execution.StartedAt = startedAt
+		if queueSeq.Valid {
+			value := queueSeq.Int64
+			execution.QueueSeq = &value
+		}
+		if kind.Valid {
+			execution.Kind = kind.String
+		}
+		if resource.Valid {
+			execution.Resources = append(execution.Resources, resource.String)
+		}
+
+		indices[execution.ID] = len(executions)
+		executions = append(executions, execution)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate queued executions: %w", err)
+	}
+	return executions, nil
+}
+
+// resourcesConflict reports whether an execution's required resources overlap
+// the set of resources already held by running executions.
+func resourcesConflict(required []string, held map[string]struct{}) bool {
+	for _, resource := range required {
+		if _, ok := held[resource]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func heldResourceSet(heldResources []string) map[string]struct{} {
+	held := make(map[string]struct{}, len(heldResources))
+	for _, resource := range heldResources {
+		held[resource] = struct{}{}
+	}
+	return held
 }
 
 // nextQueueSeq returns the next durable, globally monotonic queue sequence.
@@ -101,6 +258,12 @@ LIMIT 1
 		execution.Kind = kind.String
 	}
 
+	resources, err := executionResources(ctx, tx, execution.ID)
+	if err != nil {
+		return SessionExecution{}, err
+	}
+	execution.Resources = resources
+
 	return execution, nil
 }
 
@@ -108,14 +271,21 @@ LIMIT 1
 // new QUEUED execution and appends the execution.queued event in one
 // transaction. The dispatcher later claims it and transitions it to RUNNING.
 // Only a READY session can be queued; a session already QUEUED or RUNNING is
-// rejected.
+// rejected. Optional exclusive resource requirements are persisted alongside
+// the execution; the dispatcher acquires them for the execution's whole run.
 func (d *Database) QueueSessionExecution(
 	ctx context.Context,
 	sessionID int64,
 	totalSteps int,
+	resources ...string,
 ) (SessionExecution, error) {
 	if totalSteps <= 0 {
 		return SessionExecution{}, fmt.Errorf("total steps must be greater than zero")
+	}
+
+	normalizedResources, err := normalizeResources(resources)
+	if err != nil {
+		return SessionExecution{}, fmt.Errorf("queue session execution: %w", err)
 	}
 
 	tx, err := d.db.BeginTx(ctx, nil)
@@ -192,6 +362,23 @@ VALUES (?, ?, 0, ?, ?, ?, ?)
 		return SessionExecution{}, fmt.Errorf("read execution id: %w", err)
 	}
 
+	for _, resource := range normalizedResources {
+		if _, err := tx.ExecContext(ctx, `
+INSERT INTO execution_resources (execution_id, resource)
+VALUES (?, ?)
+`,
+			executionID,
+			resource,
+		); err != nil {
+			return SessionExecution{}, fmt.Errorf(
+				"record resource %q for execution %d: %w",
+				resource,
+				executionID,
+				err,
+			)
+		}
+	}
+
 	if err := setSessionState(
 		ctx,
 		tx,
@@ -205,19 +392,23 @@ VALUES (?, ?, 0, ?, ?, ?, ?)
 	}
 
 	execID := executionID
+	queuedDetails := map[string]any{
+		"execution_id": executionID,
+		"current_step": 0,
+		"total_steps":  totalSteps,
+		"queue_seq":    seq,
+		"status":       ExecutionStatusQueued,
+	}
+	if len(normalizedResources) > 0 {
+		queuedDetails["resources"] = normalizedResources
+	}
 	if err := d.appendSessionEvent(
 		ctx,
 		tx,
 		sessionID,
 		&execID,
 		EventTypeExecutionQueued,
-		map[string]any{
-			"execution_id": executionID,
-			"current_step": 0,
-			"total_steps":  totalSteps,
-			"queue_seq":    seq,
-			"status":       ExecutionStatusQueued,
-		},
+		queuedDetails,
 	); err != nil {
 		return SessionExecution{}, err
 	}
@@ -242,6 +433,7 @@ VALUES (?, ?, 0, ?, ?, ?, ?)
 		QueueSeq:      &queueSeq,
 		QueuePosition: position,
 		Kind:          executionKind,
+		Resources:     normalizedResources,
 	}, nil
 }
 
@@ -544,13 +736,18 @@ func (d *Database) QueueResumeAfterHumanInput(
 	return execution, nil
 }
 
-// ClaimNextQueuedExecution atomically transitions the oldest QUEUED execution
-// (by queue sequence, then row id) to RUNNING and its session to RUNNING,
-// appending the execution.dispatched event in the same transaction. It returns
-// ok=false when the queue is empty. Running under the immediate write lock makes
-// it safe for a single dispatcher and for competing test dispatchers alike.
+// ClaimNextQueuedExecution atomically transitions the oldest eligible QUEUED
+// execution (by queue sequence, then row id) to RUNNING and its session to
+// RUNNING, appending the execution.dispatched event in the same transaction.
+// An execution is eligible when none of its required exclusive resources is
+// already in heldResources; blocked executions are skipped so unrelated work
+// proceeds, while FIFO is preserved among eligible executions. It returns
+// ok=false when no execution is queued or every queued execution is blocked.
+// Running under the immediate write lock makes it safe for a single dispatcher
+// and for competing test dispatchers alike.
 func (d *Database) ClaimNextQueuedExecution(
 	ctx context.Context,
+	heldResources []string,
 ) (SessionExecution, bool, error) {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -558,15 +755,24 @@ func (d *Database) ClaimNextQueuedExecution(
 	}
 	defer tx.Rollback()
 
-	execution, err := latestExecutionForQueueClaim(ctx, tx)
-	if err == sql.ErrNoRows {
+	queued, err := queuedExecutionsWithResources(ctx, tx)
+	if err != nil {
+		return SessionExecution{}, false, err
+	}
+
+	held := heldResourceSet(heldResources)
+	var execution *SessionExecution
+	for index := range queued {
+		if !resourcesConflict(queued[index].Resources, held) {
+			execution = &queued[index]
+			break
+		}
+	}
+	if execution == nil {
 		if err := tx.Commit(); err != nil {
 			return SessionExecution{}, false, fmt.Errorf("commit empty claim: %w", err)
 		}
 		return SessionExecution{}, false, nil
-	}
-	if err != nil {
-		return SessionExecution{}, false, err
 	}
 
 	nowText := time.Now().UTC().Format(time.RFC3339Nano)
@@ -602,6 +808,9 @@ func (d *Database) ClaimNextQueuedExecution(
 	if execution.QueueSeq != nil {
 		details["queue_seq"] = *execution.QueueSeq
 	}
+	if len(execution.Resources) > 0 {
+		details["resources"] = execution.Resources
+	}
 	if err := d.appendSessionEvent(
 		ctx,
 		tx,
@@ -622,68 +831,7 @@ func (d *Database) ClaimNextQueuedExecution(
 	}
 
 	execution.Status = ExecutionStatusRunning
-	return execution, true, nil
-}
-
-// latestExecutionForQueueClaim reads the oldest QUEUED execution. It returns
-// sql.ErrNoRows when no execution is queued.
-func latestExecutionForQueueClaim(
-	ctx context.Context,
-	tx *sql.Tx,
-) (SessionExecution, error) {
-	var (
-		execution   SessionExecution
-		startedText string
-		queueSeq    sql.NullInt64
-		kind        sql.NullString
-	)
-
-	err := tx.QueryRowContext(ctx, `
-SELECT
-	id,
-	session_id,
-	status,
-	current_step,
-	total_steps,
-	started_at,
-	queue_seq,
-	kind
-FROM session_executions
-WHERE status = ?
-ORDER BY queue_seq ASC, id ASC
-LIMIT 1
-`, ExecutionStatusQueued).Scan(
-		&execution.ID,
-		&execution.SessionID,
-		&execution.Status,
-		&execution.CurrentStep,
-		&execution.TotalSteps,
-		&startedText,
-		&queueSeq,
-		&kind,
-	)
-	if err != nil {
-		return SessionExecution{}, err
-	}
-
-	startedAt, err := time.Parse(time.RFC3339Nano, startedText)
-	if err != nil {
-		return SessionExecution{}, fmt.Errorf(
-			"parse execution %d start time: %w",
-			execution.ID,
-			err,
-		)
-	}
-	execution.StartedAt = startedAt
-	if queueSeq.Valid {
-		value := queueSeq.Int64
-		execution.QueueSeq = &value
-	}
-	if kind.Valid {
-		execution.Kind = kind.String
-	}
-
-	return execution, nil
+	return *execution, true, nil
 }
 
 // CountQueuedExecutions reports how many executions are currently QUEUED. It is
@@ -696,6 +844,33 @@ FROM session_executions
 WHERE status = ?
 `, ExecutionStatusQueued).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count queued executions: %w", err)
+	}
+	return count, nil
+}
+
+// CountResourceBlockedQueuedExecutions reports how many QUEUED executions are
+// currently blocked because at least one of their required exclusive resources
+// is held by a running execution. It is read-only and backs the daemon status
+// resource-blocked report.
+func (d *Database) CountResourceBlockedQueuedExecutions(
+	ctx context.Context,
+	heldResources []string,
+) (int, error) {
+	if len(heldResources) == 0 {
+		return 0, nil
+	}
+
+	queued, err := queuedExecutionsWithResources(ctx, d.db)
+	if err != nil {
+		return 0, err
+	}
+
+	held := heldResourceSet(heldResources)
+	count := 0
+	for _, execution := range queued {
+		if resourcesConflict(execution.Resources, held) {
+			count++
+		}
 	}
 	return count, nil
 }

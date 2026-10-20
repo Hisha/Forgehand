@@ -109,7 +109,7 @@ func TestQueueClaimPreservesFIFOOrder(t *testing.T) {
 		sessionIDs = append(sessionIDs, session.ID)
 	}
 
-	first, ok, err := db.ClaimNextQueuedExecution(ctx)
+	first, ok, err := db.ClaimNextQueuedExecution(ctx, nil)
 	if err != nil {
 		t.Fatalf("ClaimNextQueuedExecution: %v", err)
 	}
@@ -134,7 +134,7 @@ func TestQueueClaimPreservesFIFOOrder(t *testing.T) {
 		t.Fatalf("dispatched session state = %q, want %q", stored.State, SessionStateRunning)
 	}
 
-	second, ok, err := db.ClaimNextQueuedExecution(ctx)
+	second, ok, err := db.ClaimNextQueuedExecution(ctx, nil)
 	if err != nil {
 		t.Fatalf("second ClaimNextQueuedExecution: %v", err)
 	}
@@ -174,7 +174,7 @@ func TestClaimNextQueuedExecutionSkipsCanceled(t *testing.T) {
 		t.Fatalf("CancelSessionExecution: %v", err)
 	}
 
-	claimed, ok, err := db.ClaimNextQueuedExecution(ctx)
+	claimed, ok, err := db.ClaimNextQueuedExecution(ctx, nil)
 	if err != nil {
 		t.Fatalf("ClaimNextQueuedExecution: %v", err)
 	}
@@ -288,7 +288,7 @@ func TestQueuePositionRecomputesAfterDispatch(t *testing.T) {
 		sessionIDs = append(sessionIDs, session.ID)
 	}
 
-	if _, ok, err := db.ClaimNextQueuedExecution(ctx); err != nil || !ok {
+	if _, ok, err := db.ClaimNextQueuedExecution(ctx, nil); err != nil || !ok {
 		t.Fatalf("claim head: ok=%v err=%v", ok, err)
 	}
 

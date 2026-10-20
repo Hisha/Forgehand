@@ -31,6 +31,9 @@ type Request struct {
 	// Task and Model configure a coding session created through session-start.
 	Task  string `json:"task,omitempty"`
 	Model string `json:"model,omitempty"`
+	// Resources lists exclusive named resources an execution requires for its
+	// whole run, requested through session-run.
+	Resources []string `json:"resources,omitempty"`
 }
 
 type Session struct {
@@ -112,6 +115,17 @@ type Execution struct {
 	// it is 0 when the execution is not queued.
 	QueuePosition int    `json:"queue_position,omitempty"`
 	Kind          string `json:"kind,omitempty"`
+	// Resources lists the exclusive named resources the execution requires.
+	// BlockedBy names the currently held resources that keep it queued.
+	Resources []string        `json:"resources,omitempty"`
+	BlockedBy []ResourceBlock `json:"blocked_by,omitempty"`
+}
+
+// ResourceBlock pairs a held exclusive resource with the execution currently
+// holding it, explaining why a queued execution cannot be dispatched yet.
+type ResourceBlock struct {
+	Resource          string `json:"resource"`
+	HeldByExecutionID int64  `json:"held_by_execution_id"`
 }
 
 // Interaction is a durable worker-to-human question. Answer is populated only
@@ -165,6 +179,9 @@ type Response struct {
 	WorkerCapacity   int `json:"worker_capacity,omitempty"`
 	ActiveWorkers    int `json:"active_workers,omitempty"`
 	QueuedExecutions int `json:"queued_executions,omitempty"`
+	// ResourceBlockedExecutions counts QUEUED executions currently blocked by
+	// an exclusive resource held by a running execution.
+	ResourceBlockedExecutions int `json:"resource_blocked_executions,omitempty"`
 }
 
 type Project struct {

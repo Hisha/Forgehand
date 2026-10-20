@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 )
@@ -21,6 +22,10 @@ const (
 // MaxCancelReasonLength bounds the user-supplied cancellation reason so the
 // durable event payload and execution row cannot grow without limit.
 const MaxCancelReasonLength = 200
+
+// MaxResourceNameLength bounds a single exclusive resource name so the durable
+// execution_resources rows cannot grow without limit.
+const MaxResourceNameLength = 100
 
 // CancellationOutcome describes the result of a CancelSessionExecution request.
 // It distinguishes a newly applied cancellation from an idempotent repeat and
@@ -68,6 +73,38 @@ type SessionExecution struct {
 	// currently QUEUED.
 	QueuePosition int
 	Kind          string
+	// Resources lists the exclusive named resources this execution requires
+	// for its whole run. Ownership is daemon-local and in-memory; only the
+	// requirements are persisted here. The list is normalized: trimmed,
+	// deduplicated, and sorted.
+	Resources []string
+}
+
+// normalizeResources trims, drops empty, deduplicates, and sorts resource
+// names so persisted requirements and scheduling decisions are deterministic.
+func normalizeResources(resources []string) ([]string, error) {
+	seen := make(map[string]struct{}, len(resources))
+	normalized := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		name := strings.TrimSpace(resource)
+		if name == "" {
+			return nil, fmt.Errorf("resource name must not be empty")
+		}
+		if len(name) > MaxResourceNameLength {
+			return nil, fmt.Errorf(
+				"resource name %q exceeds %d characters",
+				name,
+				MaxResourceNameLength,
+			)
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		normalized = append(normalized, name)
+	}
+	sort.Strings(normalized)
+	return normalized, nil
 }
 
 func (d *Database) StartSessionExecution(
@@ -839,6 +876,12 @@ LIMIT 1
 			execution.QueuePosition = position
 		}
 	}
+
+	resources, err := executionResources(ctx, d.db, execution.ID)
+	if err != nil {
+		return Session{}, nil, err
+	}
+	execution.Resources = resources
 
 	return session, &execution, nil
 }

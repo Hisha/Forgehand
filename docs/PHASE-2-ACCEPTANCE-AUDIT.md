@@ -494,9 +494,11 @@ Against a disposable binary under `/tmp/opencode/fh-m2b`:
 | 3 | Multiple sessions operating independently | FAIL | **PASS** — concurrent runs complete with no `SQLITE_BUSY`/stuck `RUNNING` |
 | 9 | Safe cancellation and shutdown | PARTIAL | **PARTIAL (improved)** — graceful shutdown preserved; worker errors now reach a terminal `FAILED`/`INTERRUPTED` state instead of `RUNNING`. User-initiated `session cancel` still absent. |
 | 10 | Persistent session event history and visibility | NOT IMPLEMENTED | **PARTIAL** — `session status` exposes execution progress/status via IPC/CLI; append-only event history/§4.5 still not implemented. |
+| 8 | Priority scheduling and resource allocation | NOT IMPLEMENTED | **PASS (resource claims)** — Milestone 2G adds exclusive named resource claims (migration v16 `execution_resources`): atomic all-or-nothing acquisition at dispatch, FIFO among eligible with skip-ahead past blocked work, release on completion/failure/cancel/`WAITING_FOR_USER`, no stale ownership after `SIGKILL` + restart, blocker surfaced in `status`/`session status`. See `docs/MILESTONE-2G-RESOURCE-SCHEDULING.md`. Priority scheduling was scoped out as not required for acceptance; §4.3's `WAITING_FOR_RESOURCE` state is unneeded because blocked work stays `QUEUED`. |
 
-**Remaining Phase 2 gaps unchanged:** `WAITING_FOR_USER` (§4.4), scheduler/resource
-policy (§4.3), append-only event history (§4.5), client attach/reconnect (§4.2), and
+**Remaining Phase 2 gaps:** `WAITING_FOR_USER` (§4.4), scheduler/resource
+policy (§4.3 — resource claims now implemented, priority remains out of scope),
+append-only event history (§4.5), client attach/reconnect (§4.2), and
 user-initiated cancellation (§4.6). Milestone 2B's read path is the intended seam for
 the event-history work next.
 

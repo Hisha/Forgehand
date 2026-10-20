@@ -21,7 +21,7 @@ func startCodingExecution(t *testing.T, ctx context.Context, db *Database) Sessi
 		t.Fatalf("QueueSessionExecution: %v", err)
 	}
 
-	execution, ok, err := db.ClaimNextQueuedExecution(ctx)
+	execution, ok, err := db.ClaimNextQueuedExecution(ctx, nil)
 	if err != nil {
 		t.Fatalf("ClaimNextQueuedExecution: %v", err)
 	}

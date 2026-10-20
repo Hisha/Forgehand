@@ -90,7 +90,7 @@ func (d *dispatcher) dispatch(ctx context.Context) {
 			return
 		}
 
-		execution, ok, err := d.db.ClaimNextQueuedExecution(ctx)
+		execution, ok, err := d.db.ClaimNextQueuedExecution(ctx, d.workers.heldResources())
 		if err != nil {
 			// A cancelled dispatch is expected during shutdown; do not treat it
 			// as a scheduling fault.
