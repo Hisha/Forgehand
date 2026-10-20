@@ -864,14 +864,15 @@ func handleConnection(
 				})
 				return
 			}
-			session, err := stateDB.CreateCodingSession(
-				context.Background(),
-				codingSessionTitle(request.Title, request.Task),
-				request.ProjectID,
-				request.Task,
-				provider.ProviderID,
-				codingModel(request.Model, modelRuntimeRef.defaultModel),
+			var (
+				session state.Session
+				err     error
 			)
+			if request.Kind == "investigation" {
+				session, err = stateDB.CreateInvestigationSession(context.Background(), codingSessionTitle(request.Title, request.Task), request.ProjectID, request.Task, provider.ProviderID, codingModel(request.Model, modelRuntimeRef.defaultModel), request.Identity, request.AnalysisID)
+			} else {
+				session, err = stateDB.CreateCodingSession(context.Background(), codingSessionTitle(request.Title, request.Task), request.ProjectID, request.Task, provider.ProviderID, codingModel(request.Model, modelRuntimeRef.defaultModel))
+			}
 			if err != nil {
 				_ = encoder.Encode(ipc.Response{
 					OK:      false,
@@ -1036,7 +1037,6 @@ func handleConnection(
 				sessionToIPC(session),
 			)
 		}
-
 		_ = encoder.Encode(response)
 
 	case "session-status":
@@ -1089,6 +1089,12 @@ func handleConnection(
 				response.Interaction = &interaction
 			}
 		}
+		if session.Kind == "investigation" {
+			if evidence, err := stateDB.InvestigationEvidence(context.Background(), session.ID); err == nil {
+				encodedEvidence := investigationEvidenceToIPC(evidence)
+				response.Evidence = &encodedEvidence
+			}
+		}
 
 		_ = encoder.Encode(response)
 
@@ -1113,7 +1119,12 @@ func handleConnection(
 		}
 
 		encoded := modelResultToIPC(result)
-		_ = encoder.Encode(ipc.Response{OK: true, Result: &encoded})
+		response := ipc.Response{OK: true, Result: &encoded}
+		if evidence, err := stateDB.InvestigationEvidence(context.Background(), request.SessionID); err == nil {
+			encodedEvidence := investigationEvidenceToIPC(evidence)
+			response.Evidence = &encodedEvidence
+		}
+		_ = encoder.Encode(response)
 
 	case "session-questions":
 		pending, err := stateDB.ListPendingHumanInteractions(
@@ -1758,6 +1769,13 @@ func launchExecutionWorker(
 				failExecution(stateDB, execution.ID)
 			} else {
 				model.runModelWorker(workerCtx, stateDB, execution)
+			}
+		case "investigation":
+			if model == nil {
+				fmt.Fprintf(os.Stderr, "forgehand: execution %d is an investigation but no provider is configured\n", execution.ID)
+				failExecution(stateDB, execution.ID)
+			} else {
+				model.runInvestigationWorker(workerCtx, stateDB, execution)
 			}
 		case "task":
 			if task == nil {

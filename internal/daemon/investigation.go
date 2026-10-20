@@ -128,3 +128,15 @@ func dependentsToInvestigation(deps []query.Dependency, includeEvidence bool) []
 	}
 	return out
 }
+
+func investigationEvidenceToIPC(evidence state.InvestigationEvidence) ipc.InvestigationEvidence {
+	result := ipc.InvestigationEvidence{ProjectID: evidence.ProjectID, InventoryID: evidence.InventoryID, AnalysisID: evidence.AnalysisID, Commit: evidence.Commit, ComponentID: evidence.ComponentID, BudgetChars: evidence.BudgetChars, UsedChars: evidence.UsedChars, Truncated: evidence.Truncated, Warnings: append([]string(nil), evidence.Warnings...)}
+	for _, file := range evidence.Files {
+		encoded := ipc.InvestigationEvidenceFile{Path: file.Path, BlobHash: file.BlobHash, Size: file.Size, Reasons: append([]string(nil), file.Reasons...)}
+		for _, location := range file.Locations {
+			encoded.Locations = append(encoded.Locations, ipc.InvestigationEvidenceSourceLocation{Line: location.Line, Declaration: location.Declaration})
+		}
+		result.Files = append(result.Files, encoded)
+	}
+	return result
+}

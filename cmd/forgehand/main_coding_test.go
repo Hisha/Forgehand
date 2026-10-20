@@ -51,6 +51,28 @@ func TestSessionStartCodingPrintsProjectIDValue(t *testing.T) {
 	}
 }
 
+func TestSessionStartInvestigationSendsExplicitKindAndSelection(t *testing.T) {
+	projectID := int64(7)
+	received := make(chan ipc.Request, 1)
+	startFakeDaemonSocket(t, func(request ipc.Request) ipc.Response {
+		received <- request
+		return ipc.Response{OK: true, Session: &ipc.Session{ID: 12, Title: "why", State: "READY", ProjectID: &projectID, Task: "why does greet fail?", Kind: "investigation"}}
+	})
+	output := captureStdout(t, func() {
+		err := sessionCommand([]string{"start", "--investigate", "--project", "7", "--task", "why does greet fail?", "--component", "example/greet", "--analysis", "9", "--title", "why"})
+		if err != nil {
+			t.Fatalf("sessionCommand: %v", err)
+		}
+	})
+	request := <-received
+	if request.Kind != "investigation" || request.ProjectID != 7 || request.Identity != "example/greet" || request.AnalysisID != 9 {
+		t.Fatalf("request = %#v", request)
+	}
+	if !strings.Contains(output, "Created investigation session 12") || !strings.Contains(output, "Kind: investigation") {
+		t.Fatalf("output = %s", output)
+	}
+}
+
 func TestSessionStatusPrintsCodingFields(t *testing.T) {
 	projectID := int64(1)
 	startFakeDaemonSocket(t, func(request ipc.Request) ipc.Response {

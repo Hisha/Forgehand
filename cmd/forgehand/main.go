@@ -99,14 +99,23 @@ func sessionCommand(args []string) error {
 		if len(args) < 2 {
 			return fmt.Errorf("usage: forgehand session start <title> or forgehand session start --project <id> --task \"...\"")
 		}
-		// Support flags: --project, --task, --model
+		// Model-backed sessions use --project/--task/--model. --investigate
+		// selects the read-only evidence-backed investigation worker.
 		if args[1][0] != '-' && len(args) == 2 {
 			return startSession(args[1])
 		}
-		var title, task, model string
+		var title, task, model, component string
 		var projectID int64
+		var analysisID int64
+		investigation := false
 		for i := 1; i < len(args); i++ {
 			switch args[i] {
+			case "--title":
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --title")
+				}
+				title = args[i+1]
+				i++
 			case "--project":
 				if i+1 >= len(args) {
 					return fmt.Errorf("missing value for --project")
@@ -129,6 +138,24 @@ func sessionCommand(args []string) error {
 				}
 				model = args[i+1]
 				i++
+			case "--investigate":
+				investigation = true
+			case "--component":
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --component")
+				}
+				component = args[i+1]
+				i++
+			case "--analysis":
+				if i+1 >= len(args) {
+					return fmt.Errorf("missing value for --analysis")
+				}
+				id, err := strconv.ParseInt(args[i+1], 10, 64)
+				if err != nil || id <= 0 {
+					return fmt.Errorf("invalid analysis ID: %s", args[i+1])
+				}
+				analysisID = id
+				i++
 			default:
 				if i == 1 && args[i][0] != '-' {
 					title = args[i]
@@ -136,6 +163,9 @@ func sessionCommand(args []string) error {
 				}
 				return fmt.Errorf("unknown flag: %s", args[i])
 			}
+		}
+		if investigation {
+			return startInvestigationSession(title, task, model, component, projectID, analysisID)
 		}
 		return startCodingSession(title, task, model, projectID)
 
@@ -772,6 +802,7 @@ func sessionStatus(sessionID int64) error {
 		fmt.Printf("Awaiting input: interaction %d\n", response.Interaction.ID)
 		fmt.Printf("Question: %s\n", response.Interaction.Question)
 	}
+	printInvestigationEvidence(response.Evidence)
 
 	return nil
 }
@@ -1697,6 +1728,7 @@ func usage() {
 	fmt.Println("  investigate <id> --component <identity> [--analysis <id>] [--format text|json] [--limit <n>]  Investigate component")
 	fmt.Println("  status                          Query the Forgehand daemon")
 	fmt.Println("  session start <title>           Create a session")
+	fmt.Println("  session start --investigate --project <id> --task \"question\" [--component <identity>] [--analysis <id>] [--title <t>] [--model <m>]  Create a read-only model investigation")
 	fmt.Println("  session run <id> [--resource <name>]...  Queue a session for a worker, optionally holding exclusive resources")
 	fmt.Println("  session resume <id>             Queue an interrupted or answered waiting session")
 	fmt.Println("  session status <id>             Show a session's execution progress")
@@ -1747,6 +1779,32 @@ func startCodingSession(title, task, model string, projectID int64) error {
 	return nil
 }
 
+func startInvestigationSession(title, task, model, component string, projectID, analysisID int64) error {
+	if projectID <= 0 || strings.TrimSpace(task) == "" {
+		return fmt.Errorf("project and task are required for an investigation session")
+	}
+	if analysisID > 0 && strings.TrimSpace(component) == "" {
+		return fmt.Errorf("--analysis requires --component")
+	}
+	response, err := request(ipc.Request{Command: "session-start", Kind: "investigation", ProjectID: projectID, Task: task, Title: title, Model: model, Identity: component, AnalysisID: analysisID})
+	if err != nil {
+		return err
+	}
+	if response.Session == nil {
+		return fmt.Errorf("daemon returned no session")
+	}
+	fmt.Printf("Created investigation session %d\n", response.Session.ID)
+	fmt.Printf("State: %s\n", response.Session.State)
+	fmt.Printf("Title: %s\n", response.Session.Title)
+	fmt.Printf("Project: %d\n", *response.Session.ProjectID)
+	fmt.Printf("Question: %s\n", response.Session.Task)
+	if component != "" {
+		fmt.Printf("Component: %s\n", component)
+	}
+	fmt.Printf("Kind: %s\n", response.Session.Kind)
+	return nil
+}
+
 func sessionResult(sessionID int64) error {
 	response, err := request(ipc.Request{
 		Command:   "session-result",
@@ -1768,7 +1826,25 @@ func sessionResult(sessionID int64) error {
 	}
 	fmt.Printf("Created: %s\n", response.Result.CreatedAt)
 	fmt.Printf("Content:\n%s\n", response.Result.Content)
+	printInvestigationEvidence(response.Evidence)
 	return nil
+}
+
+func printInvestigationEvidence(evidence *ipc.InvestigationEvidence) {
+	if evidence == nil {
+		return
+	}
+	fmt.Printf("Evidence commit: %s\n", evidence.Commit)
+	fmt.Printf("Evidence budget: %d/%d chars\n", evidence.UsedChars, evidence.BudgetChars)
+	for _, file := range evidence.Files {
+		fmt.Printf("Evidence file: %s (blob=%s, %d bytes)\n", file.Path, file.BlobHash, file.Size)
+		for _, location := range file.Locations {
+			fmt.Printf("  source: %s:%d %s\n", file.Path, location.Line, location.Declaration)
+		}
+	}
+	if evidence.Truncated {
+		fmt.Println("Evidence selection: truncated by context limits")
+	}
 }
 
 func taskDiff(sessionID int64) error {

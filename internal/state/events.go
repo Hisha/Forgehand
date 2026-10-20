@@ -24,6 +24,7 @@ const (
 	EventTypeExecutionWaitingForUser    = "execution.waiting_for_user"
 	EventTypeExecutionResumedAfterInput = "execution.resumed_after_input"
 	EventTypeModelResponseCompleted     = "model.response.completed"
+	EventTypeInvestigationEvidence      = "investigation.evidence.selected"
 
 	// Task worker lifecycle events. They distinguish a task that only produced
 	// a proposal from one whose authorized changes were applied to the isolated
@@ -112,6 +113,19 @@ func (d *Database) CreateSessionWithDetails(
 	provider string,
 	model string,
 ) (Session, error) {
+	return d.createSessionWithDetails(ctx, title, projectID, task, kind, provider, model, nil)
+}
+
+func (d *Database) createSessionWithDetails(
+	ctx context.Context,
+	title string,
+	projectID *int64,
+	task *string,
+	kind string,
+	provider string,
+	model string,
+	extraDetails map[string]any,
+) (Session, error) {
 	if kind == "" {
 		kind = "fake"
 	}
@@ -178,6 +192,9 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 	}
 	if model != "" {
 		details["model"] = model
+	}
+	for key, value := range extraDetails {
+		details[key] = value
 	}
 
 	if err := d.appendSessionEvent(

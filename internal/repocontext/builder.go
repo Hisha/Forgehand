@@ -47,13 +47,18 @@ type Context struct {
 	BudgetChars int
 	// UsedChars is the assembled prompt size (system plus user) in characters.
 	UsedChars int
+	// InventoryID and Commit identify the persisted inventory used to select
+	// Files. Each FileRef additionally pins the exact Git blob.
+	InventoryID int64
+	Commit      string
 }
 
 // FileRef identifies a file that was included in the context.
 type FileRef struct {
-	Path    string
-	Size    int
-	Content string
+	Path     string
+	BlobHash string
+	Size     int
+	Content  string
 }
 
 // ExcludedFile records a repository file that was not included and why, so
@@ -105,6 +110,21 @@ func (b *Builder) WithLimits(maxFiles, maxFileSize, maxContextChars int) *Builde
 // can respond based on the task alone. File contents are read from the
 // inventory's pinned Git commit, never from the mutable working tree.
 func (b *Builder) Build(ctx context.Context, sessionID, projectID int64, task string) (Context, error) {
+	return b.BuildWithPreferredPaths(ctx, sessionID, projectID, task, nil)
+}
+
+// BuildWithPreferredPaths uses the same language-independent inventory
+// retrieval as Build while promoting paths supplied by component evidence.
+func (b *Builder) BuildWithPreferredPaths(ctx context.Context, sessionID, projectID int64, task string, preferredPaths []string) (Context, error) {
+	return b.buildWithPreferredPaths(ctx, projectID, task, preferredPaths, "")
+}
+
+// BuildForCommit selects from the persisted inventory for an exact commit.
+func (b *Builder) BuildForCommit(ctx context.Context, projectID int64, task string, preferredPaths []string, commit string) (Context, error) {
+	return b.buildWithPreferredPaths(ctx, projectID, task, preferredPaths, commit)
+}
+
+func (b *Builder) buildWithPreferredPaths(ctx context.Context, projectID int64, task string, preferredPaths []string, commit string) (Context, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -119,16 +139,21 @@ func (b *Builder) Build(ctx context.Context, sessionID, projectID int64, task st
 		return b.finish(system, task, nil, warnings, excluded), nil
 	}
 
-	inventory, err := b.db.LatestProjectInventory(ctx, project.ID, true)
+	var inventory *state.ProjectInventory
+	if commit == "" {
+		inventory, err = b.db.LatestProjectInventory(ctx, project.ID, true)
+	} else {
+		inventory, err = b.db.LatestProjectInventoryForCommit(ctx, project.ID, commit, true)
+	}
 	if err != nil {
 		return Context{}, fmt.Errorf("load project inventory: %w", err)
 	}
 	if inventory == nil {
-		warnings = append(warnings, "no project inventory available; context limited to task description")
+		warnings = append(warnings, "no project inventory available for the selected commit; context limited to task description")
 		return b.finish(system, task, nil, warnings, excluded), nil
 	}
 
-	candidates := selectCandidates(inventory.Files, task)
+	candidates := selectCandidates(inventory.Files, task, preferredPaths)
 
 	// Read the committed content for each candidate, applying per-file and file
 	// count limits. Content comes from the inventory's blob hashes, which are
@@ -153,7 +178,7 @@ func (b *Builder) Build(ctx context.Context, sessionID, projectID int64, task st
 			excluded = appendExcluded(excluded, file.Path, "file exceeds per-file size limit")
 			continue
 		}
-		read = append(read, FileRef{Path: file.Path, Size: len(data), Content: string(data)})
+		read = append(read, FileRef{Path: file.Path, BlobHash: file.BlobHash, Size: len(data), Content: string(data)})
 		fileCount++
 	}
 
@@ -177,7 +202,34 @@ func (b *Builder) Build(ctx context.Context, sessionID, projectID int64, task st
 		used += block
 	}
 
-	return b.finish(system, task, included, warnings, excluded), nil
+	result := b.finish(system, task, included, warnings, excluded)
+	result.InventoryID = inventory.ID
+	result.Commit = inventory.CommitHash
+	return result, nil
+}
+
+// BuildPinned reconstructs a prompt from an already-recorded path/blob
+// selection. It never consults the latest inventory.
+func (b *Builder) BuildPinned(ctx context.Context, projectID int64, task string, inventoryID int64, commit string, selected []FileRef) (Context, error) {
+	project, err := b.db.GetProject(ctx, projectID)
+	if err != nil {
+		return Context{}, fmt.Errorf("load pinned project: %w", err)
+	}
+	files := make([]FileRef, 0, len(selected))
+	for _, ref := range selected {
+		if ref.BlobHash == "" {
+			return Context{}, fmt.Errorf("pinned evidence %s has no blob identity", ref.Path)
+		}
+		data, err := repository.ReadBlob(ctx, project.RootPath, ref.BlobHash)
+		if err != nil {
+			return Context{}, fmt.Errorf("read pinned evidence %s (%s): %w", ref.Path, ref.BlobHash, err)
+		}
+		files = append(files, FileRef{Path: ref.Path, BlobHash: ref.BlobHash, Size: len(data), Content: string(data)})
+	}
+	result := b.finish(systemPrompt(), task, files, nil, nil)
+	result.InventoryID = inventoryID
+	result.Commit = commit
+	return result, nil
 }
 
 // finish assembles the final context and enforces the character budget as a
@@ -297,8 +349,12 @@ func appendExcluded(excluded []ExcludedFile, filePath, reason string) []Excluded
 // documentation and configuration first, then source, then the rest, breaking
 // ties by path. Files matched by task tokens are promoted. Denylisted files are
 // excluded.
-func selectCandidates(files []state.InventoryFile, task string) []state.InventoryFile {
+func selectCandidates(files []state.InventoryFile, task string, preferredPaths []string) []state.InventoryFile {
 	tokens := taskTokens(task)
+	preferred := make(map[string]struct{}, len(preferredPaths))
+	for _, filePath := range preferredPaths {
+		preferred[filePath] = struct{}{}
+	}
 
 	selected := make([]state.InventoryFile, 0, len(files))
 	for _, file := range files {
@@ -311,6 +367,12 @@ func selectCandidates(files []state.InventoryFile, task string) []state.Inventor
 	sort.SliceStable(selected, func(i, j int) bool {
 		ri := rank(selected[i], tokens)
 		rj := rank(selected[j], tokens)
+		if _, ok := preferred[selected[i].Path]; ok {
+			ri -= 1000
+		}
+		if _, ok := preferred[selected[j].Path]; ok {
+			rj -= 1000
+		}
 		if ri != rj {
 			return ri < rj
 		}
@@ -350,10 +412,28 @@ func taskTokens(task string) []string {
 		return !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '/' && r != '.' && r != '_' && r != '-'
 	})
 
-	tokens := make([]string, 0, len(fields))
+	tokens := make([]string, 0, len(fields)*2)
+	seen := make(map[string]struct{})
+	add := func(token string) {
+		if len(token) < 3 {
+			return
+		}
+		if _, ok := seen[token]; ok {
+			return
+		}
+		seen[token] = struct{}{}
+		tokens = append(tokens, token)
+	}
 	for _, field := range fields {
-		if len(field) >= 3 {
-			tokens = append(tokens, field)
+		add(field)
+		// Small language-independent suffix variants make path retrieval useful
+		// for natural questions ("greeting" -> "greet", "tested" ->
+		// "test") without introducing a language parser or index.
+		for _, suffix := range []string{"ing", "ed", "es", "s"} {
+			if strings.HasSuffix(field, suffix) {
+				add(strings.TrimSuffix(field, suffix))
+				break
+			}
 		}
 	}
 	return tokens

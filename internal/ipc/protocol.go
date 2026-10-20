@@ -165,6 +165,7 @@ type Response struct {
 	Interaction    *Interaction           `json:"interaction,omitempty"`
 	Interactions   []Interaction          `json:"interactions,omitempty"`
 	Result         *ModelResult           `json:"result,omitempty"`
+	Evidence       *InvestigationEvidence `json:"investigation_evidence,omitempty"`
 	TaskRun        *TaskRun               `json:"task_run,omitempty"`
 	TaskOperations []TaskOperation        `json:"task_operations,omitempty"`
 	// Diff holds a rendered unified diff for the task-diff command. DiffSource
@@ -483,4 +484,32 @@ type SessionEvent struct {
 type InvestigationFile struct {
 	Path    string   `json:"path"`
 	Reasons []string `json:"reasons"`
+}
+
+// InvestigationEvidence exposes the immutable evidence selection recorded
+// before a model-backed investigation request is sent.
+type InvestigationEvidence struct {
+	ProjectID   int64                       `json:"project_id"`
+	InventoryID int64                       `json:"inventory_id"`
+	AnalysisID  int64                       `json:"analysis_id,omitempty"`
+	Commit      string                      `json:"commit"`
+	ComponentID string                      `json:"component_id,omitempty"`
+	Files       []InvestigationEvidenceFile `json:"files"`
+	BudgetChars int                         `json:"budget_chars"`
+	UsedChars   int                         `json:"used_chars"`
+	Truncated   bool                        `json:"truncated"`
+	Warnings    []string                    `json:"warnings,omitempty"`
+}
+
+type InvestigationEvidenceFile struct {
+	Path      string                                `json:"path"`
+	BlobHash  string                                `json:"blob_hash"`
+	Size      int                                   `json:"size"`
+	Reasons   []string                              `json:"reasons,omitempty"`
+	Locations []InvestigationEvidenceSourceLocation `json:"locations,omitempty"`
+}
+
+type InvestigationEvidenceSourceLocation struct {
+	Line        int    `json:"line"`
+	Declaration string `json:"declaration,omitempty"`
 }

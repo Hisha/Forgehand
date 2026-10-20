@@ -256,6 +256,36 @@ LIMIT 1
 	return record, nil
 }
 
+// LatestProjectInventoryForCommit loads the newest persisted inventory pinned
+// to a specific commit. It supports component investigations whose selected
+// analysis may no longer describe the project's latest inventory.
+func (d *Database) LatestProjectInventoryForCommit(ctx context.Context, projectID int64, commit string, includeFiles bool) (*ProjectInventory, error) {
+	if projectID <= 0 || strings.TrimSpace(commit) == "" {
+		return nil, fmt.Errorf("project ID and commit are required")
+	}
+	row := d.db.QueryRowContext(ctx, `
+SELECT id, project_id, commit_hash, head_commit, is_dirty, engine_version,
+       tracked_files, truncated, summary_json, observed_at
+FROM project_inventories
+WHERE project_id = ? AND commit_hash = ?
+ORDER BY id DESC LIMIT 1
+`, projectID, commit)
+	record, err := scanProjectInventory(row)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if includeFiles {
+		record.Files, err = d.listInventoryFiles(ctx, record.ID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return record, nil
+}
+
 type inventoryScanner interface {
 	Scan(dest ...any) error
 }
