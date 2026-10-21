@@ -54,6 +54,8 @@ Completed and independently exercised in the recent 4B.x work:
 
 These are deterministic persisted observations and retrieval tools, not a semantic reasoning worker. **Still open:** Git-friendly structured and narrative durable knowledge that can rebuild the disposable index; semantic cataloging where useful; broader language coverage and invalidation/update policies. Avoid expanding these areas until Phase 2 is stable unless a concrete worker need justifies it.
 
+**Topic extraction decision (Phase 3.3, October 2026):** an AI-assisted investigation topic extractor was evaluated against the deterministic extractor over a 46-case reviewed corpus with a model-independent scorer, and it lost on concept recall, phrase recall, latency, and repeatability; two configurations also had schema failures. The deterministic extractor stays on the critical path and no model capability was added for it. The evaluation is recorded in `docs/INVESTIGATION-TOPIC-EXTRACTION-EVALUATION.md`; the spike record is in `docs/RESEARCH.md` §9. This closes one question, not Phase 3.
+
 **Exit condition:** Forgehand answers useful project questions with provenance, and its intended durable knowledge survives loss/rebuild of the generated index.
 
 ## Phase 4 — AI investigation (NOT YET COMPLETE)

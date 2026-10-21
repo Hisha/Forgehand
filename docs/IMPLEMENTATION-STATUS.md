@@ -73,3 +73,12 @@
 | IPC/CLI for coding sessions | I | `internal/ipc/protocol.go` (Task/Model/Result), `cmd/forgehand/main.go`, daemon handlers (`session-start` coding branch, `session-result`) | `session start --project <id> --task "..." [--model <name>]`, `session status` shows project/kind/task/provider/model, `session result <id>` returns model result; backward compatible with existing fake sessions. Tests in `cmd/forgehand/main_coding_test.go`. |
 
 Milestone 3A (see `docs/MILESTONE-3A-MODEL-WORKER.md`) is implemented and verified: `go test -count=1 ./...`, `go test -race -count=1 ./internal/state/... ./internal/daemon/...`, `go vet ./...`, and `go build ./...` pass, and disposable end-to-end acceptance (success, restart persistence, failing-provider queue continuation, in-flight cancellation with no commit) passed against an isolated daemon and a mock OpenAI-compatible provider. All repository access is read-only; no real local model endpoint was available for the optional scenario.
+
+## 7. Work Plans & Investigation Bootstrap (Phase 3.3)
+
+| Capability | Status | Evidence | Notes |
+|---|---|---|---|
+| Work-plan session and task graph | I | `internal/state/work_plans.go`, `internal/planner/planner.go`, `internal/daemon/work_plan_worker.go` | Durable plans, dependency-ordered tasks, per-task evidence, blocked reasons. |
+| Deterministic investigation topic extraction | I | `internal/planner/investigation.go`, `internal/planner/investigation_test.go` | Rule-based, at most eight grounded topics per request; identical output for identical input; no provider call. |
+| Deterministic investigation bootstrap | I | `internal/daemon/investigation_bootstrap.go`, `internal/daemon/investigation_bootstrap_test.go` | One bounded read-only pass over commit-pinned inventory and blobs; produces an ordinary work-plan task with ordinary persisted evidence; creates no separate queue or scheduler. |
+| Model-assisted topic extraction | N | `internal/topiceval/candidate.go` (evaluation only) | Evaluated against the deterministic extractor and rejected on recall, phrase quality, latency, and repeatability; two configurations also had schema failures. Never wired into the daemon, the provider capability list, or the work-plan method table. See `docs/INVESTIGATION-TOPIC-EXTRACTION-EVALUATION.md`. |

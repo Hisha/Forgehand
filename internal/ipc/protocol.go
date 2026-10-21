@@ -333,6 +333,8 @@ type WorkEvidence struct {
 	EndLine  int    `json:"end_line,omitempty"`
 	Excerpt  string `json:"excerpt,omitempty"`
 	Detail   string `json:"detail,omitempty"`
+	// Topics names the investigation topics this record supports.
+	Topics []string `json:"topics,omitempty"`
 }
 
 // MarshalJSON stamps all requests and responses produced by this build. This

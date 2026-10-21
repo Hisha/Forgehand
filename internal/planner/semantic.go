@@ -74,6 +74,7 @@ type ModelCapability struct {
 
 type CompletedTask struct {
 	Key      string   `json:"key"`
+	Method   string   `json:"method,omitempty"`
 	Result   string   `json:"result"`
 	Evidence []string `json:"evidence,omitempty"`
 }
@@ -110,6 +111,7 @@ func SupportedOperations() []Operation {
 		{Name: MethodSourceExcerpt, Capability: CapabilityDeterministic, Description: "read bounded excerpts from evidence produced by another task", Inputs: []string{"source_task"}},
 		{Name: MethodComponentLookup, Capability: CapabilityDeterministic, Description: "resolve a component from stored analysis", Inputs: []string{"identity"}},
 		{Name: MethodDependencyLookup, Capability: CapabilityDeterministic, Description: "read direct dependencies or dependents from stored analysis", Inputs: []string{"identity", "relation"}},
+		{Name: MethodInvestigationBootstrap, Capability: CapabilityDeterministic, Description: "gather a bounded ranked evidence package from committed inventory, blobs, and cached component analysis", Inputs: []string{"topics"}},
 		{Name: MethodIncrementalPlanning, Capability: CapabilityPlanning, Description: "revise the plan after dependencies establish new evidence"},
 		{Name: MethodHumanClarification, Capability: "human", Description: "block on a specific unresolved user decision", Inputs: []string{"question"}},
 		{Name: MethodUnsupported, Capability: "unsupported", Description: "identify work Forgehand cannot currently execute", Inputs: []string{"capability"}},
@@ -208,6 +210,13 @@ func ValidateProposal(request Request, proposal Proposal) error {
 	}
 	keys := make(map[string]int)
 	planningTasks := 0
+	investigationTasks := 0
+	investigationCompleted := false
+	for _, completed := range request.Completed {
+		if completed.Method == MethodInvestigationBootstrap || completed.Key == "deterministic-discovery" {
+			investigationCompleted = true
+		}
+	}
 	for i, task := range proposal.Tasks {
 		path := fmt.Sprintf("tasks[%d]", i)
 		if !taskKeyPattern.MatchString(task.Key) {
@@ -238,6 +247,9 @@ func ValidateProposal(request Request, proposal Proposal) error {
 		}
 		if task.Method == MethodIncrementalPlanning {
 			planningTasks++
+		}
+		if task.Method == MethodInvestigationBootstrap {
+			investigationTasks++
 		}
 		if strings.TrimSpace(task.Objective) == "" {
 			diagnostics = append(diagnostics, Diagnostic{path + ".objective", "must not be empty"})
@@ -286,6 +298,60 @@ func ValidateProposal(request Request, proposal Proposal) error {
 			if relation != "dependencies" && relation != "dependents" {
 				diagnostics = append(diagnostics, Diagnostic{path + ".inputs.relation", "must be dependencies or dependents"})
 			}
+		case MethodInvestigationBootstrap:
+			var topics []InvestigationTopic
+			if err := json.Unmarshal([]byte(task.Inputs["topics"]), &topics); err != nil || len(topics) == 0 || len(topics) > MaxInvestigationTerms {
+				diagnostics = append(diagnostics, Diagnostic{path + ".inputs.topics", fmt.Sprintf("must be a JSON array of 1 to %d grounded terms", MaxInvestigationTerms)})
+			} else {
+				seenTerms := map[string]bool{}
+				for _, topic := range topics {
+					term := strings.TrimSpace(topic.Term)
+					termKey := strings.ToLower(term)
+					if term == "" {
+						diagnostics = append(diagnostics, Diagnostic{path + ".inputs.topics", "every term must be non-empty"})
+						continue
+					}
+					if seenTerms[termKey] {
+						diagnostics = append(diagnostics, Diagnostic{path + ".inputs.topics", fmt.Sprintf("term %q is duplicated", term)})
+						continue
+					}
+					seenTerms[termKey] = true
+					if !strings.Contains(knownText, termKey) {
+						diagnostics = append(diagnostics, Diagnostic{path + ".inputs.topics", fmt.Sprintf("term %q is not grounded verbatim in supplied knowledge", term)})
+						continue
+					}
+					if topic.Kind != "" && topic.Kind != InvestigationTopicIdentifier && topic.Kind != InvestigationTopicPhrase && topic.Kind != InvestigationTopicWord {
+						diagnostics = append(diagnostics, Diagnostic{path + ".inputs.topics", fmt.Sprintf("term %q has unsupported kind %q", term, topic.Kind)})
+						continue
+					}
+					if len(topic.Words) == 0 {
+						diagnostics = append(diagnostics, Diagnostic{path + ".inputs.topics", fmt.Sprintf("term %q must declare the words it covers", term)})
+						continue
+					}
+					termWords := map[string]bool{}
+					for _, word := range SplitIdentifierWords(term) {
+						termWords[word] = true
+					}
+					declaredWords := map[string]bool{}
+					for _, word := range topic.Words {
+						word = strings.ToLower(strings.TrimSpace(word))
+						declaredWords[word] = true
+						if word == "" || !termWords[word] || !strings.Contains(knownText, word) {
+							diagnostics = append(diagnostics, Diagnostic{path + ".inputs.topics", fmt.Sprintf("term %q has words that do not match its grounded text", term)})
+							break
+						}
+					}
+					for word := range termWords {
+						if !declaredWords[word] {
+							diagnostics = append(diagnostics, Diagnostic{path + ".inputs.topics", fmt.Sprintf("term %q does not declare all words it covers", term)})
+							break
+						}
+					}
+				}
+			}
+			if investigationCompleted {
+				diagnostics = append(diagnostics, Diagnostic{path + ".method", "deterministic investigation already completed for this plan"})
+			}
 		case MethodIncrementalPlanning:
 			if len(task.DependsOn) == 0 {
 				diagnostics = append(diagnostics, Diagnostic{path + ".depends_on", "incremental planning must depend on deterministic evidence"})
@@ -300,6 +366,9 @@ func ValidateProposal(request Request, proposal Proposal) error {
 	}
 	if planningTasks > 1 {
 		diagnostics = append(diagnostics, Diagnostic{"tasks", "a proposal may contain at most one incremental planning task"})
+	}
+	if investigationTasks > 1 {
+		diagnostics = append(diagnostics, Diagnostic{"tasks", "a proposal may contain at most one deterministic investigation task"})
 	}
 	for i, task := range proposal.Tasks {
 		for _, dep := range task.DependsOn {

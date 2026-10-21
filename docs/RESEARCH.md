@@ -147,6 +147,22 @@ Prove:
 
 Do not build an advanced scheduler until simple scheduling produces a concrete limitation.
 
+## 9. Investigation topic extraction (spike record, October 2026)
+
+**Question.** Can a replaceable model extract investigation topics better than the deterministic extractor — enough better to justify putting a model on the critical path of every investigation request?
+
+**Hypothesis.** A qualified local model, asked for a bounded grounded concept list under a strict JSON schema, should beat the rule-based extractor on concept coverage, because it understands requests that name compound concepts in prose. A model that cannot beat the rules should not be integrated, however good its phrases look.
+
+**Prototype.** `internal/topiceval` — a 46-case corpus of engineering investigation requests with human-reviewed required concepts, required identifiers, and forbidden concepts; a model-independent scorer (`internal/topiceval/score.go`, no LLM judge); a production-shaped model-assisted candidate with a bounded capability contract, strict schema, grounding, size limits, and a deterministic fallback (`internal/topiceval/candidate.go`); three prompt variants; and a live harness that scores a model, a hybrid, and repeatability, writing the raw responses to an artifact.
+
+**Observed result.** Over the same corpus and scorer: the deterministic extractor scored concept recall 0.856, phrase recall 0.647, identifier recall 1.000, 2 forbidden hits, 0 ungrounded words, 0 schema failures, 7 perfect cases, 0.1 ms, repeatability 1.000. The best model configuration (Qwen3.5-4B, coverage prompt) scored 0.771 / 0.452 / 1.000 / 7 / 1 / 2 schema failures / 3 perfect cases / 561 ms / stability 0.245. Qwen3-4B-Instruct-2507 scored 0.726 / 0.369 / 0.875 / 2 / 1 / 0 / 2 / 4905 ms / 0.876. The hybrid path — model when usable, deterministic otherwise — never reached the incumbent alone (best hybrid 0.786 / 0.489). Full evidence in `docs/INVESTIGATION-TOPIC-EXTRACTION-EVALUATION.md`.
+
+**Decision.** The deterministic extractor stays and the model path is not integrated. No `investigation_topic_extraction` capability, no configurable model assignment for it, no daemon dispatch path, no change to the work-plan method table, the capability allow-list, or the TUI. The evaluation also found real defects in the incumbent, which were fixed in `internal/planner/investigation.go` (negated-restriction fragments, generic politeness words, instruction sentences leaking into topics), raising corpus recall 0.834 → 0.856 and cutting forbidden hits 7 → 2.
+
+**Rejected alternatives.** A hybrid that always prefers the model and falls back on failure — the fallback is the incumbent, so the hybrid can only lose the incumbent's accuracy or the model's reproducibility, and it did both. A coverage prompt that asks for as many concepts as the budget allows — it raised raw recall to 0.771 but pushed stability to 0.245 and forbidden hits to 7. GLiNER2-base as a named-entity extractor — the base checkpoint returned HTTP 401 and the multi checkpoint needs a PyTorch/Transformers runtime that is not installed, which is disproportionate infrastructure for a candidate that a 4B chat model already lost to a rule. A larger model on the shared router — the router is limited to one instance, and requesting another model would have evicted the running daemon's instance.
+
+**Remaining uncertainty.** The corpus is 46 hand-written cases, not a production request log; a different corpus could shift individual numbers. A much larger model might close the phrase-quality gap, though that would change answer quality rather than the fact that the deterministic extractor is faster, reproducible, and already better on this corpus. Nothing here measures whether better topics lead to a better investigation outcome, which would need an end-to-end study outside the topic-extraction boundary.
+
 ## Research discipline
 
 Each spike should record:

@@ -60,3 +60,28 @@ func TestModelDecomposerRejectsUnknownJSONField(t *testing.T) {
 		t.Fatalf("error = %v", err)
 	}
 }
+
+func TestValidateProposalRejectsInvestigationTopicWithInventedTerm(t *testing.T) {
+	req := semanticRequest()
+	proposal := Proposal{Objective: "Investigate the setting", ReadOnly: true, Constraints: req.Constraints, Tasks: []Task{{
+		Key: "investigate-setting", Objective: "Gather setting evidence", Method: MethodInvestigationBootstrap,
+		Inputs:           map[string]string{"topics": `[{"term":"invented setting","words":["setting"],"kind":"phrase"}]`},
+		RequiredEvidence: "committed evidence", CompletionCriteria: "bounded evidence is recorded",
+	}}}
+	if err := ValidateProposal(req, proposal); err == nil || !strings.Contains(err.Error(), "not grounded verbatim") {
+		t.Fatalf("ValidateProposal error = %v", err)
+	}
+}
+
+func TestValidateProposalRejectsRepeatedInvestigationAfterAnyCompletedKey(t *testing.T) {
+	req := semanticRequest()
+	req.Completed = []CompletedTask{{Key: "custom-evidence-key", Method: MethodInvestigationBootstrap, Result: "setting evidence"}}
+	proposal := Proposal{Objective: "Investigate the setting", ReadOnly: true, Constraints: req.Constraints, Tasks: []Task{{
+		Key: "investigate-setting", Objective: "Gather setting evidence", Method: MethodInvestigationBootstrap,
+		Inputs:           map[string]string{"topics": `[{"term":"setting","words":["setting"],"kind":"word"}]`},
+		RequiredEvidence: "committed evidence", CompletionCriteria: "bounded evidence is recorded",
+	}}}
+	if err := ValidateProposal(req, proposal); err == nil || !strings.Contains(err.Error(), "already completed") {
+		t.Fatalf("ValidateProposal error = %v", err)
+	}
+}

@@ -31,6 +31,9 @@ type WorkEvidence struct {
 	EndLine  int    `json:"end_line,omitempty"`
 	Excerpt  string `json:"excerpt,omitempty"`
 	Detail   string `json:"detail,omitempty"`
+	// Topics names the investigation topics this record supports. It is empty
+	// for evidence produced by operations that are not topic-driven.
+	Topics []string `json:"topics,omitempty"`
 }
 
 type WorkPlanTask struct {

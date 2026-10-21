@@ -131,6 +131,8 @@ func executeWorkPlanTask(ctx context.Context, db *state.Database, plan state.Wor
 		return executeComponentLookup(ctx, db, plan, task)
 	case planner.MethodDependencyLookup:
 		return executeDependencyLookup(ctx, db, plan, task)
+	case planner.MethodInvestigationBootstrap:
+		return executeInvestigationBootstrap(ctx, db, plan, task)
 	case planner.MethodSemanticPlanning:
 		return "", nil, task.BlockedReason, nil
 	case planner.MethodIncrementalPlanning:
@@ -177,7 +179,7 @@ func proposeSemanticExpansion(ctx context.Context, db *state.Database, runtime *
 		if completed.Status != state.WorkTaskStatusCompleted {
 			continue
 		}
-		item := planner.CompletedTask{Key: completed.Key, Result: completed.Result}
+		item := planner.CompletedTask{Key: completed.Key, Method: completed.ExecutionMethod, Result: completed.Result}
 		for _, ev := range completed.Evidence {
 			detail := ev.Kind
 			if ev.Path != "" {
@@ -186,8 +188,14 @@ func proposeSemanticExpansion(ctx context.Context, db *state.Database, runtime *
 			if ev.Line > 0 {
 				detail += fmt.Sprintf(":%d", ev.Line)
 			}
+			if ev.BlobHash != "" {
+				detail += " blob=" + ev.BlobHash
+			}
 			if ev.Detail != "" {
 				detail += " " + ev.Detail
+			}
+			if ev.Excerpt != "" {
+				detail += " excerpt=" + ev.Excerpt
 			}
 			item.Evidence = append(item.Evidence, detail)
 		}

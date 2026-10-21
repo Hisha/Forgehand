@@ -11,12 +11,13 @@ import (
 )
 
 const (
-	MethodInventoryLookup  = "repository.inventory.lookup"
-	MethodCommittedSearch  = "repository.committed_text.search"
-	MethodSourceExcerpt    = "repository.source_excerpt.read"
-	MethodComponentLookup  = "repository.component.lookup"
-	MethodDependencyLookup = "repository.dependency.lookup"
-	MethodSemanticPlanning = "planning.semantic_interpretation"
+	MethodInventoryLookup        = "repository.inventory.lookup"
+	MethodCommittedSearch        = "repository.committed_text.search"
+	MethodSourceExcerpt          = "repository.source_excerpt.read"
+	MethodComponentLookup        = "repository.component.lookup"
+	MethodDependencyLookup       = "repository.dependency.lookup"
+	MethodInvestigationBootstrap = "repository.investigation.bootstrap"
+	MethodSemanticPlanning       = "planning.semantic_interpretation"
 )
 
 type Task struct {

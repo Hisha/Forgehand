@@ -953,7 +953,13 @@ func handleConnection(
 			}
 			interpreted := planner.Interpret(request.Task)
 			if len(interpreted.Tasks) == 1 && interpreted.Tasks[0].Method == planner.MethodSemanticPlanning {
-				interpreted = planner.SemanticBootstrap(request.Task, disp != nil && disp.model != nil && disp.model.planningQualified)
+				modelAvailable := disp != nil && disp.model != nil && disp.model.planningQualified
+				decision := planner.AssessInvestigation(request.Task, request.Constraints)
+				if decision.Eligible || decision.NeedsClarification {
+					interpreted, _ = planner.InvestigationBootstrap(request.Task, request.Constraints, modelAvailable)
+				} else {
+					interpreted = planner.SemanticBootstrap(request.Task, modelAvailable)
+				}
 			}
 			spec := state.WorkPlanSpec{Objective: interpreted.Objective, OriginalRequest: interpreted.Original, ReadOnly: interpreted.ReadOnly, Clarification: interpreted.Clarification, Constraints: append([]string(nil), request.Constraints...)}
 			for _, task := range interpreted.Tasks {
@@ -1991,7 +1997,7 @@ func workPlanToIPC(plan state.WorkPlan) ipc.WorkPlan {
 	for _, task := range plan.Tasks {
 		encoded := ipc.WorkPlanTask{ID: task.ID, Key: task.Key, Position: task.Position, Objective: task.Objective, ExecutionMethod: task.ExecutionMethod, Dependencies: append([]string(nil), task.Dependencies...), RequiredEvidence: task.RequiredEvidence, CompletionCriteria: task.CompletionCriteria, Status: task.Status, RequiresModel: task.RequiresModel, Result: task.Result, BlockedReason: task.BlockedReason, FailureReason: task.FailureReason}
 		for _, evidence := range task.Evidence {
-			encoded.Evidence = append(encoded.Evidence, ipc.WorkEvidence{Kind: evidence.Kind, Path: evidence.Path, BlobHash: evidence.BlobHash, Line: evidence.Line, EndLine: evidence.EndLine, Excerpt: evidence.Excerpt, Detail: evidence.Detail})
+			encoded.Evidence = append(encoded.Evidence, ipc.WorkEvidence{Kind: evidence.Kind, Path: evidence.Path, BlobHash: evidence.BlobHash, Line: evidence.Line, EndLine: evidence.EndLine, Excerpt: evidence.Excerpt, Detail: evidence.Detail, Topics: append([]string(nil), evidence.Topics...)})
 		}
 		out.Tasks = append(out.Tasks, encoded)
 	}
