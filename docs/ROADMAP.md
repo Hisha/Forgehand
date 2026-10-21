@@ -58,13 +58,15 @@ These are deterministic persisted observations and retrieval tools, not a semant
 
 **Exit condition:** Forgehand answers useful project questions with provenance, and its intended durable knowledge survives loss/rebuild of the generated index.
 
-## Phase 4 — AI investigation (NOT YET COMPLETE)
+## Phase 4 — AI investigation (PARTIAL: FIRST VERTICAL SLICE IMPLEMENTED)
 
 Introduce a real Forgehand-owned investigator that consumes evidence and repository knowledge, uses a replaceable model provider, requests targeted tools or human clarification as needed, and produces a falsifiable, evidence-backed diagnosis **without editing code**.
 
-**Status:** not complete. A first prelude slice exists: **Milestone 3A** adds a bounded, read-only, non-streaming model-backed *coding* worker (OpenAI-compatible provider, durable model results, `session start --project --task`, `session result`) executing through the existing dispatcher (see `docs/MILESTONE-3A-MODEL-WORKER.md`). It is implemented and tested, but it is not the evidence-backed investigator described above and does not edit code.
+**Status:** partial. The first evidence-backed investigator vertical slice is implemented and acceptance-tested (see `docs/MILESTONE-4-AI-INVESTIGATOR.md`). It reuses the durable session/dispatcher/provider path, gathers commit-pinned deterministic evidence, makes one bounded structured model call, validates citations, and persists the normalized report plus token/latency metrics. The CLI and TUI can start and retrieve investigations. It is read-only and has no autonomous tool loop.
 
-**Exit condition:** demonstrate better, more efficient investigations than the same model exploring from scratch, with durable sessions and provenance. A deterministic `investigate` command alone does not meet this criterion.
+The same-model, question-only baseline had no repository access and correctly declined to diagnose the code. The Forgehand-assisted run identified the relevant startup reconciliation, interrupted-state persistence, work-plan recovery, dispatcher, and atomic queue claim, but used more tokens and latency and retained uncertainty around automatic resume and cross-restart guarantees. That demonstrates the first functional slice and a quality advantage over this limited baseline, not the full phase exit criterion or an efficiency advantage.
+
+**Exit condition:** demonstrate better, more efficient investigations than the same model exploring from scratch, with durable sessions and provenance. A deterministic `investigate` command alone does not meet this criterion. **Still open:** compare against a baseline that can inspect the repository under comparable retrieval/tool constraints, reduce prompt cost/latency, and exercise broader repositories/questions before declaring Phase 4 complete.
 
 ## Phase 5 — Implementation and verification (PLANNED)
 

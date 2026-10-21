@@ -1,7 +1,7 @@
 # Forgehand Capability Status Matrix
 
 **Status:** October 2026  
-**Basis:** Source inspection of Go implementation, tests, migrations, CLI, daemon, git history (commits through b481347).
+**Basis:** Source inspection, automated verification, and isolated local-model acceptance through commit `0696dc4` (October 21, 2026).
 
 **Key:** I=Implemented, P=Partial, N=Not Implemented, U=Unverified
 
@@ -14,7 +14,7 @@
 | Daemon (long-running) | I | `internal/daemon/daemon.go` | Runs, handles commands, manages workers, graceful SIGTERM, recovers ownership. |
 | Non-root enforcement | I | `internal/daemon/daemon.go:55-66` (`TestRootDaemonRefusalOccursBeforeFilesystemChanges`) | Refuses real/effective UID 0 before filesystem changes. |
 | Socket/ownership locking | I | `internal/daemon/ownership_linux.go`, `internal/daemon/daemon_integration_test.go` | Single-daemon via advisory lock on state dir; rejects duplicates; recovers after crash. |
-| SQLite persistence | I | `internal/state/database.go`, migrations v1-12 | Migrations tested; foreign keys enabled. |
+| SQLite persistence | I | `internal/state/database.go`, migrations v1-21 | Migrations tested; foreign keys enabled. Model results include durable token and latency metrics. |
 | System service template (systemd) | I | `packaging/systemd/forgehand@.service`, `internal/config/*systemd*` | Template provided; config/systemd validation/tests. |
 | Linux installer (Go) | I | `packaging/linux/installer/*.go`, tests | Commands install/upgrade/status/uninstall; wrapper `install.sh`; packaged `forgehand-installer` binary present. |
 | Linux user service | I | `internal/service`, `forgehand service ...`, `docs/USER-SERVICE.md` | Unprivileged install/update/uninstall/start/stop/restart/status; preserves state and refuses unmanaged unit overwrite. |
@@ -54,8 +54,8 @@
 | Capability | Status | Evidence | Notes |
 |---|---|---|---|
 | Independent TUI (client of engine) | I | `internal/tui`, `forgehand`/`forgehand tui` | Bubble Tea client lists/selects projects and sessions, registers repositories, starts investigations, polls progress, and renders findings/evidence. |
-| Model provider interfaces/adapters | I | `internal/provider/provider.go` | Single OpenAI-compatible adapter (non-streaming) for Milestone 3A; no routing/multiple providers, no streaming/tool calls. |
-| Real AI investigator worker | N | Only deterministic investigation context/query | Deterministic `investigate` is read-only evidence assembly; not an AI worker. |
+| Model provider interfaces/adapters | I | `internal/provider/provider.go` | Single OpenAI-compatible adapter with optional JSON-schema response format and usage parsing; no routing/multiple providers, streaming, or tool calls. |
+| Real AI investigator worker | I | `internal/daemon/investigation_worker.go`, `internal/daemon/investigation_report.go`, CLI `session start --investigate`, `session result` | Single-pass, read-only worker with commit-pinned evidence, strict JSON request, citation validation, durable normalized report, explicit failure, and provider qualification. Broader evaluation remains Phase 4 work. |
 | Coding worker / planner / verifier roles | N | None | Planned (Phase 5). |
 | Secure execution isolation / sandboxing | N | Template non-root but execution identity is service account | Non-root is safety invariant, not isolation/sandbox. |
 | Pre-execution security assessment / execution policy | N | Documented in SECURITY-PRINCIPLES.md as planned | Not implemented. |
