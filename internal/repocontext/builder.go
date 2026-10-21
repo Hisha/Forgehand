@@ -105,6 +105,11 @@ func (b *Builder) WithLimits(maxFiles, maxFileSize, maxContextChars int) *Builde
 	return &updated
 }
 
+// MaxContextChars reports the configured total prompt budget so callers that
+// add their own bounded evidence section can reserve space without exceeding
+// the builder's final limit.
+func (b *Builder) MaxContextChars() int { return b.maxContextChars }
+
 // Build assembles context for a coding session's task. When the project has no
 // usable inventory the context is still returned with a warning, so the model
 // can respond based on the task alone. File contents are read from the
@@ -351,9 +356,11 @@ func appendExcluded(excluded []ExcludedFile, filePath, reason string) []Excluded
 // excluded.
 func selectCandidates(files []state.InventoryFile, task string, preferredPaths []string) []state.InventoryFile {
 	tokens := taskTokens(task)
-	preferred := make(map[string]struct{}, len(preferredPaths))
-	for _, filePath := range preferredPaths {
-		preferred[filePath] = struct{}{}
+	preferred := make(map[string]int, len(preferredPaths))
+	for index, filePath := range preferredPaths {
+		if _, exists := preferred[filePath]; !exists {
+			preferred[filePath] = index
+		}
 	}
 
 	selected := make([]state.InventoryFile, 0, len(files))
@@ -367,11 +374,11 @@ func selectCandidates(files []state.InventoryFile, task string, preferredPaths [
 	sort.SliceStable(selected, func(i, j int) bool {
 		ri := rank(selected[i], tokens)
 		rj := rank(selected[j], tokens)
-		if _, ok := preferred[selected[i].Path]; ok {
-			ri -= 1000
+		if index, ok := preferred[selected[i].Path]; ok {
+			ri = -100000 + index
 		}
-		if _, ok := preferred[selected[j].Path]; ok {
-			rj -= 1000
+		if index, ok := preferred[selected[j].Path]; ok {
+			rj = -100000 + index
 		}
 		if ri != rj {
 			return ri < rj

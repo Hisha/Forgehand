@@ -470,6 +470,15 @@ CREATE TABLE qualification_results (
 CREATE INDEX idx_qualification_results_job ON qualification_results(job_id, evaluation_index);
 `,
 	},
+	{
+		version: 21,
+		sql: `
+ALTER TABLE model_results ADD COLUMN prompt_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE model_results ADD COLUMN completion_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE model_results ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE model_results ADD COLUMN latency_ms INTEGER NOT NULL DEFAULT 0;
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

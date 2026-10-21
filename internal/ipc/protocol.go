@@ -66,12 +66,16 @@ type Session struct {
 
 // ModelResult is the durable model response for a coding session execution.
 type ModelResult struct {
-	SessionID   int64  `json:"session_id"`
-	ExecutionID int64  `json:"execution_id"`
-	Provider    string `json:"provider,omitempty"`
-	Model       string `json:"model,omitempty"`
-	Content     string `json:"content"`
-	CreatedAt   string `json:"created_at"`
+	SessionID        int64  `json:"session_id"`
+	ExecutionID      int64  `json:"execution_id"`
+	Provider         string `json:"provider,omitempty"`
+	Model            string `json:"model,omitempty"`
+	Content          string `json:"content"`
+	CreatedAt        string `json:"created_at"`
+	PromptTokens     int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens int    `json:"completion_tokens,omitempty"`
+	TotalTokens      int    `json:"total_tokens,omitempty"`
+	LatencyMS        int64  `json:"latency_ms,omitempty"`
 }
 
 // TaskChange is a single proposed or applied file change, without content.
@@ -688,5 +692,6 @@ type InvestigationEvidenceFile struct {
 
 type InvestigationEvidenceSourceLocation struct {
 	Line        int    `json:"line"`
+	EndLine     int    `json:"end_line,omitempty"`
 	Declaration string `json:"declaration,omitempty"`
 }

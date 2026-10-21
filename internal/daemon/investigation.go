@@ -134,7 +134,7 @@ func investigationEvidenceToIPC(evidence state.InvestigationEvidence) ipc.Invest
 	for _, file := range evidence.Files {
 		encoded := ipc.InvestigationEvidenceFile{Path: file.Path, BlobHash: file.BlobHash, Size: file.Size, Reasons: append([]string(nil), file.Reasons...)}
 		for _, location := range file.Locations {
-			encoded.Locations = append(encoded.Locations, ipc.InvestigationEvidenceSourceLocation{Line: location.Line, Declaration: location.Declaration})
+			encoded.Locations = append(encoded.Locations, ipc.InvestigationEvidenceSourceLocation{Line: location.Line, EndLine: location.EndLine, Declaration: location.Declaration})
 		}
 		result.Files = append(result.Files, encoded)
 	}

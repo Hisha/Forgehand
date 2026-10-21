@@ -1005,6 +1005,10 @@ func handleConnection(
 				err     error
 			)
 			if request.Kind == "investigation" {
+				if !modelRuntimeRef.investigationQualified {
+					_ = encoder.Encode(ipc.Response{OK: false, Message: "configured model is not qualified for investigation; add investigation to FORGEHAND_PROVIDER_CAPABILITIES"})
+					return
+				}
 				session, err = stateDB.CreateInvestigationSession(context.Background(), codingSessionTitle(request.Title, request.Task), request.ProjectID, request.Task, provider.ProviderID, codingModel(request.Model, modelRuntimeRef.defaultModel), request.Identity, request.AnalysisID)
 			} else {
 				session, err = stateDB.CreateCodingSession(context.Background(), codingSessionTitle(request.Title, request.Task), request.ProjectID, request.Task, provider.ProviderID, codingModel(request.Model, modelRuntimeRef.defaultModel))
@@ -1041,7 +1045,9 @@ func handleConnection(
 
 	case "session-run":
 		totalSteps := fakeWorkerSteps
-		if session, getErr := stateDB.GetSession(context.Background(), request.SessionID); getErr == nil && session.Kind == "work-plan" {
+		if session, getErr := stateDB.GetSession(context.Background(), request.SessionID); getErr == nil && session.Kind == "investigation" {
+			totalSteps = 1
+		} else if getErr == nil && session.Kind == "work-plan" {
 			plan, planErr := stateDB.GetWorkPlanBySession(context.Background(), request.SessionID)
 			if planErr != nil || plan == nil {
 				if planErr == nil {
@@ -2101,12 +2107,16 @@ func codingModel(requestModel, defaultModel string) string {
 
 func modelResultToIPC(result state.ModelResult) ipc.ModelResult {
 	return ipc.ModelResult{
-		SessionID:   result.SessionID,
-		ExecutionID: result.ExecutionID,
-		Provider:    result.Provider,
-		Model:       result.Model,
-		Content:     result.Content,
-		CreatedAt:   result.CreatedAt.UTC().Format(time.RFC3339Nano),
+		SessionID:        result.SessionID,
+		ExecutionID:      result.ExecutionID,
+		Provider:         result.Provider,
+		Model:            result.Model,
+		Content:          result.Content,
+		CreatedAt:        result.CreatedAt.UTC().Format(time.RFC3339Nano),
+		PromptTokens:     result.PromptTokens,
+		CompletionTokens: result.CompletionTokens,
+		TotalTokens:      result.TotalTokens,
+		LatencyMS:        result.LatencyMS,
 	}
 }
 

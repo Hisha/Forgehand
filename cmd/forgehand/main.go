@@ -1979,6 +1979,12 @@ func sessionResult(sessionID int64) error {
 		fmt.Printf("Model: %s\n", response.Result.Model)
 	}
 	fmt.Printf("Created: %s\n", response.Result.CreatedAt)
+	if response.Result.TotalTokens > 0 {
+		fmt.Printf("Tokens: %d prompt + %d completion = %d total\n", response.Result.PromptTokens, response.Result.CompletionTokens, response.Result.TotalTokens)
+	}
+	if response.Result.LatencyMS > 0 {
+		fmt.Printf("Model latency: %d ms\n", response.Result.LatencyMS)
+	}
 	fmt.Printf("Content:\n%s\n", response.Result.Content)
 	printInvestigationEvidence(response.Evidence)
 	return nil
@@ -1993,7 +1999,11 @@ func printInvestigationEvidence(evidence *ipc.InvestigationEvidence) {
 	for _, file := range evidence.Files {
 		fmt.Printf("Evidence file: %s (blob=%s, %d bytes)\n", file.Path, file.BlobHash, file.Size)
 		for _, location := range file.Locations {
-			fmt.Printf("  source: %s:%d %s\n", file.Path, location.Line, location.Declaration)
+			line := fmt.Sprintf("%d", location.Line)
+			if location.EndLine > location.Line {
+				line = fmt.Sprintf("%d-%d", location.Line, location.EndLine)
+			}
+			fmt.Printf("  source: %s:%s %s\n", file.Path, line, location.Declaration)
 		}
 	}
 	if evidence.Truncated {

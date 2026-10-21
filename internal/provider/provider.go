@@ -24,16 +24,21 @@ type Provider interface {
 
 // ChatRequest represents a chat completion request.
 type ChatRequest struct {
-	System    string
-	User      string
-	Model     string
-	MaxTokens int
+	System             string
+	User               string
+	Model              string
+	MaxTokens          int
+	ResponseSchemaName string
+	ResponseSchema     map[string]any
 }
 
 // ChatResponse represents a chat completion response.
 type ChatResponse struct {
-	Content string
-	Model   string
+	Content          string
+	Model            string
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
 }
 
 // OpenAICompatibleClient implements Provider using OpenAI-compatible API.
@@ -89,6 +94,16 @@ func (c *OpenAICompatibleClient) Complete(ctx context.Context, req ChatRequest) 
 		"stream":     false,
 		"max_tokens": maxTokens,
 	}
+	if len(req.ResponseSchema) > 0 {
+		name := strings.TrimSpace(req.ResponseSchemaName)
+		if name == "" {
+			name = "response"
+		}
+		payload["response_format"] = map[string]any{
+			"type":        "json_schema",
+			"json_schema": map[string]any{"name": name, "strict": true, "schema": req.ResponseSchema},
+		}
+	}
 
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -131,6 +146,11 @@ func (c *OpenAICompatibleClient) Complete(ctx context.Context, req ChatRequest) 
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			PromptTokens     int `json:"prompt_tokens"`
+			CompletionTokens int `json:"completion_tokens"`
+			TotalTokens      int `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return ChatResponse{}, fmt.Errorf("unmarshal response: %w", err)
@@ -139,5 +159,9 @@ func (c *OpenAICompatibleClient) Complete(ctx context.Context, req ChatRequest) 
 		return ChatResponse{}, errors.New("malformed provider response: empty content")
 	}
 
-	return ChatResponse{Content: parsed.Choices[0].Message.Content, Model: parsed.Model}, nil
+	return ChatResponse{
+		Content: parsed.Choices[0].Message.Content, Model: parsed.Model,
+		PromptTokens: parsed.Usage.PromptTokens, CompletionTokens: parsed.Usage.CompletionTokens,
+		TotalTokens: parsed.Usage.TotalTokens,
+	}, nil
 }

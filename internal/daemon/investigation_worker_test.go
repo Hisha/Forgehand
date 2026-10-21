@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -77,7 +78,7 @@ func TestInvestigationSessionCppFixturePersistsEvidenceAndFlagsInventedReference
 		if !strings.Contains(req.User, "committed-greeting-v1") || !strings.Contains(req.User, "src/greet.cpp") {
 			t.Fatalf("model request missing relevant committed C++ source:\n%s", req.User)
 		}
-		return provider.ChatResponse{Model: "stub", Content: "The greeting is assembled in source [src/greet.cpp:3]. An extra claim cites [src/invented.cpp:99]."}, nil
+		return provider.ChatResponse{Model: "stub", Content: investigationJSON("The greeting is assembled in source.", "src/greet.cpp", 3)}, nil
 	}}
 	runtime := newModelRuntime(p, repocontext.NewBuilder(db).WithLimits(3, 4096, 1800))
 	runtime.defaultModel = "stub"
@@ -95,8 +96,8 @@ func TestInvestigationSessionCppFixturePersistsEvidenceAndFlagsInventedReference
 	if err != nil {
 		t.Fatalf("LatestModelResult: %v", err)
 	}
-	if !strings.Contains(result.Content, "Verified references: src/greet.cpp:3") || !strings.Contains(result.Content, "UNVERIFIED references: src/invented.cpp:99") {
-		t.Fatalf("reference verification missing:\n%s", result.Content)
+	if !strings.Contains(result.Content, "Observed repository facts") || !strings.Contains(result.Content, "[src/greet.cpp:3]") {
+		t.Fatalf("validated report missing:\n%s", result.Content)
 	}
 	evidence, err := db.InvestigationEvidence(ctx, session.ID)
 	if err != nil {
@@ -154,7 +155,7 @@ func TestInterruptedInvestigationReusesRecordedBlobSelection(t *testing.T) {
 			<-callCtx.Done()
 			return provider.ChatResponse{}, callCtx.Err()
 		}
-		return provider.ChatResponse{Model: "stub", Content: "Original behavior [src/greet.cpp:3]."}, nil
+		return provider.ChatResponse{Model: "stub", Content: investigationJSON("Original behavior.", "src/greet.cpp", 3)}, nil
 	}}
 	runtime := newModelRuntime(p, repocontext.NewBuilder(db).WithLimits(4, 4096, 2200))
 	session, err := db.CreateInvestigationSession(ctx, "retry", project.ID, "Inspect the greeting implementation", "stub", "stub", "", 0)
@@ -230,7 +231,7 @@ func TestComponentInvestigationIncludesRelationshipsAndSourceLocations(t *testin
 		if !strings.Contains(req.User, "KNOWN COMPONENT: "+component) || !strings.Contains(req.User, "Incoming relationship:") || !strings.Contains(req.User, "internal/greeting/greeting.go") {
 			t.Fatalf("component context omitted relationships/source:\n%s", req.User)
 		}
-		return provider.ChatResponse{Model: "stub", Content: "The component declares Hello [internal/greeting/greeting.go:5]."}, nil
+		return provider.ChatResponse{Model: "stub", Content: investigationJSON("The component declares Hello.", "internal/greeting/greeting.go", 5)}, nil
 	}}
 	runtime := newModelRuntime(p, repocontext.NewBuilder(db).WithLimits(8, 4096, 5000))
 	session, err := db.CreateInvestigationSession(ctx, "component", project.ID, "Who uses this component?", "stub", "stub", component, analysis.Analysis.ID)
@@ -255,4 +256,8 @@ func TestComponentInvestigationIncludesRelationshipsAndSourceLocations(t *testin
 	if !foundLocation {
 		t.Fatalf("component source locations not persisted: %#v", evidence.Files)
 	}
+}
+
+func investigationJSON(statement, path string, line int) string {
+	return fmt.Sprintf(`{"observed_facts":[{"statement":%q,"citations":[{"path":%q,"line":%d}]}],"reasoned_conclusions":[{"statement":"The cited fact supports the requested interpretation.","citations":[{"path":%q,"line":%d}]}],"uncertainties":["Additional evidence may exist outside the bounded package."],"suggested_next_steps":["Inspect adjacent committed code if more detail is needed."]}`, statement, path, line, path, line)
 }

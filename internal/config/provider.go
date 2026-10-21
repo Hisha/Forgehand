@@ -122,7 +122,7 @@ func providerConfig(modelOverride string) (ProviderConfig, error) {
 			continue
 		}
 		switch value {
-		case "planning", "interpretation", "coding":
+		case "planning", "interpretation", "coding", "investigation":
 			seenCapabilities[value] = true
 			config.Capabilities = append(config.Capabilities, value)
 		default:

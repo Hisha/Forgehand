@@ -43,7 +43,7 @@ func TestProviderConfiguration(t *testing.T) {
 		t.Setenv(ProviderTimeoutEnvironment, "45s")
 		t.Setenv(ProviderMaxTokensEnvironment, "512")
 		t.Setenv(ProviderMaxContextCharsEnvironment, "4000")
-		t.Setenv(ProviderCapabilitiesEnvironment, "planning,coding")
+		t.Setenv(ProviderCapabilitiesEnvironment, "planning,coding,investigation")
 
 		config, err := Provider()
 		if err != nil {
@@ -61,7 +61,7 @@ func TestProviderConfiguration(t *testing.T) {
 		if config.Timeout != 45*time.Second || config.MaxTokens != 512 || config.MaxContextChars != 4000 {
 			t.Fatalf("unexpected limits: %#v", config)
 		}
-		if !config.HasCapability("planning") || !config.HasCapability("coding") || config.HasCapability("interpretation") {
+		if !config.HasCapability("planning") || !config.HasCapability("coding") || !config.HasCapability("investigation") || config.HasCapability("interpretation") {
 			t.Fatalf("capabilities = %#v", config.Capabilities)
 		}
 	})

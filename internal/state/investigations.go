@@ -18,6 +18,7 @@ type InvestigationRequest struct {
 
 type InvestigationSourceLocation struct {
 	Line        int    `json:"line"`
+	EndLine     int    `json:"end_line,omitempty"`
 	Declaration string `json:"declaration,omitempty"`
 }
 

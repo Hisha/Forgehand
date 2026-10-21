@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -25,25 +26,25 @@ const (
 	maxInvestigationScannedFiles = 300
 	// maxInvestigationCandidates bounds how many ranked candidate files are
 	// reported.
-	maxInvestigationCandidates = 20
+	maxInvestigationCandidates = 40
 	// maxInvestigationMatches bounds how many literal matches are recorded
 	// across the whole scan.
 	maxInvestigationMatches = 300
 	// maxInvestigationMatchesPerFile bounds how many match records one file
 	// may contribute so a single verbose file cannot consume the budget.
-	maxInvestigationMatchesPerFile = 3
+	maxInvestigationMatchesPerFile = 8
 	// maxInvestigationExcerpts bounds how many cited excerpts are stored.
-	maxInvestigationExcerpts = 30
+	maxInvestigationExcerpts = 48
 	// maxInvestigationExcerptsPerFile bounds how many excerpts one file may
 	// contribute.
-	maxInvestigationExcerptsPerFile = 3
+	maxInvestigationExcerptsPerFile = 5
 	// maxInvestigationExcerptsPerTopic bounds how many excerpts one topic may
 	// contribute so evidence stays distributed across the topic list.
-	maxInvestigationExcerptsPerTopic = 8
+	maxInvestigationExcerptsPerTopic = 12
 	// maxInvestigationExcerptLines bounds the line span of one excerpt.
-	maxInvestigationExcerptLines = 5
+	maxInvestigationExcerptLines = 25
 	// maxInvestigationEvidence bounds the persisted evidence count.
-	maxInvestigationEvidence = 64
+	maxInvestigationEvidence = 128
 	// maxInvestigationExcerptChars bounds the stored excerpt characters.
 	maxInvestigationExcerptChars = 24000
 	// maxInvestigationComponents bounds how many cached components are cited.
@@ -62,6 +63,8 @@ const (
 	maxInvestigationCoverageBonus  = 30
 	maxInvestigationComponentBonus = 10
 )
+
+var investigationCallPattern = regexp.MustCompile(`\b[A-Za-z_][A-Za-z0-9_]*\.([A-Z][A-Za-z0-9_]{3,})\s*\(`)
 
 // investigationRole is the coarse role a committed file plays in the
 // repository. Roles are derived from the existing inventory classification
@@ -444,6 +447,13 @@ func classifyInvestigationRole(file state.InventoryFile) investigationRole {
 	base := strings.ToLower(path.Base(file.Path))
 	extension := strings.ToLower(path.Ext(base))
 	stem := strings.TrimSuffix(base, extension)
+	// A source-encoded evaluation corpus is evidence about test cases, not the
+	// implementation of the behavior described inside its sample requests.
+	// Treat it as data so a verbatim copy of the user's question cannot outrank
+	// the actual implementation solely through keyword density.
+	if stem == "corpus" {
+		return roleData
+	}
 	if isInvestigationTestPath(file.Path, base, stem, extension) {
 		return roleTest
 	}
@@ -656,7 +666,46 @@ func scanInvestigationLines(candidate *investigationCandidate, matchers []invest
 			added++
 		}
 	}
+	// Natural-language phrases often map to code whose constituent words are
+	// separated across declarations and SQL in the same file (for example,
+	// "interrupted sessions"). If every word occurs somewhere in the committed
+	// file, retain one exact line for the first constituent as bounded evidence.
+	// Literal and same-line phrase matches above still score more highly.
+	if added < maxInvestigationMatchesPerFile && recorded+added < maxInvestigationMatches {
+		fileText := strings.ToLower(strings.Join(candidate.lines, "\n"))
+		for _, matcher := range matchers {
+			if added >= maxInvestigationMatchesPerFile || recorded+added >= maxInvestigationMatches {
+				break
+			}
+			if matcher.kind != planner.InvestigationTopicPhrase || matchedTopics[matcher.topic.Term] || !investigationSubstringsPresent(fileText, matcher.words) {
+				continue
+			}
+			lineNumber := investigationFirstWordLine(candidate.lines, matcher.words)
+			if lineNumber == 0 {
+				continue
+			}
+			matchedTopics[matcher.topic.Term] = true
+			candidate.matches = append(candidate.matches, investigationMatch{topic: matcher.topic.Term, lineNumber: lineNumber})
+			candidate.topics[matcher.topic.Term] = true
+			if stats := coverage[matcher.topic.Term]; stats != nil {
+				stats.lines++
+			}
+			added++
+		}
+	}
 	return added
+}
+
+func investigationFirstWordLine(lines []string, words []string) int {
+	if len(words) == 0 {
+		return 0
+	}
+	for index, line := range lines {
+		if strings.Contains(strings.ToLower(line), words[0]) {
+			return index + 1
+		}
+	}
+	return 0
 }
 
 // investigationTopicPrefilter is a cheap substring test that avoids building
@@ -691,6 +740,9 @@ func investigationTopicMatch(lineLower string, lineWords map[string]bool, matche
 		if investigationWordsPresent(lineWords, matcher.words) {
 			return true, false
 		}
+		if investigationSubstringsPresent(lineLower, matcher.words) {
+			return true, false
+		}
 		return false, false
 	default:
 		if len(matcher.words) > 0 && lineWords[matcher.words[0]] {
@@ -698,6 +750,38 @@ func investigationTopicMatch(lineLower string, lineWords map[string]bool, matche
 		}
 		return false, false
 	}
+}
+
+func investigationSubstringsPresent(value string, wanted []string) bool {
+	if len(wanted) == 0 {
+		return false
+	}
+	for _, word := range wanted {
+		if len(word) < 3 || !investigationContainsWordVariant(value, word) {
+			return false
+		}
+	}
+	return true
+}
+
+// investigationContainsWordVariant permits the small inflection differences
+// common between engineering questions and identifiers/comments (sessions vs
+// session, restarts vs restart). It deliberately does not perform fuzzy
+// matching, so retrieval remains deterministic and auditable.
+func investigationContainsWordVariant(value, word string) bool {
+	if strings.Contains(value, word) {
+		return true
+	}
+	if len(word) > 4 && strings.HasSuffix(word, "es") && strings.Contains(value, strings.TrimSuffix(word, "es")) {
+		return true
+	}
+	if len(word) > 5 && strings.HasSuffix(word, "ed") && strings.Contains(value, strings.TrimSuffix(word, "ed")) {
+		return true
+	}
+	if len(word) > 6 && strings.HasSuffix(word, "ing") && strings.Contains(value, strings.TrimSuffix(word, "ing")) {
+		return true
+	}
+	return len(word) > 3 && strings.HasSuffix(word, "s") && strings.Contains(value, strings.TrimSuffix(word, "s"))
 }
 
 func investigationWordsPresent(words map[string]bool, wanted []string) bool {
@@ -785,7 +869,173 @@ func investigationExcerpts(candidates []investigationCandidate, matchers []inves
 	next := map[string]int{}
 	perTopic := map[string]int{}
 	perFile := map[string]int{}
+	seenRange := map[string]bool{}
 	excerptCount, excerptChars := 0, 0
+	appendExcerptAt := func(candidate investigationCandidate, topic string, lineNumber int, detail string) bool {
+		if excerptCount >= maxInvestigationExcerpts || len(*evidence) >= maxInvestigationEvidence || perFile[candidate.path] >= maxInvestigationExcerptsPerFile || perTopic[topic] >= maxInvestigationExcerptsPerTopic {
+			return false
+		}
+		contextRadius := (maxInvestigationExcerptLines - 1) / 2
+		start := max(1, lineNumber-contextRadius)
+		end := min(len(candidate.lines), start+maxInvestigationExcerptLines-1)
+		if end < lineNumber {
+			end = lineNumber
+			start = max(1, end-maxInvestigationExcerptLines+1)
+		}
+		excerpt := strings.Join(candidate.lines[start-1:end], "\n")
+		if declaration, declarationLine := investigationEnclosingDeclaration(candidate.lines, lineNumber); declaration != "" {
+			detail += fmt.Sprintf("; inside %s at line %d", declaration, declarationLine)
+		}
+		rangeKey := fmt.Sprintf("%s:%d-%d", candidate.path, start, end)
+		if seenRange[rangeKey] {
+			return false
+		}
+		if excerptChars+len(excerpt) > maxInvestigationExcerptChars {
+			return false
+		}
+		excerptChars += len(excerpt)
+		excerptCount++
+		perFile[candidate.path]++
+		perTopic[topic]++
+		seenRange[rangeKey] = true
+		*evidence = append(*evidence, state.WorkEvidence{
+			Kind: "source-excerpt", Path: candidate.path, BlobHash: candidate.blob,
+			Line: start, EndLine: end, Excerpt: excerpt,
+			Detail: detail, Topics: []string{topic},
+		})
+		return true
+	}
+	appendExcerpt := func(candidate investigationCandidate, topic string) bool {
+		match, ok := investigationFirstMatch(candidate, topic)
+		if !ok {
+			return false
+		}
+		return appendExcerptAt(candidate, topic, match.lineNumber, fmt.Sprintf("discovered %s match for %q at line %d", investigationMatchLabel(match), topic, match.lineNumber))
+	}
+	appendReferencedDeclarations := func(source investigationCandidate, topic string) {
+		match, ok := investigationFirstMatch(source, topic)
+		if !ok {
+			return
+		}
+		type referencedCall struct {
+			identifier string
+			line       int
+			score      int
+		}
+		topicWords := make([]string, 0, len(matchers)*2)
+		seenTopicWord := map[string]bool{}
+		for _, matcher := range matchers {
+			for _, word := range matcher.words {
+				if !seenTopicWord[word] {
+					seenTopicWord[word] = true
+					topicWords = append(topicWords, word)
+				}
+			}
+		}
+		primaryTopicWords := planner.SplitTextWords(topic)
+		seen := map[string]bool{}
+		calls := make([]referencedCall, 0, 8)
+		// Search the bounded candidate file for qualified calls whose identifier
+		// overlaps the matched topic. This follows real control-flow edges such
+		// as d.db.ClaimNextQueuedExecution without collecting every helper call.
+		for lineIndex, line := range source.lines {
+			for _, groups := range investigationCallPattern.FindAllStringSubmatch(line, -1) {
+				identifier := groups[1]
+				if seen[identifier] {
+					continue
+				}
+				identifierLower := strings.ToLower(identifier)
+				score := 0
+				for _, word := range primaryTopicWords {
+					if investigationContainsWordVariant(identifierLower, word) {
+						score += 10
+					}
+				}
+				for _, word := range topicWords {
+					if investigationContainsWordVariant(identifierLower, word) {
+						score++
+					}
+				}
+				if score == 0 {
+					continue
+				}
+				seen[identifier] = true
+				calls = append(calls, referencedCall{identifier: identifier, line: lineIndex + 1, score: score})
+			}
+		}
+		sort.SliceStable(calls, func(i, j int) bool {
+			if calls[i].score != calls[j].score {
+				return calls[i].score > calls[j].score
+			}
+			leftDistance := calls[i].line - match.lineNumber
+			if leftDistance < 0 {
+				leftDistance = -leftDistance
+			}
+			rightDistance := calls[j].line - match.lineNumber
+			if rightDistance < 0 {
+				rightDistance = -rightDistance
+			}
+			if leftDistance != rightDistance {
+				return leftDistance < rightDistance
+			}
+			return calls[i].identifier < calls[j].identifier
+		})
+		for callIndex, call := range calls {
+			if callIndex >= 2 {
+				break
+			}
+			identifier := call.identifier
+			for _, target := range candidates {
+				for index, targetLine := range target.lines {
+					trimmed := strings.TrimSpace(targetLine)
+					if !strings.HasPrefix(trimmed, "func ") || !strings.Contains(trimmed, identifier+"(") {
+						continue
+					}
+					appendExcerptAt(target, topic, index+1, fmt.Sprintf("followed referenced declaration %s from %s:%d", identifier, source.path, match.lineNumber))
+					break
+				}
+			}
+		}
+	}
+
+	type selectedExcerpt struct {
+		candidate investigationCandidate
+		topic     string
+	}
+	selected := make([]selectedExcerpt, 0, len(matchers)+8)
+	// Reserve one excerpt for every grounded topic before file seeding or
+	// declaration expansion can consume the character budget.
+	for _, matcher := range matchers {
+		items := byTopic[matcher.topic.Term]
+		index := next[matcher.topic.Term]
+		for index < len(items) {
+			candidate := items[index]
+			index++
+			if appendExcerpt(candidate, matcher.topic.Term) {
+				selected = append(selected, selectedExcerpt{candidate: candidate, topic: matcher.topic.Term})
+				break
+			}
+		}
+		next[matcher.topic.Term] = index
+	}
+	for _, item := range selected {
+		appendReferencedDeclarations(item.candidate, item.topic)
+	}
+	followed := len(selected)
+
+	seeded := 0
+	for _, candidate := range candidates {
+		if seeded >= 8 || candidate.role != roleImplementation || len(candidate.matches) == 0 {
+			continue
+		}
+		if appendExcerpt(candidate, candidate.matches[0].topic) {
+			seeded++
+			selected = append(selected, selectedExcerpt{candidate: candidate, topic: candidate.matches[0].topic})
+		}
+	}
+	for _, item := range selected[followed:] {
+		appendReferencedDeclarations(item.candidate, item.topic)
+	}
 	for {
 		progressed := false
 		for _, matcher := range matchers {
@@ -800,37 +1050,12 @@ func investigationExcerpts(candidates []investigationCandidate, matchers []inves
 			for index < len(items) {
 				candidate := items[index]
 				index++
-				if perFile[candidate.path] >= maxInvestigationExcerptsPerFile {
-					continue
-				}
-				match, ok := investigationFirstMatch(candidate, matcher.topic.Term)
-				if !ok {
-					continue
-				}
-				contextRadius := (maxInvestigationExcerptLines - 1) / 2
-				start := max(1, match.lineNumber-contextRadius)
-				end := min(len(candidate.lines), match.lineNumber+contextRadius)
-				excerpt := strings.Join(candidate.lines[start-1:end], "\n")
-				if excerptChars+len(excerpt) > maxInvestigationExcerptChars {
-					continue
-				}
-				excerptChars += len(excerpt)
-				excerptCount++
-				perFile[candidate.path]++
-				perTopic[matcher.topic.Term]++
 				next[matcher.topic.Term] = index
-				*evidence = append(*evidence, state.WorkEvidence{
-					Kind:     "source-excerpt",
-					Path:     candidate.path,
-					BlobHash: candidate.blob,
-					Line:     start,
-					EndLine:  end,
-					Excerpt:  excerpt,
-					Detail:   fmt.Sprintf("discovered %s match for %q at line %d", investigationMatchLabel(match), matcher.topic.Term, match.lineNumber),
-					Topics:   []string{matcher.topic.Term},
-				})
-				progressed = true
-				break
+				if appendExcerpt(candidate, matcher.topic.Term) {
+					progressed = true
+					appendReferencedDeclarations(candidate, matcher.topic.Term)
+					break
+				}
 			}
 			next[matcher.topic.Term] = index
 		}
@@ -839,6 +1064,24 @@ func investigationExcerpts(candidates []investigationCandidate, matchers []inves
 		}
 	}
 	return excerptCount, excerptChars
+}
+
+func investigationEnclosingDeclaration(lines []string, lineNumber int) (string, int) {
+	if lineNumber <= 0 || lineNumber > len(lines) {
+		return "", 0
+	}
+	for index := lineNumber - 1; index >= 0 && index >= lineNumber-200; index-- {
+		trimmed := strings.TrimSpace(lines[index])
+		for _, prefix := range []string{"func ", "type ", "class ", "def "} {
+			if strings.HasPrefix(trimmed, prefix) {
+				if len(trimmed) > 160 {
+					trimmed = trimmed[:160]
+				}
+				return trimmed, index + 1
+			}
+		}
+	}
+	return "", 0
 }
 
 func investigationFirstMatch(candidate investigationCandidate, topic string) (investigationMatch, bool) {

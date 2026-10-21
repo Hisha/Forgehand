@@ -17,8 +17,9 @@ type chatRequestPayload struct {
 		Role    string `json:"role"`
 		Content string `json:"content"`
 	} `json:"messages"`
-	Stream    bool `json:"stream"`
-	MaxTokens int  `json:"max_tokens"`
+	Stream         bool           `json:"stream"`
+	MaxTokens      int            `json:"max_tokens"`
+	ResponseFormat map[string]any `json:"response_format"`
 }
 
 func writeChatResponse(t *testing.T, w http.ResponseWriter, model, content string) {
@@ -26,6 +27,7 @@ func writeChatResponse(t *testing.T, w http.ResponseWriter, model, content strin
 	w.Header().Set("Content-Type", "application/json")
 	response := map[string]any{
 		"model": model,
+		"usage": map[string]any{"prompt_tokens": 12, "completion_tokens": 7, "total_tokens": 19},
 		"choices": []map[string]any{
 			{"message": map[string]any{"role": "assistant", "content": content}},
 		},
@@ -64,6 +66,9 @@ func TestCompleteSendsExpectedRequestAndParsesResponse(t *testing.T) {
 
 	if response.Content != "hello from model" || response.Model != "served-model" {
 		t.Fatalf("unexpected response: %#v", response)
+	}
+	if response.PromptTokens != 12 || response.CompletionTokens != 7 || response.TotalTokens != 19 {
+		t.Fatalf("unexpected response usage: %#v", response)
 	}
 	if got.Model != "default-model" {
 		t.Fatalf("request model = %q, want default-model", got.Model)
@@ -109,6 +114,27 @@ func TestCompleteHonorsRequestOverrides(t *testing.T) {
 	}
 	if len(got.Messages) != 1 || got.Messages[0].Role != "user" {
 		t.Fatalf("system message should be omitted when empty: %#v", got.Messages)
+	}
+}
+
+func TestCompleteSendsOptionalJSONSchema(t *testing.T) {
+	var got chatRequestPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&got)
+		writeChatResponse(t, w, "model", `{}`)
+	}))
+	defer server.Close()
+	client := NewClient(server.URL, "", "model", time.Second, 64)
+	_, err := client.Complete(context.Background(), ChatRequest{User: "task", ResponseSchemaName: "report", ResponseSchema: map[string]any{"type": "object"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ResponseFormat["type"] != "json_schema" {
+		t.Fatalf("response_format = %#v", got.ResponseFormat)
+	}
+	schema, ok := got.ResponseFormat["json_schema"].(map[string]any)
+	if !ok || schema["name"] != "report" || schema["strict"] != true {
+		t.Fatalf("json_schema = %#v", got.ResponseFormat["json_schema"])
 	}
 }
 

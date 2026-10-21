@@ -15,16 +15,17 @@ import (
 // modelRuntime holds the dependencies a model-backed worker needs: a provider
 // client and a bounded repository-context builder.
 type modelRuntime struct {
-	provider             provider.Provider
-	providerID           string
-	defaultModel         string
-	endpoint             string
-	configuration        string
-	maxTokens            int
-	redactionSecrets     []string
-	qualificationTimeout time.Duration
-	context              *repocontext.Builder
-	planningQualified    bool
+	provider               provider.Provider
+	providerID             string
+	defaultModel           string
+	endpoint               string
+	configuration          string
+	maxTokens              int
+	redactionSecrets       []string
+	qualificationTimeout   time.Duration
+	context                *repocontext.Builder
+	planningQualified      bool
+	investigationQualified bool
 }
 
 // newModelRuntime constructs a model runtime. It returns nil when no provider
@@ -35,9 +36,11 @@ func newModelRuntime(p provider.Provider, contextBuilder *repocontext.Builder) *
 		return nil
 	}
 	return &modelRuntime{
-		provider:   p,
-		providerID: provider.ProviderID,
-		context:    contextBuilder,
+		provider: p, providerID: provider.ProviderID, context: contextBuilder,
+		// Directly constructed runtimes are test/in-process dependencies whose
+		// caller has selected the role. Configured daemons overwrite this with
+		// the operator's explicit capability allow-list below.
+		investigationQualified: true,
 	}
 }
 
@@ -67,6 +70,7 @@ func buildModelRuntime(providerConfig config.ProviderConfig, db *state.Database)
 		runtime.redactionSecrets = []string{providerConfig.APIKey}
 	}
 	runtime.planningQualified = providerConfig.HasCapability("planning")
+	runtime.investigationQualified = providerConfig.HasCapability("investigation")
 	return runtime
 }
 
@@ -109,6 +113,7 @@ func (r *modelRuntime) runModelWorker(
 		fmt.Printf("Execution %d context warning: %s\n", execution.ID, warning)
 	}
 
+	started := time.Now()
 	response, err := r.provider.Complete(ctx, provider.ChatRequest{
 		System: repoContext.System,
 		User:   repoContext.User,
@@ -130,12 +135,13 @@ func (r *modelRuntime) runModelWorker(
 	}
 
 	if err := retryOnBusy(ctx, func() error {
-		return store.CompleteModelExecution(
+		return store.CompleteModelExecutionWithMetrics(
 			context.Background(),
 			execution.ID,
 			r.providerID,
 			model,
 			response.Content,
+			state.ModelMetrics{PromptTokens: response.PromptTokens, CompletionTokens: response.CompletionTokens, TotalTokens: response.TotalTokens, LatencyMS: time.Since(started).Milliseconds()},
 		)
 	}); err != nil {
 		if ctx.Err() != nil {

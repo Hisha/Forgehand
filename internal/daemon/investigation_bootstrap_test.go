@@ -91,6 +91,29 @@ func TestInvestigationBootstrapRanksImplementationAboveDocumentationForBehavior(
 	}
 }
 
+func TestInvestigationBootstrapFollowsRelevantQualifiedCall(t *testing.T) {
+	ctx := context.Background()
+	db := openProjectIntakeTestDatabase(t)
+	root := newProjectIntakeRepository(t)
+	writeProjectIntakeFile(t, root, "internal/dispatch/dispatcher.go", "package dispatch\n\n// dispatch prevents duplicate execution claims.\nfunc dispatch(d *dispatcher) { d.db.ClaimNextQueuedExecution() }\n")
+	writeProjectIntakeFile(t, root, "internal/state/queue.go", "package state\n\nfunc (d *Database) ClaimNextQueuedExecution() {}\n")
+	runProjectIntakeGit(t, root, "add", "--all")
+	runProjectIntakeGit(t, root, "commit", "-m", "add qualified call fixture")
+	project := createProjectInventoryFixture(t, ctx, db, root)
+
+	_, evidence := investigationRun(t, ctx, db, project, "Investigate duplicate execution claims read-only")
+	found := false
+	for _, item := range evidence {
+		if item.Path == "internal/state/queue.go" && strings.Contains(item.Excerpt, "ClaimNextQueuedExecution") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("qualified call declaration was not captured: %#v", evidence)
+	}
+}
+
 func TestInvestigationBootstrapRanksConfigurationFirstForConfigurationQuestion(t *testing.T) {
 	ctx := context.Background()
 	db := openProjectIntakeTestDatabase(t)
@@ -269,7 +292,7 @@ func TestInvestigationBootstrapStaysWithinPublishedBounds(t *testing.T) {
 	ctx := context.Background()
 	db := openProjectIntakeTestDatabase(t)
 	root := newProjectIntakeRepository(t)
-	for i := 0; i < 40; i++ {
+	for i := 0; i < 60; i++ {
 		writeProjectIntakeFile(t, root, "internal/bounded/file-"+string(rune('a'+i%26))+string(rune('a'+i/26))+".go", "package bounded\n\n// boundedneedle marker\n")
 	}
 	runProjectIntakeGit(t, root, "add", "--all")
@@ -286,5 +309,24 @@ func TestInvestigationBootstrapStaysWithinPublishedBounds(t *testing.T) {
 	}
 	if !strings.Contains(result, "bounds were reached") {
 		t.Fatalf("result = %q; a reached bound must be reported", result)
+	}
+}
+
+func TestInvestigationCorpusIsRankedAsData(t *testing.T) {
+	role := classifyInvestigationRole(state.InventoryFile{Path: "internal/eval/corpus.go", Category: "source", Language: "Go"})
+	if role != roleData {
+		t.Fatalf("corpus role = %q, want %q", role, roleData)
+	}
+}
+
+func TestInvestigationPhraseMatchesAcrossCommittedFileLines(t *testing.T) {
+	matcher := investigationTopicMatcher{topic: planner.InvestigationTopic{Term: "interrupted sessions", Words: []string{"interrupted", "sessions"}, Kind: planner.InvestigationTopicPhrase}, term: "interrupted sessions", words: []string{"interrupted", "sessions"}, kind: planner.InvestigationTopicPhrase}
+	candidate := investigationCandidate{path: "internal/state/executions.go", lines: []string{"// interrupted executions are persisted", "sessions := loadSessions()", "}"}, topics: map[string]bool{}}
+	coverage := map[string]*investigationCoverage{"interrupted sessions": {}}
+	if added := scanInvestigationLines(&candidate, []investigationTopicMatcher{matcher}, coverage, 0); added != 1 {
+		t.Fatalf("added = %d, want 1", added)
+	}
+	if len(candidate.matches) != 1 || candidate.matches[0].lineNumber != 1 || candidate.matches[0].literal {
+		t.Fatalf("matches = %#v", candidate.matches)
 	}
 }

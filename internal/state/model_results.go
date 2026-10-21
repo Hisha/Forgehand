@@ -11,15 +11,26 @@ import (
 // ErrNoModelResult is returned when a session has no persisted model result.
 var ErrNoModelResult = errors.New("no model result")
 
-// ModelResult is the durable, verbatim response from a model-backed execution.
+// ModelResult is the durable response from a model-backed execution. Coding
+// results are verbatim; investigation results are schema-validated and
+// normalized before persistence.
 type ModelResult struct {
-	ID          int64
-	SessionID   int64
-	ExecutionID int64
-	Provider    string
-	Model       string
-	Content     string
-	CreatedAt   time.Time
+	ID               int64
+	SessionID        int64
+	ExecutionID      int64
+	Provider         string
+	Model            string
+	Content          string
+	CreatedAt        time.Time
+	PromptTokens     int
+	CompletionTokens int
+	TotalTokens      int
+	LatencyMS        int64
+}
+
+type ModelMetrics struct {
+	PromptTokens, CompletionTokens, TotalTokens int
+	LatencyMS                                   int64
 }
 
 // CreateCodingSession creates a READY session of kind "coding" tied to a
@@ -122,6 +133,19 @@ func (d *Database) CompleteModelExecution(
 	model string,
 	content string,
 ) error {
+	return d.CompleteModelExecutionWithMetrics(ctx, executionID, provider, model, content, ModelMetrics{})
+}
+
+// CompleteModelExecutionWithMetrics performs the same atomic completion while
+// preserving provider-reported token counts and observed wall-clock latency.
+func (d *Database) CompleteModelExecutionWithMetrics(
+	ctx context.Context,
+	executionID int64,
+	provider string,
+	model string,
+	content string,
+	metrics ModelMetrics,
+) error {
 	tx, err := d.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin model execution completion: %w", err)
@@ -170,6 +194,7 @@ WHERE id = ?
 	result, err := tx.ExecContext(ctx, `
 UPDATE session_executions
 SET status = ?,
+    current_step = total_steps,
     completed_at = ?
 WHERE id = ?
   AND status = ?
@@ -229,9 +254,13 @@ INSERT INTO model_results (
 	provider,
 	model,
 	content,
-	created_at
+	created_at,
+	prompt_tokens,
+	completion_tokens,
+	total_tokens,
+	latency_ms
 )
-VALUES (?, ?, ?, ?, ?, ?)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `,
 		sessionID,
 		executionID,
@@ -239,6 +268,10 @@ VALUES (?, ?, ?, ?, ?, ?)
 		model,
 		content,
 		nowText,
+		metrics.PromptTokens,
+		metrics.CompletionTokens,
+		metrics.TotalTokens,
+		metrics.LatencyMS,
 	); err != nil {
 		return fmt.Errorf("insert model result for execution %d: %w", executionID, err)
 	}
@@ -285,7 +318,11 @@ SELECT
 	provider,
 	model,
 	content,
-	created_at
+	created_at,
+	prompt_tokens,
+	completion_tokens,
+	total_tokens,
+	latency_ms
 FROM model_results
 WHERE session_id = ?
 ORDER BY id DESC
@@ -298,6 +335,10 @@ LIMIT 1
 		&model,
 		&result.Content,
 		&createdText,
+		&result.PromptTokens,
+		&result.CompletionTokens,
+		&result.TotalTokens,
+		&result.LatencyMS,
 	)
 	if err == sql.ErrNoRows {
 		return ModelResult{}, ErrNoModelResult

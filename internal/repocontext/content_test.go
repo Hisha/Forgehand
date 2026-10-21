@@ -267,6 +267,18 @@ func newContextRepository(t *testing.T, files map[string]string) string {
 	return root
 }
 
+func TestSelectCandidatesPreservesPreferredRanking(t *testing.T) {
+	files := []state.InventoryFile{
+		{Path: "docs/first.md", Category: "documentation"},
+		{Path: "internal/second.go", Category: "source"},
+		{Path: "internal/first.go", Category: "source"},
+	}
+	selected := selectCandidates(files, "unrelated", []string{"internal/second.go", "internal/first.go"})
+	if len(selected) != 3 || selected[0].Path != "internal/second.go" || selected[1].Path != "internal/first.go" {
+		t.Fatalf("selected order = %#v", selected)
+	}
+}
+
 func runContextGit(t *testing.T, root string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)

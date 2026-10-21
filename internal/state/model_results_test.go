@@ -57,6 +57,9 @@ func TestCompleteModelExecutionPersistsAtomically(t *testing.T) {
 	if latest == nil || latest.Status != ExecutionStatusCompleted {
 		t.Fatalf("execution status = %#v, want COMPLETED", latest)
 	}
+	if latest.CurrentStep != latest.TotalSteps {
+		t.Fatalf("execution progress = %d/%d, want complete", latest.CurrentStep, latest.TotalSteps)
+	}
 	if session.State != SessionStateCompleted {
 		t.Fatalf("session state = %q, want %q", session.State, SessionStateCompleted)
 	}
@@ -84,6 +87,24 @@ func TestCompleteModelExecutionPersistsAtomically(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("model.response.completed event not appended: %#v", events)
+	}
+}
+
+func TestCompleteModelExecutionPersistsMetrics(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	execution := startCodingExecution(t, ctx, db)
+
+	want := ModelMetrics{PromptTokens: 123, CompletionTokens: 45, TotalTokens: 168, LatencyMS: 987}
+	if err := db.CompleteModelExecutionWithMetrics(ctx, execution.ID, "openai-compatible", "test-model", "model output", want); err != nil {
+		t.Fatalf("CompleteModelExecutionWithMetrics: %v", err)
+	}
+	result, err := db.LatestModelResult(ctx, execution.SessionID)
+	if err != nil {
+		t.Fatalf("LatestModelResult: %v", err)
+	}
+	if result.PromptTokens != want.PromptTokens || result.CompletionTokens != want.CompletionTokens || result.TotalTokens != want.TotalTokens || result.LatencyMS != want.LatencyMS {
+		t.Fatalf("metrics = %#v, want %#v", result, want)
 	}
 }
 
