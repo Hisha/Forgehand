@@ -44,11 +44,18 @@ type Manager struct {
 }
 
 type State struct {
-	Installed   bool
-	ActiveState string
-	SubState    string
-	MainPID     string
-	UnitPath    string
+	Installed           bool
+	Managed             bool
+	ActiveState         string
+	SubState            string
+	MainPID             string
+	UnitPath            string
+	UnitExecutable      string
+	EffectiveExecutable string
+	CurrentExecutable   string
+	ExecutableMatches   bool
+	NeedsUpdate         bool
+	UpdateReason        string
 }
 
 func NewManager() (*Manager, error) {
@@ -90,18 +97,30 @@ func NewManager() (*Manager, error) {
 func (m *Manager) UnitPath() string { return m.unitPath }
 
 func (m *Manager) Install() error {
+	var contents string
 	if data, err := os.ReadFile(m.unitPath); err == nil {
 		if !bytes.Contains(data, []byte(managedMarker)) {
 			return fmt.Errorf("existing unit %s is not managed by Forgehand; refusing to overwrite it", m.unitPath)
 		}
 		m.preserveConfiguredPaths(string(data))
+		updated, updateErr := m.updatedUnitContents(string(data))
+		if updateErr != nil {
+			return updateErr
+		}
+		contents = updated
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("inspect user service: %w", err)
+	} else {
+		var contentsErr error
+		contents, contentsErr = m.unitContents()
+		if contentsErr != nil {
+			return contentsErr
+		}
 	}
 	if _, err := m.systemctl("show-environment"); err != nil {
 		return fmt.Errorf("systemd user manager is unavailable: %w", err)
 	}
-	if err := m.writeUnit(); err != nil {
+	if err := m.writeUnitContents(contents); err != nil {
 		return err
 	}
 	if _, err := m.systemctl("daemon-reload"); err != nil {
@@ -122,20 +141,17 @@ func (m *Manager) Update() error {
 		return fmt.Errorf("read user service: %w", err)
 	}
 	m.preserveConfiguredPaths(string(data))
-	active, err := m.isActive()
+	updated, err := m.updatedUnitContents(string(data))
 	if err != nil {
 		return err
 	}
-	if err := m.writeUnit(); err != nil {
+	if err := m.writeUnitContents(updated); err != nil {
 		return err
 	}
 	if _, err := m.systemctl("daemon-reload"); err != nil {
 		return err
 	}
-	if active {
-		_, err = m.systemctl("restart", UnitName)
-	}
-	return err
+	return nil
 }
 
 // preserveConfiguredPaths keeps update/install idempotent even when the shell's
@@ -161,9 +177,21 @@ func (m *Manager) preserveConfiguredPaths(unit string) {
 	}
 }
 
-func (m *Manager) Start() error   { _, err := m.systemctl("start", UnitName); return err }
-func (m *Manager) Stop() error    { _, err := m.systemctl("stop", UnitName); return err }
-func (m *Manager) Restart() error { _, err := m.systemctl("restart", UnitName); return err }
+func (m *Manager) Start() error {
+	if err := m.requireCurrentExecutable(); err != nil {
+		return err
+	}
+	_, err := m.systemctl("start", UnitName)
+	return err
+}
+func (m *Manager) Stop() error { _, err := m.systemctl("stop", UnitName); return err }
+func (m *Manager) Restart() error {
+	if err := m.requireCurrentExecutable(); err != nil {
+		return err
+	}
+	_, err := m.systemctl("restart", UnitName)
+	return err
+}
 
 func (m *Manager) Uninstall() error {
 	if err := m.requireManagedUnit(); err != nil {
@@ -183,14 +211,21 @@ func (m *Manager) Uninstall() error {
 }
 
 func (m *Manager) Status() (State, error) {
-	state := State{UnitPath: m.unitPath}
-	if _, err := os.Stat(m.unitPath); errors.Is(err, os.ErrNotExist) {
+	state := State{UnitPath: m.unitPath, CurrentExecutable: m.executable}
+	data, err := os.ReadFile(m.unitPath)
+	if errors.Is(err, os.ErrNotExist) {
 		return state, nil
 	} else if err != nil {
 		return state, fmt.Errorf("inspect user service: %w", err)
 	}
 	state.Installed = true
-	output, err := m.systemctl("show", UnitName, "--property=ActiveState,SubState,MainPID")
+	state.Managed = bytes.Contains(data, []byte(managedMarker))
+	state.UnitExecutable, _ = unitExecutable(string(data))
+	if hasLegacyEmptyCapabilities(string(data)) {
+		state.NeedsUpdate = true
+		state.UpdateReason = "legacy empty capability directives"
+	}
+	output, err := m.systemctl("show", UnitName, "--property=ActiveState,SubState,MainPID,ExecStart")
 	if err != nil {
 		return state, err
 	}
@@ -206,22 +241,35 @@ func (m *Manager) Status() (State, error) {
 			state.SubState = value
 		case "MainPID":
 			state.MainPID = value
+		case "ExecStart":
+			state.EffectiveExecutable = effectiveExecutable(value)
 		}
 	}
+	if state.EffectiveExecutable == "" {
+		state.EffectiveExecutable = state.UnitExecutable
+	}
+	state.ExecutableMatches = sameExecutable(state.EffectiveExecutable, m.executable)
 	return state, nil
 }
 
-func (m *Manager) isActive() (bool, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	output, err := m.runner.Run(ctx, "systemctl", "--user", "is-active", UnitName)
-	if err == nil {
-		return strings.TrimSpace(output) == "active", nil
+func (m *Manager) requireCurrentExecutable() error {
+	state, err := m.Status()
+	if err != nil {
+		return err
 	}
-	if strings.TrimSpace(output) == "inactive" || strings.TrimSpace(output) == "failed" || strings.TrimSpace(output) == "unknown" {
-		return false, nil
+	if !state.Installed {
+		return fmt.Errorf("Forgehand user service is not installed; run `forgehand service install`")
 	}
-	return false, fmt.Errorf("systemctl --user is-active %s: %v: %s", UnitName, err, output)
+	if !state.Managed {
+		return fmt.Errorf("unit %s is not managed by Forgehand; refusing to start it", m.unitPath)
+	}
+	if state.NeedsUpdate {
+		return fmt.Errorf("user service requires update (%s); run `forgehand service update` before starting or restarting", state.UpdateReason)
+	}
+	if !state.ExecutableMatches {
+		return fmt.Errorf("user service resolves to %q, but this executable is %q; run `forgehand service update` before starting or restarting", state.EffectiveExecutable, m.executable)
+	}
+	return nil
 }
 
 func (m *Manager) requireManagedUnit() error {
@@ -238,11 +286,7 @@ func (m *Manager) requireManagedUnit() error {
 	return nil
 }
 
-func (m *Manager) writeUnit() error {
-	data, err := m.unitContents()
-	if err != nil {
-		return err
-	}
+func (m *Manager) writeUnitContents(data string) error {
 	dir := filepath.Dir(m.unitPath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create user systemd directory: %w", err)
@@ -274,7 +318,135 @@ func (m *Manager) writeUnit() error {
 	return nil
 }
 
+// updatedUnitContents changes only the executable owned by Forgehand and
+// removes the two known-bad empty capability assignments emitted by older
+// builds. Every Environment= line and every other operator customization is
+// retained verbatim. Ambiguous units fail instead of being regenerated.
+func (m *Manager) updatedUnitContents(unit string) (string, error) {
+	if !strings.Contains(unit, managedMarker) {
+		return "", fmt.Errorf("unit %s is not managed by Forgehand; refusing to modify it", m.unitPath)
+	}
+	lines := strings.Split(unit, "\n")
+	inService, foundExec := false, false
+	updated := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inService = trimmed == "[Service]"
+		}
+		if inService && strings.HasPrefix(trimmed, "ExecStart=") {
+			if foundExec {
+				return "", fmt.Errorf("managed unit %s has multiple ExecStart directives; refusing to overwrite operator customizations", m.unitPath)
+			}
+			updated = append(updated, "ExecStart="+strconv.Quote(m.executable)+" daemon")
+			foundExec = true
+			continue
+		}
+		if inService && (trimmed == "CapabilityBoundingSet=" || trimmed == "AmbientCapabilities=") {
+			continue
+		}
+		updated = append(updated, line)
+	}
+	if !foundExec {
+		return "", fmt.Errorf("managed unit %s has no service ExecStart directive; refusing to replace its contents", m.unitPath)
+	}
+	return strings.Join(updated, "\n"), nil
+}
+
+func unitExecutable(unit string) (string, bool) {
+	inService := false
+	for _, line := range strings.Split(unit, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inService = trimmed == "[Service]"
+			continue
+		}
+		if !inService {
+			continue
+		}
+		if value, ok := strings.CutPrefix(trimmed, "ExecStart="); ok {
+			path, ok := firstSystemdWord(value)
+			return path, ok
+		}
+	}
+	return "", false
+}
+
+func firstSystemdWord(value string) (string, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", false
+	}
+	if value[0] != '"' {
+		word, _, _ := strings.Cut(value, " ")
+		return word, word != ""
+	}
+	escaped := false
+	for index := 1; index < len(value); index++ {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if value[index] == '\\' {
+			escaped = true
+			continue
+		}
+		if value[index] == '"' {
+			word, err := strconv.Unquote(value[:index+1])
+			return word, err == nil
+		}
+	}
+	return "", false
+}
+
+func effectiveExecutable(value string) string {
+	const marker = "path="
+	index := strings.Index(value, marker)
+	if index < 0 {
+		return ""
+	}
+	remainder := value[index+len(marker):]
+	if end := strings.Index(remainder, " ;"); end >= 0 {
+		remainder = remainder[:end]
+	}
+	return strings.TrimSpace(remainder)
+}
+
+func hasLegacyEmptyCapabilities(unit string) bool {
+	inService := false
+	for _, line := range strings.Split(unit, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+			inService = trimmed == "[Service]"
+			continue
+		}
+		if inService && (trimmed == "CapabilityBoundingSet=" || trimmed == "AmbientCapabilities=") {
+			return true
+		}
+	}
+	return false
+}
+
+func sameExecutable(left, right string) bool {
+	if left == "" || right == "" {
+		return false
+	}
+	resolve := func(path string) string {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			path = resolved
+		}
+		if absolute, err := filepath.Abs(path); err == nil {
+			path = absolute
+		}
+		return filepath.Clean(path)
+	}
+	return resolve(left) == resolve(right)
+}
+
 func (m *Manager) unitContents() (string, error) {
+	if !filepath.IsAbs(m.executable) {
+		return "", errors.New("invalid executable for systemd unit: path must be absolute")
+	}
 	for name, value := range map[string]string{"executable": m.executable, "state directory": m.stateDir, "socket path": m.socketPath} {
 		if value == "" || strings.ContainsAny(value, "\x00\r\n") {
 			return "", fmt.Errorf("invalid %s for systemd unit", name)
@@ -298,8 +470,6 @@ KillSignal=SIGTERM
 TimeoutStopSec=90s
 UMask=0077
 NoNewPrivileges=yes
-CapabilityBoundingSet=
-AmbientCapabilities=
 ProtectSystem=full
 ProtectHome=no
 PrivateTmp=no

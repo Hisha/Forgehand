@@ -61,9 +61,22 @@ Forgehand executable from its new intended location. Then run:
 /path/to/new/forgehand service update
 ```
 
-Update rewrites only a Forgehand-managed user unit, reloads the user manager,
-and restarts the daemon only if it was already active. The state directory and
-SQLite database are not replaced. Check the result with `forgehand status`.
+Update patches only the `ExecStart` path in a Forgehand-managed user unit,
+removes obsolete empty capability directives from older generated units, and
+reloads the user manager. Existing environment entries and other unit
+customizations are preserved. Ambiguous or unmanaged units are refused rather
+than overwritten.
+
+Update does not restart the daemon. Use the TUI upgrade flow to inspect active
+work, confirm any interruption, update a mismatched executable path when
+needed, restart, and verify reconnection. The explicit CLI equivalent is:
+
+```sh
+/path/to/new/forgehand service update
+/path/to/new/forgehand service restart
+```
+
+The state directory and SQLite database are not replaced.
 
 ## Uninstall
 

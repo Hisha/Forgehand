@@ -143,10 +143,7 @@ func serviceCommand(args []string) error {
 			return err
 		}
 		fmt.Printf("Updated user service to %s\n", executablePath())
-		state, stateErr := manager.Status()
-		if stateErr == nil && state.ActiveState == "active" {
-			return waitForManagedDaemon(manager)
-		}
+		fmt.Println("The daemon was not restarted; run `forgehand service restart` after checking active work, or use the TUI upgrade flow.")
 	case "uninstall":
 		if err := manager.Uninstall(); err != nil {
 			return err
@@ -179,6 +176,12 @@ func serviceCommand(args []string) error {
 			return nil
 		}
 		fmt.Printf("systemd: %s (%s), main PID %s\n", state.ActiveState, state.SubState, state.MainPID)
+		fmt.Printf("Service executable: %s\n", state.EffectiveExecutable)
+		fmt.Printf("Current executable: %s\n", state.CurrentExecutable)
+		fmt.Printf("Executable matches: %t\n", state.ExecutableMatches)
+		if state.NeedsUpdate {
+			fmt.Printf("Service update required: %s\n", state.UpdateReason)
+		}
 		return status()
 	default:
 		return fmt.Errorf("unknown service command %q", args[0])

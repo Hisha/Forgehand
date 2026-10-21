@@ -219,6 +219,34 @@ func TestReopenCompletedInvestigationShowsFindingsAndEvidence(t *testing.T) {
 	}
 }
 
+func TestWorkPlanViewShowsInvestigationTopicsPerEvidence(t *testing.T) {
+	m := model{width: 120}
+	m.selectedSession = &ipc.Session{ID: 3, Title: "Shutdown investigation", State: "COMPLETED", Kind: "work-plan", Task: "Investigate daemon shutdown"}
+	m.workPlan = &ipc.WorkPlan{
+		Objective: "Investigate daemon shutdown",
+		Status:    "BLOCKED",
+		ReadOnly:  true,
+		Tasks: []ipc.WorkPlanTask{{
+			Key:             "deterministic-discovery",
+			Position:        1,
+			Objective:       "Gather bounded committed-repository evidence",
+			ExecutionMethod: "repository.investigation.bootstrap",
+			Status:          "COMPLETED",
+			Result:          "Deterministic discovery completed.",
+			Evidence: []ipc.WorkEvidence{
+				{Kind: "investigation-topic", Detail: "daemon shutdown — 7 matched line(s) across 6 scanned file(s)", Topics: []string{"daemon shutdown"}},
+				{Kind: "candidate-file", Path: "internal/daemon/daemon.go", BlobHash: "abcdef1234567890", Detail: "inferred relevance score 337", Topics: []string{"daemon shutdown", "recovery"}},
+			},
+		}},
+	}
+	view := m.sessionBody()
+	for _, want := range []string{"deterministic-discovery", "daemon shutdown", "topics: daemon shutdown, recovery", "internal/daemon/daemon.go", "Deterministic discovery completed."} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("work plan view missing %q:\n%s", want, view)
+		}
+	}
+}
+
 func TestFailedSessionViewShowsFailureDiagnostic(t *testing.T) {
 	m := model{
 		screen:          screenSession,
@@ -298,12 +326,18 @@ func TestUnavailableDaemonOffersRecoveryActions(t *testing.T) {
 	client := &fakeTransport{handler: func(ipc.Request) (ipc.Response, error) {
 		return ipc.Response{}, errors.New("daemon IPC protocol 0 is incompatible")
 	}}
-	m := loadedModel(t, client)
-	if m.screen != screenRecovery {
+	m := newModel(client)
+	m.serviceFactory = func() (serviceController, error) {
+		return nil, errors.New("systemd inspection unavailable in test")
+	}
+	message := m.Init()().(loadedMsg)
+	updated, _ := m.Update(message)
+	m = updated.(model)
+	if m.screen != screenUpgrade {
 		t.Fatalf("screen = %v", m.screen)
 	}
 	view := m.View().Content
-	for _, want := range []string{"daemon unavailable", "Press s to start", "service install", "incompatible"} {
+	for _, want := range []string{"upgrade required", "cannot be inspected safely", "Automatic restart is disabled"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("recovery view missing %q:\n%s", want, view)
 		}

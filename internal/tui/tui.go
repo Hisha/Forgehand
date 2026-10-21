@@ -14,7 +14,6 @@ import (
 
 	"github.com/Hisha/Forgehand/internal/config"
 	"github.com/Hisha/Forgehand/internal/ipc"
-	"github.com/Hisha/Forgehand/internal/service"
 )
 
 type transport interface {
@@ -65,6 +64,8 @@ const (
 	screenModels
 	screenQualification
 	screenModelInput
+	screenUpgrade
+	screenUpgradeConfirm
 )
 
 type section int
@@ -103,6 +104,9 @@ type model struct {
 	width                    int
 	height                   int
 	scroll                   int
+	serviceFactory           serviceFactory
+	upgrade                  *daemonUpgrade
+	upgradeAction            string
 }
 
 type loadedMsg struct {
@@ -111,6 +115,7 @@ type loadedMsg struct {
 	provider       *ipc.ProviderConfiguration
 	qualifications []ipc.QualificationJob
 	err            error
+	upgrade        *daemonUpgrade
 }
 
 type registeredMsg struct {
@@ -132,7 +137,10 @@ type sessionMsg struct {
 	workPlan  *ipc.WorkPlan
 	err       error
 }
-type recoveredMsg struct{ err error }
+type recoveredMsg struct {
+	err     error
+	refresh bool
+}
 type pollMsg time.Time
 type qualificationMsg struct {
 	job      *ipc.QualificationJob
@@ -148,14 +156,18 @@ func Run() error {
 }
 
 func newModel(client transport) model {
-	return model{client: client, screen: screenHome, busy: true, width: 80, height: 24, qualificationRepetitions: 3}
+	return model{client: client, serviceFactory: defaultServiceFactory, screen: screenHome, busy: true, width: 80, height: 24, qualificationRepetitions: 3}
 }
 
 func (m model) Init() tea.Cmd { return m.loadCmd() }
 
 func (m model) loadCmd() tea.Cmd {
 	return func() tea.Msg {
-		if _, err := m.client.Request(ipc.Request{Command: "status"}); err != nil {
+		status, err := m.client.Request(ipc.Request{Command: "status"})
+		if compatibilityMismatch(status, err) {
+			return loadedMsg{upgrade: inspectDaemonUpgrade(status, m.serviceFactory)}
+		}
+		if err != nil {
 			return loadedMsg{err: err}
 		}
 		projects, err := m.client.Request(ipc.Request{Command: "projects"})
@@ -188,8 +200,15 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := message.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		if m.screen == screenSession && m.scroll > m.maxSessionScroll() {
+			m.scroll = m.maxSessionScroll()
+		}
 	case loadedMsg:
 		m.busy = false
+		if msg.upgrade != nil {
+			m.screen, m.upgrade, m.upgradeAction = screenUpgrade, msg.upgrade, ""
+			return m, nil
+		}
 		if msg.err != nil {
 			m.screen = screenRecovery
 			m.recovery = msg.err.Error()
@@ -275,7 +294,16 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case recoveredMsg:
 		m.busy = false
+		if msg.refresh {
+			m.busy = true
+			return m, m.loadCmd()
+		}
 		if msg.err != nil {
+			if m.upgrade != nil && (m.screen == screenUpgrade || m.screen == screenUpgradeConfirm) {
+				m.screen = screenUpgrade
+				m.upgrade.actionErr = msg.err
+				return m, nil
+			}
 			m.recovery = msg.err.Error()
 			return m, nil
 		}
@@ -306,6 +334,26 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch m.screen {
+	case screenUpgrade:
+		switch key {
+		case "q", "esc":
+			return m, tea.Quit
+		case "r":
+			return m.beginUpgradeAction(false)
+		case "u":
+			return m.beginUpgradeAction(true)
+		}
+	case screenUpgradeConfirm:
+		switch key {
+		case "q":
+			return m, tea.Quit
+		case "b", "esc":
+			m.screen = screenUpgrade
+		case "y":
+			update := m.upgradeAction == "update"
+			m.busy = true
+			return m, upgradeServiceCmd(m.client, m.serviceFactory, update, m.upgrade.daemon.PID, true)
+		}
 	case screenRecovery:
 		switch key {
 		case "q", "esc":
@@ -315,7 +363,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.loadCmd()
 		case "s":
 			m.busy = true
-			return m, startServiceCmd(m.client)
+			return m, startServiceCmd(m.client, m.serviceFactory)
 		}
 	case screenHome:
 		switch key {
@@ -718,9 +766,9 @@ func hasActiveQualification(jobs []ipc.QualificationJob) bool {
 	return false
 }
 
-func startServiceCmd(client transport) tea.Cmd {
+func startServiceCmd(client transport, factory serviceFactory) tea.Cmd {
 	return func() tea.Msg {
-		manager, err := service.NewManager()
+		manager, err := factory()
 		if err != nil {
 			return recoveredMsg{err: err}
 		}
@@ -774,9 +822,17 @@ func (m model) View() tea.View {
 		body = m.qualificationView()
 	case screenModelInput:
 		body = m.inputView("Select model", "Model identifier")
+	case screenUpgrade:
+		body = m.upgradeView()
+	case screenUpgradeConfirm:
+		body = m.upgradeConfirmView()
 	default:
 		body = m.homeView()
 	}
+	// This final pass is a safety boundary for all present and future views.
+	// Session content is already wrapped before pagination, so this is a no-op
+	// there except for guarding newly added footer text.
+	body = wrapContent(body, m.width)
 	view := tea.NewView(body)
 	view.AltScreen = true
 	return view
@@ -811,7 +867,7 @@ func (m model) homeView() string {
 		b.WriteString("  No registered projects. Press a to add one.\n")
 	}
 	for i, project := range m.projects {
-		b.WriteString(row(i == m.projectCursor && m.section == projectsSection, project.Name+"  "+project.RootPath))
+		b.WriteString(compactRow(i == m.projectCursor && m.section == projectsSection, project.Name+"  "+project.RootPath, m.width))
 	}
 	b.WriteString("\n" + sectionTitle("Work sessions", m.section == sessionsSection) + "\n")
 	if len(m.sessions) == 0 {
@@ -822,14 +878,14 @@ func (m model) homeView() string {
 		if session.Kind != "" && session.Kind != "investigation" {
 			label += "  " + session.Kind
 		}
-		b.WriteString(row(i == m.sessionCursor && m.section == sessionsSection, label))
+		b.WriteString(compactRow(i == m.sessionCursor && m.section == sessionsSection, label, m.width))
 	}
 	b.WriteString("\n" + sectionTitle("Models", m.section == modelsSection) + "\n")
 	providerLabel := "Provider not configured"
 	if m.provider != nil && m.provider.Configured {
 		providerLabel = m.provider.Provider + "  " + m.provider.Model
 	}
-	b.WriteString(row(m.section == modelsSection, providerLabel))
+	b.WriteString(compactRow(m.section == modelsSection, providerLabel, m.width))
 	b.WriteString("\n↑/↓ select  tab switch  enter open  a add repository  r refresh  q quit\n")
 	if m.busy {
 		b.WriteString("\nWorking…\n")
@@ -878,7 +934,7 @@ func (m model) modelsView() string {
 		if job.Recommendation != "" {
 			label += "  " + job.Recommendation
 		}
-		b.WriteString(row(index == m.qualificationCursor, label))
+		b.WriteString(compactRow(index == m.qualificationCursor, label, m.width))
 	}
 	b.WriteString("\ns start  m model  ←/→ repetitions  enter results  c cancel  t retry interrupted  r refresh  b/esc back  q quit\n")
 	if m.busy {
@@ -941,7 +997,7 @@ func (m model) qualificationView() string {
 }
 
 func (m model) sessionView() string {
-	body := m.sessionBody()
+	body := m.renderedSessionBody()
 	lines := strings.Split(body, "\n")
 	visible := max(6, m.height-3)
 	offset := m.scroll
@@ -950,12 +1006,16 @@ func (m model) sessionView() string {
 		offset = limit
 	}
 	end := min(len(lines), offset+visible)
-	footer := "↑/↓ scroll  r refresh  b/esc back  q quit (daemon keeps working)"
+	footer := compactLine("↑/↓ scroll  r refresh  b/esc back  q quit (daemon keeps working)", m.width)
 	return strings.Join(lines[offset:end], "\n") + "\n" + footer + "\n"
 }
 
 func (m model) maxSessionScroll() int {
-	return max(0, len(strings.Split(m.sessionBody(), "\n"))-max(6, m.height-3))
+	return max(0, len(strings.Split(m.renderedSessionBody(), "\n"))-max(6, m.height-3))
+}
+
+func (m model) renderedSessionBody() string {
+	return wrapContent(m.sessionBody(), m.width)
 }
 
 func (m model) sessionBody() string {
@@ -1022,6 +1082,9 @@ func (m model) sessionBody() string {
 				marker = "[!]"
 			}
 			fmt.Fprintf(&b, "\n%s %d. %s [%s]\n", marker, task.Position, task.Objective, task.Status)
+			if task.Key != "" {
+				fmt.Fprintf(&b, "    key: %s\n", task.Key)
+			}
 			fmt.Fprintf(&b, "    method: %s · model: %t\n", task.ExecutionMethod, task.RequiresModel)
 			if len(task.Dependencies) > 0 {
 				fmt.Fprintf(&b, "    depends on: %s\n", strings.Join(task.Dependencies, ", "))
@@ -1043,17 +1106,28 @@ func (m model) sessionBody() string {
 				}
 				if ev.Path != "" {
 					if ev.Line > 0 {
-						fmt.Fprintf(&b, "      %s:%d", ev.Path, ev.Line)
+						fmt.Fprintf(&b, "      %s: %s:%d", ev.Kind, ev.Path, ev.Line)
 						if ev.EndLine > ev.Line {
 							fmt.Fprintf(&b, "-%d", ev.EndLine)
 						}
 						b.WriteString("\n")
 					} else {
-						fmt.Fprintf(&b, "      %s\n", ev.Path)
+						fmt.Fprintf(&b, "      %s: %s\n", ev.Kind, ev.Path)
+					}
+					if ev.BlobHash != "" {
+						fmt.Fprintf(&b, "        blob: %s\n", shortHash(ev.BlobHash))
+					}
+					if len(ev.Topics) > 0 {
+						fmt.Fprintf(&b, "        topics: %s\n", strings.Join(ev.Topics, ", "))
+					}
+					if ev.Detail != "" {
+						fmt.Fprintf(&b, "        %s\n", ev.Detail)
 					}
 					if ev.Excerpt != "" {
 						fmt.Fprintf(&b, "        %s\n", strings.ReplaceAll(ev.Excerpt, "\n", "\n        "))
 					}
+				} else if ev.Detail != "" {
+					fmt.Fprintf(&b, "      %s: %s\n", ev.Kind, ev.Detail)
 				}
 			}
 		}
@@ -1069,12 +1143,6 @@ func sectionTitle(title string, active bool) string {
 		return "▶ " + title
 	}
 	return "  " + title
-}
-func row(selected bool, text string) string {
-	if selected {
-		return "  > " + text + "\n"
-	}
-	return "    " + text + "\n"
 }
 func shortHash(hash string) string {
 	if len(hash) > 12 {
