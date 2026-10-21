@@ -55,6 +55,7 @@ func modelRuntimeForTest(t *testing.T, db *state.Database, p provider.Provider) 
 	t.Helper()
 	runtime := newModelRuntime(p, repocontext.NewBuilder(db))
 	runtime.defaultModel = "test-model"
+	runtime.planningQualified = true
 	return runtime
 }
 

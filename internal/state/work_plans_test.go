@@ -77,3 +77,34 @@ func TestBlockedPrerequisiteBlocksDependentTask(t *testing.T) {
 		t.Fatalf("dependent = %#v", loaded.Tasks[1])
 	}
 }
+
+func TestExpandWorkPlanPreservesCompletedTaskEvidence(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	project, _ := db.CreateProject(ctx, "fixture", "/tmp/fixture-expand")
+	_, plan, err := db.CreateWorkPlanSession(ctx, "semantic", project.ID, WorkPlanSpec{Objective: "request", OriginalRequest: "request", ReadOnly: true, Tasks: []WorkPlanTaskSpec{{Key: "semantic-plan", Objective: "plan", ExecutionMethod: "planning", RequiredEvidence: "proposal", CompletionCriteria: "accepted"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.StartWorkPlanTask(ctx, plan.Tasks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	evidence := []WorkEvidence{{Kind: "semantic-proposal", Detail: "validated"}}
+	if err := db.FinishWorkPlanTask(ctx, plan.Tasks[0].ID, WorkTaskStatusCompleted, "accepted", "", evidence); err != nil {
+		t.Fatal(err)
+	}
+	err = db.ExpandWorkPlan(ctx, plan.ID, "semantic-plan", WorkPlanSpec{Objective: "bounded request", ReadOnly: true, Constraints: []string{"read only"}, Tasks: []WorkPlanTaskSpec{{Key: "inventory", Objective: "inventory", ExecutionMethod: "repository.inventory.lookup", RequiredEvidence: "paths", CompletionCriteria: "recorded"}}}, `{}`, 24, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := db.GetWorkPlanBySession(ctx, plan.SessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Revision != 1 || len(loaded.Tasks) != 2 || loaded.Tasks[0].Result != "accepted" || len(loaded.Tasks[0].Evidence) != 1 {
+		t.Fatalf("expanded plan = %#v", loaded)
+	}
+	if len(loaded.Tasks[1].Dependencies) != 1 || loaded.Tasks[1].Dependencies[0] != "semantic-plan" {
+		t.Fatalf("dependencies = %#v", loaded.Tasks[1].Dependencies)
+	}
+}

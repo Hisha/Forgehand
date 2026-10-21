@@ -31,8 +31,9 @@ import (
 )
 
 const (
-	fakeWorkerSteps = 5
-	fakeWorkerDelay = 3 * time.Second
+	fakeWorkerSteps             = 5
+	fakeWorkerDelay             = 3 * time.Second
+	maxQualificationRepetitions = 20
 
 	// busyRetryAttempts bounds application-level retries when SQLite reports a
 	// transient lock contention error despite the connection's busy_timeout.
@@ -381,6 +382,9 @@ func runConfigured(config Config) error {
 	}
 	if _, err := stateDB.RecoverRunningWorkPlanTasks(ctx); err != nil {
 		return fmt.Errorf("recover interrupted work plan tasks: %w", err)
+	}
+	if _, err := stateDB.ReconcileInterruptedQualificationJobs(ctx); err != nil {
+		return fmt.Errorf("recover interrupted qualification jobs: %w", err)
 	}
 
 	signals := make(chan os.Signal, 1)
@@ -862,6 +866,85 @@ func handleConnection(
 			ResourceBlockedExecutions: blocked,
 		})
 
+	case "models":
+		configuration := ipc.ProviderConfiguration{Provider: provider.ProviderID}
+		if disp != nil && disp.model != nil {
+			configuration.Configured = true
+			configuration.Endpoint = disp.model.endpoint
+			configuration.Model = disp.model.defaultModel
+		}
+		_ = encoder.Encode(ipc.Response{OK: true, ProviderConfiguration: &configuration})
+
+	case "qualification-create":
+		if disp == nil || disp.model == nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: "no model provider is configured"})
+			return
+		}
+		capability := strings.ToLower(strings.TrimSpace(request.Capability))
+		if capability != planner.CapabilityPlanning {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: "only planning qualification is currently supported"})
+			return
+		}
+		if request.Repetitions < 1 || request.Repetitions > maxQualificationRepetitions {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: fmt.Sprintf("repetitions must be between 1 and %d", maxQualificationRepetitions)})
+			return
+		}
+		modelID := strings.TrimSpace(request.Model)
+		if modelID == "" {
+			modelID = disp.model.defaultModel
+		}
+		job, err := stateDB.CreateQualificationJob(context.Background(), modelID, disp.model.configuration, capability, request.Repetitions, len(planner.RepresentativeQualificationCases())*request.Repetitions)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		disp.notify()
+		encoded := qualificationToIPC(job)
+		_ = encoder.Encode(ipc.Response{OK: true, Qualification: &encoded})
+
+	case "qualification-list":
+		jobs, err := stateDB.ListQualificationJobs(context.Background(), request.Limit)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		encoded := make([]ipc.QualificationJob, 0, len(jobs))
+		for _, job := range jobs {
+			encoded = append(encoded, qualificationToIPC(job))
+		}
+		_ = encoder.Encode(ipc.Response{OK: true, Qualifications: encoded})
+
+	case "qualification-get":
+		job, err := stateDB.GetQualificationJob(context.Background(), request.QualificationID)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		encoded := qualificationToIPC(job)
+		_ = encoder.Encode(ipc.Response{OK: true, Qualification: &encoded})
+
+	case "qualification-cancel":
+		job, err := stateDB.CancelQualificationJob(context.Background(), request.QualificationID, request.Reason)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		workers.cancel(job.ExecutionID)
+		encoded := qualificationToIPC(job)
+		_ = encoder.Encode(ipc.Response{OK: true, Qualification: &encoded, Canceled: true})
+
+	case "qualification-retry":
+		job, err := stateDB.RetryQualificationJob(context.Background(), request.QualificationID)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		if disp != nil {
+			disp.notify()
+		}
+		encoded := qualificationToIPC(job)
+		_ = encoder.Encode(ipc.Response{OK: true, Qualification: &encoded})
+
 	case "session-start":
 		if request.Kind == "work-plan" {
 			if request.ProjectID <= 0 || strings.TrimSpace(request.Task) == "" {
@@ -869,7 +952,10 @@ func handleConnection(
 				return
 			}
 			interpreted := planner.Interpret(request.Task)
-			spec := state.WorkPlanSpec{Objective: interpreted.Objective, OriginalRequest: interpreted.Original, ReadOnly: interpreted.ReadOnly, Clarification: interpreted.Clarification}
+			if len(interpreted.Tasks) == 1 && interpreted.Tasks[0].Method == planner.MethodSemanticPlanning {
+				interpreted = planner.SemanticBootstrap(request.Task, disp != nil && disp.model != nil && disp.model.planningQualified)
+			}
+			spec := state.WorkPlanSpec{Objective: interpreted.Objective, OriginalRequest: interpreted.Original, ReadOnly: interpreted.ReadOnly, Clarification: interpreted.Clarification, Constraints: append([]string(nil), request.Constraints...)}
 			for _, task := range interpreted.Tasks {
 				spec.Tasks = append(spec.Tasks, state.WorkPlanTaskSpec{Key: task.Key, Objective: task.Objective, ExecutionMethod: task.Method, Dependencies: task.DependsOn, Inputs: task.Inputs, RequiredEvidence: task.RequiredEvidence, CompletionCriteria: task.CompletionCriteria, RequiresModel: task.RequiresModel, BlockedReason: task.BlockedReason})
 			}
@@ -1107,12 +1193,6 @@ func handleConnection(
 			})
 			return
 		}
-		// SessionExecutionStatus preserves the historical lightweight query;
-		// load the full session metadata needed by typed workers and clients.
-		if fullSession, fullErr := stateDB.GetSession(context.Background(), request.SessionID); fullErr == nil {
-			session = fullSession
-		}
-
 		encodedSession := sessionToIPC(session)
 		response := ipc.Response{
 			OK:      true,
@@ -1843,7 +1923,18 @@ func launchExecutionWorker(
 				model.runInvestigationWorker(workerCtx, stateDB, execution)
 			}
 		case "work-plan":
-			runWorkPlanWorker(workerCtx, stateDB, execution)
+			runWorkPlanWorkerWithModel(workerCtx, stateDB, model, execution)
+		case "qualification":
+			if model == nil {
+				if job, err := stateDB.GetQualificationJobByExecution(context.Background(), execution.ID); err == nil {
+					_ = stateDB.MarkQualificationRunning(context.Background(), job.ID)
+					_ = stateDB.FailQualificationJob(context.Background(), job.ID, state.FailureKindProvider, "provider is not configured")
+				} else {
+					failExecutionWithReason(stateDB, execution.ID, state.FailureKindProvider, "provider is not configured")
+				}
+			} else {
+				model.runQualificationWorker(workerCtx, stateDB, execution)
+			}
 		case "task":
 			if task == nil {
 				fmt.Fprintf(
@@ -1896,7 +1987,7 @@ func annotateResourceBlocks(workers *workerGroup, execution *ipc.Execution) {
 }
 
 func workPlanToIPC(plan state.WorkPlan) ipc.WorkPlan {
-	out := ipc.WorkPlan{ID: plan.ID, ProjectID: plan.ProjectID, SessionID: plan.SessionID, Objective: plan.Objective, OriginalRequest: plan.OriginalRequest, ReadOnly: plan.ReadOnly, Status: plan.Status, Clarification: plan.Clarification, CommitHash: plan.CommitHash}
+	out := ipc.WorkPlan{ID: plan.ID, ProjectID: plan.ProjectID, SessionID: plan.SessionID, Objective: plan.Objective, OriginalRequest: plan.OriginalRequest, ReadOnly: plan.ReadOnly, Status: plan.Status, Clarification: plan.Clarification, Constraints: append([]string(nil), plan.Constraints...), UnresolvedQuestions: append([]string(nil), plan.UnresolvedQuestions...), Revision: plan.Revision, CommitHash: plan.CommitHash}
 	for _, task := range plan.Tasks {
 		encoded := ipc.WorkPlanTask{ID: task.ID, Key: task.Key, Position: task.Position, Objective: task.Objective, ExecutionMethod: task.ExecutionMethod, Dependencies: append([]string(nil), task.Dependencies...), RequiredEvidence: task.RequiredEvidence, CompletionCriteria: task.CompletionCriteria, Status: task.Status, RequiresModel: task.RequiresModel, Result: task.Result, BlockedReason: task.BlockedReason, FailureReason: task.FailureReason}
 		for _, evidence := range task.Evidence {
@@ -1905,6 +1996,32 @@ func workPlanToIPC(plan state.WorkPlan) ipc.WorkPlan {
 		out.Tasks = append(out.Tasks, encoded)
 	}
 	return out
+}
+
+func qualificationToIPC(job state.QualificationJob) ipc.QualificationJob {
+	encoded := ipc.QualificationJob{ID: job.ID, Model: job.Model, ProviderFingerprint: job.ProviderFingerprint, Capability: job.Capability, Repetitions: job.Repetitions, TotalEvaluations: job.TotalEvaluations, CompletedEvaluations: job.CompletedEvaluations, Status: job.Status, Recommendation: job.Recommendation, FailureKind: job.FailureKind, FailureReason: job.FailureReason}
+	if job.StartedAt != nil {
+		encoded.StartedAt = job.StartedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if job.CompletedAt != nil {
+		encoded.CompletedAt = job.CompletedAt.UTC().Format(time.RFC3339Nano)
+	}
+	if job.AggregateJSON != "" {
+		var aggregate struct {
+			Aggregate   ipc.QualificationAggregate     `json:"aggregate"`
+			Consistency []ipc.QualificationConsistency `json:"consistency"`
+		}
+		if json.Unmarshal([]byte(job.AggregateJSON), &aggregate) == nil {
+			encoded.Aggregate, encoded.Consistency = aggregate.Aggregate, aggregate.Consistency
+		}
+	}
+	for _, stored := range job.Results {
+		var result ipc.QualificationResult
+		if json.Unmarshal([]byte(stored.ResultJSON), &result) == nil {
+			encoded.Results = append(encoded.Results, result)
+		}
+	}
+	return encoded
 }
 
 func executionToIPC(execution state.SessionExecution) ipc.Execution {

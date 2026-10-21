@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/Hisha/Forgehand/internal/config"
 	"github.com/Hisha/Forgehand/internal/provider"
@@ -14,10 +15,16 @@ import (
 // modelRuntime holds the dependencies a model-backed worker needs: a provider
 // client and a bounded repository-context builder.
 type modelRuntime struct {
-	provider     provider.Provider
-	providerID   string
-	defaultModel string
-	context      *repocontext.Builder
+	provider             provider.Provider
+	providerID           string
+	defaultModel         string
+	endpoint             string
+	configuration        string
+	maxTokens            int
+	redactionSecrets     []string
+	qualificationTimeout time.Duration
+	context              *repocontext.Builder
+	planningQualified    bool
 }
 
 // newModelRuntime constructs a model runtime. It returns nil when no provider
@@ -53,6 +60,13 @@ func buildModelRuntime(providerConfig config.ProviderConfig, db *state.Database)
 	}
 	runtime := newModelRuntime(client, builder)
 	runtime.defaultModel = providerConfig.Model
+	runtime.endpoint = providerConfig.DisplayEndpoint()
+	runtime.configuration = providerConfig.Fingerprint()
+	runtime.maxTokens = providerConfig.MaxTokens
+	if providerConfig.APIKey != "" {
+		runtime.redactionSecrets = []string{providerConfig.APIKey}
+	}
+	runtime.planningQualified = providerConfig.HasCapability("planning")
 	return runtime
 }
 

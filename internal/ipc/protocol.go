@@ -45,6 +45,12 @@ type Request struct {
 	// Resources lists exclusive named resources an execution requires for its
 	// whole run, requested through session-run.
 	Resources []string `json:"resources,omitempty"`
+	// Constraints are exact user requirements a semantic work plan must
+	// preserve. They are separate from repository facts and model guidance.
+	Constraints     []string `json:"constraints,omitempty"`
+	QualificationID int64    `json:"qualification_id,omitempty"`
+	Capability      string   `json:"capability,omitempty"`
+	Repetitions     int      `json:"repetitions,omitempty"`
 }
 
 type Session struct {
@@ -156,37 +162,40 @@ type Interaction struct {
 }
 
 type Response struct {
-	ProtocolVersion int                    `json:"protocol_version,omitempty"`
-	OK              bool                   `json:"ok"`
-	Message         string                 `json:"message,omitempty"`
-	Version         string                 `json:"version,omitempty"`
-	BuildIdentity   string                 `json:"build_identity,omitempty"`
-	PID             int                    `json:"pid,omitempty"`
-	Executable      string                 `json:"executable,omitempty"`
-	SocketPath      string                 `json:"socket_path,omitempty"`
-	StateDir        string                 `json:"state_dir,omitempty"`
-	Session         *Session               `json:"session,omitempty"`
-	Sessions        []Session              `json:"sessions,omitempty"`
-	Execution       *Execution             `json:"execution,omitempty"`
-	Project         *Project               `json:"project,omitempty"`
-	Projects        []Project              `json:"projects,omitempty"`
-	Snapshot        *RepositorySnapshot    `json:"snapshot,omitempty"`
-	Intake          *ProjectIntake         `json:"intake,omitempty"`
-	Discovery       *ProjectDiscovery      `json:"discovery,omitempty"`
-	Inventory       *Inventory             `json:"inventory,omitempty"`
-	Inspection      *Inspection            `json:"inspection,omitempty"`
-	Analysis        *ComponentAnalysis     `json:"analysis,omitempty"`
-	Query           *QueryResponse         `json:"query,omitempty"`
-	Investigation   *InvestigationResponse `json:"investigation,omitempty"`
-	Events          []SessionEvent         `json:"events,omitempty"`
-	NextEventID     int64                  `json:"next_event_id,omitempty"`
-	Interaction     *Interaction           `json:"interaction,omitempty"`
-	Interactions    []Interaction          `json:"interactions,omitempty"`
-	Result          *ModelResult           `json:"result,omitempty"`
-	Evidence        *InvestigationEvidence `json:"investigation_evidence,omitempty"`
-	TaskRun         *TaskRun               `json:"task_run,omitempty"`
-	TaskOperations  []TaskOperation        `json:"task_operations,omitempty"`
-	WorkPlan        *WorkPlan              `json:"work_plan,omitempty"`
+	ProtocolVersion       int                    `json:"protocol_version,omitempty"`
+	OK                    bool                   `json:"ok"`
+	Message               string                 `json:"message,omitempty"`
+	Version               string                 `json:"version,omitempty"`
+	BuildIdentity         string                 `json:"build_identity,omitempty"`
+	PID                   int                    `json:"pid,omitempty"`
+	Executable            string                 `json:"executable,omitempty"`
+	SocketPath            string                 `json:"socket_path,omitempty"`
+	StateDir              string                 `json:"state_dir,omitempty"`
+	Session               *Session               `json:"session,omitempty"`
+	Sessions              []Session              `json:"sessions,omitempty"`
+	Execution             *Execution             `json:"execution,omitempty"`
+	Project               *Project               `json:"project,omitempty"`
+	Projects              []Project              `json:"projects,omitempty"`
+	Snapshot              *RepositorySnapshot    `json:"snapshot,omitempty"`
+	Intake                *ProjectIntake         `json:"intake,omitempty"`
+	Discovery             *ProjectDiscovery      `json:"discovery,omitempty"`
+	Inventory             *Inventory             `json:"inventory,omitempty"`
+	Inspection            *Inspection            `json:"inspection,omitempty"`
+	Analysis              *ComponentAnalysis     `json:"analysis,omitempty"`
+	Query                 *QueryResponse         `json:"query,omitempty"`
+	Investigation         *InvestigationResponse `json:"investigation,omitempty"`
+	Events                []SessionEvent         `json:"events,omitempty"`
+	NextEventID           int64                  `json:"next_event_id,omitempty"`
+	Interaction           *Interaction           `json:"interaction,omitempty"`
+	Interactions          []Interaction          `json:"interactions,omitempty"`
+	Result                *ModelResult           `json:"result,omitempty"`
+	Evidence              *InvestigationEvidence `json:"investigation_evidence,omitempty"`
+	TaskRun               *TaskRun               `json:"task_run,omitempty"`
+	TaskOperations        []TaskOperation        `json:"task_operations,omitempty"`
+	WorkPlan              *WorkPlan              `json:"work_plan,omitempty"`
+	ProviderConfiguration *ProviderConfiguration `json:"provider_configuration,omitempty"`
+	Qualification         *QualificationJob      `json:"qualification,omitempty"`
+	Qualifications        []QualificationJob     `json:"qualifications,omitempty"`
 	// Diff holds a rendered unified diff for the task-diff command. DiffSource
 	// reports whether it is a proposed preview or the applied workspace diff.
 	Diff          string `json:"diff,omitempty"`
@@ -204,19 +213,99 @@ type Response struct {
 	ResourceBlockedExecutions int `json:"resource_blocked_executions,omitempty"`
 }
 
+type ProviderConfiguration struct {
+	Provider   string `json:"provider"`
+	Endpoint   string `json:"endpoint,omitempty"`
+	Model      string `json:"model,omitempty"`
+	Configured bool   `json:"configured"`
+}
+
+type QualificationJob struct {
+	ID                   int64                      `json:"id"`
+	Model                string                     `json:"model"`
+	ProviderFingerprint  string                     `json:"provider_configuration_fingerprint"`
+	Capability           string                     `json:"capability"`
+	Repetitions          int                        `json:"repetitions"`
+	TotalEvaluations     int                        `json:"total_evaluations"`
+	CompletedEvaluations int                        `json:"completed_evaluations"`
+	Status               string                     `json:"status"`
+	StartedAt            string                     `json:"started_at,omitempty"`
+	CompletedAt          string                     `json:"completed_at,omitempty"`
+	Recommendation       string                     `json:"recommendation,omitempty"`
+	FailureKind          string                     `json:"failure_kind,omitempty"`
+	FailureReason        string                     `json:"failure_reason,omitempty"`
+	Aggregate            QualificationAggregate     `json:"aggregate"`
+	Consistency          []QualificationConsistency `json:"consistency,omitempty"`
+	Results              []QualificationResult      `json:"results,omitempty"`
+}
+
+type QualificationAggregate struct {
+	ExpectedRuns              int     `json:"expected_runs"`
+	CompletedRuns             int     `json:"completed_runs"`
+	PassingRuns               int     `json:"passing_runs"`
+	ModelFailures             int     `json:"model_failures"`
+	InfrastructureFailures    int     `json:"infrastructure_failures"`
+	HumanReviewRuns           int     `json:"human_review_runs"`
+	PassRate                  float64 `json:"pass_rate"`
+	SchemaValidRuns           int     `json:"schema_valid_runs"`
+	RequirementCoverageRuns   int     `json:"requirement_coverage_runs"`
+	ConstraintsPreservedRuns  int     `json:"constraints_preserved_runs"`
+	DependenciesCorrectRuns   int     `json:"dependencies_correct_runs"`
+	OperationsSupportedRuns   int     `json:"operations_supported_runs"`
+	EvidenceRequirementsRuns  int     `json:"evidence_requirements_runs"`
+	UnsupportedRecognizedRuns int     `json:"unsupported_recognized_runs"`
+}
+type QualificationConsistency struct {
+	Case            string  `json:"case"`
+	PassingAttempts int     `json:"passing_attempts"`
+	Attempts        int     `json:"attempts"`
+	PassRate        float64 `json:"pass_rate"`
+	Consistent      bool    `json:"consistent"`
+}
+type QualificationCriteria struct {
+	SchemaValid             bool `json:"schema_valid"`
+	RequirementCoverage     bool `json:"requirement_coverage"`
+	ConstraintsPreserved    bool `json:"constraints_preserved"`
+	DependenciesCorrect     bool `json:"dependencies_correct"`
+	OperationsSupported     bool `json:"operations_supported"`
+	EvidenceRequirements    bool `json:"evidence_requirements"`
+	UnsupportedRecognized   bool `json:"unsupported_recognized"`
+	ClarificationRecognized bool `json:"clarification_recognized"`
+}
+type QualificationRequirementResult struct {
+	Requirement string `json:"requirement"`
+	Covered     bool   `json:"covered"`
+	Matched     string `json:"matched,omitempty"`
+}
+type QualificationResult struct {
+	Case                  string                           `json:"case"`
+	Attempt               int                              `json:"attempt"`
+	Passed                bool                             `json:"passed"`
+	InfrastructureFailure bool                             `json:"infrastructure_failure"`
+	Criteria              QualificationCriteria            `json:"criteria"`
+	RequirementResults    []QualificationRequirementResult `json:"requirement_results,omitempty"`
+	MissingOperations     []string                         `json:"missing_operations,omitempty"`
+	ValidationErrors      []string                         `json:"validation_errors,omitempty"`
+	HumanReview           []string                         `json:"human_review,omitempty"`
+	TaskCount             int                              `json:"task_count,omitempty"`
+}
+
 // WorkPlan is the durable decomposition of a repository request. Task IDs and
 // keys are stable for the life of the plan; dependencies refer to task keys.
 type WorkPlan struct {
-	ID              int64          `json:"id"`
-	ProjectID       int64          `json:"project_id"`
-	SessionID       int64          `json:"session_id"`
-	Objective       string         `json:"objective"`
-	OriginalRequest string         `json:"original_request"`
-	ReadOnly        bool           `json:"read_only"`
-	Status          string         `json:"status"`
-	Clarification   string         `json:"clarification,omitempty"`
-	CommitHash      string         `json:"commit_hash,omitempty"`
-	Tasks           []WorkPlanTask `json:"tasks"`
+	ID                  int64          `json:"id"`
+	ProjectID           int64          `json:"project_id"`
+	SessionID           int64          `json:"session_id"`
+	Objective           string         `json:"objective"`
+	OriginalRequest     string         `json:"original_request"`
+	ReadOnly            bool           `json:"read_only"`
+	Status              string         `json:"status"`
+	Clarification       string         `json:"clarification,omitempty"`
+	Constraints         []string       `json:"constraints,omitempty"`
+	UnresolvedQuestions []string       `json:"unresolved_questions,omitempty"`
+	Revision            int            `json:"revision,omitempty"`
+	CommitHash          string         `json:"commit_hash,omitempty"`
+	Tasks               []WorkPlanTask `json:"tasks"`
 }
 
 type WorkPlanTask struct {

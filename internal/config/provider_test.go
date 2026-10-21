@@ -15,6 +15,7 @@ func TestProviderConfiguration(t *testing.T) {
 			ProviderTimeoutEnvironment,
 			ProviderMaxTokensEnvironment,
 			ProviderMaxContextCharsEnvironment,
+			ProviderCapabilitiesEnvironment,
 		} {
 			t.Setenv(name, "")
 		}
@@ -42,6 +43,7 @@ func TestProviderConfiguration(t *testing.T) {
 		t.Setenv(ProviderTimeoutEnvironment, "45s")
 		t.Setenv(ProviderMaxTokensEnvironment, "512")
 		t.Setenv(ProviderMaxContextCharsEnvironment, "4000")
+		t.Setenv(ProviderCapabilitiesEnvironment, "planning,coding")
 
 		config, err := Provider()
 		if err != nil {
@@ -59,6 +61,17 @@ func TestProviderConfiguration(t *testing.T) {
 		if config.Timeout != 45*time.Second || config.MaxTokens != 512 || config.MaxContextChars != 4000 {
 			t.Fatalf("unexpected limits: %#v", config)
 		}
+		if !config.HasCapability("planning") || !config.HasCapability("coding") || config.HasCapability("interpretation") {
+			t.Fatalf("capabilities = %#v", config.Capabilities)
+		}
+	})
+
+	t.Run("unknown capability fails closed", func(t *testing.T) {
+		clearProviderEnv(t)
+		t.Setenv(ProviderCapabilitiesEnvironment, "planning,omnipotent")
+		if _, err := Provider(); err == nil {
+			t.Fatal("expected unsupported capability error")
+		}
 	})
 
 	t.Run("model is required when a base URL is set", func(t *testing.T) {
@@ -66,6 +79,25 @@ func TestProviderConfiguration(t *testing.T) {
 		t.Setenv(ProviderBaseURLEnvironment, "http://127.0.0.1:8080/v1")
 		if _, err := Provider(); err == nil {
 			t.Fatal("expected error when model is missing")
+		}
+	})
+
+	t.Run("explicit model override does not require daemon default", func(t *testing.T) {
+		clearProviderEnv(t)
+		t.Setenv(ProviderBaseURLEnvironment, "http://127.0.0.1:8080/v1")
+		config, err := ProviderForModel("worker")
+		if err != nil {
+			t.Fatalf("ProviderForModel() error = %v", err)
+		}
+		if config.Model != "worker" {
+			t.Fatalf("model = %q", config.Model)
+		}
+	})
+
+	t.Run("display endpoint removes embedded credentials", func(t *testing.T) {
+		config := ProviderConfig{BaseURL: "https://operator:secret@example.invalid/v1?token=hidden#fragment"}
+		if got := config.DisplayEndpoint(); got != "https://example.invalid/v1" {
+			t.Fatalf("DisplayEndpoint() = %q", got)
 		}
 	})
 

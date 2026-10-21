@@ -406,6 +406,70 @@ CREATE INDEX idx_work_plan_tasks_plan_position
 ON work_plan_tasks(plan_id, position);
 `,
 	},
+	{
+		version: 19,
+		sql: `
+ALTER TABLE work_plans ADD COLUMN constraints_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE work_plans ADD COLUMN unresolved_questions_json TEXT NOT NULL DEFAULT '[]';
+ALTER TABLE work_plans ADD COLUMN revision INTEGER NOT NULL DEFAULT 0;
+
+CREATE TABLE work_plan_revisions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	plan_id INTEGER NOT NULL,
+	revision INTEGER NOT NULL,
+	trigger_task_key TEXT NOT NULL,
+	proposal_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	FOREIGN KEY(plan_id) REFERENCES work_plans(id),
+	UNIQUE(plan_id, revision)
+);
+`,
+	},
+	{
+		version: 20,
+		sql: `
+CREATE TABLE qualification_jobs (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	session_id INTEGER NOT NULL UNIQUE,
+	execution_id INTEGER NOT NULL UNIQUE,
+	model TEXT NOT NULL,
+	provider_fingerprint TEXT NOT NULL,
+	capability TEXT NOT NULL,
+	repetitions INTEGER NOT NULL,
+	total_evaluations INTEGER NOT NULL,
+	completed_evaluations INTEGER NOT NULL DEFAULT 0,
+	status TEXT NOT NULL,
+	started_at TEXT,
+	completed_at TEXT,
+	aggregate_json TEXT NOT NULL DEFAULT '{}',
+	recommendation TEXT NOT NULL DEFAULT '',
+	failure_kind TEXT NOT NULL DEFAULT '',
+	failure_reason TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	FOREIGN KEY(session_id) REFERENCES sessions(id),
+	FOREIGN KEY(execution_id) REFERENCES session_executions(id)
+);
+
+CREATE INDEX idx_qualification_jobs_status ON qualification_jobs(status);
+
+CREATE TABLE qualification_results (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	job_id INTEGER NOT NULL,
+	evaluation_index INTEGER NOT NULL,
+	case_name TEXT NOT NULL,
+	attempt INTEGER NOT NULL,
+	passed INTEGER NOT NULL,
+	infrastructure_failure INTEGER NOT NULL DEFAULT 0,
+	result_json TEXT NOT NULL,
+	created_at TEXT NOT NULL,
+	FOREIGN KEY(job_id) REFERENCES qualification_jobs(id),
+	UNIQUE(job_id, evaluation_index)
+);
+
+CREATE INDEX idx_qualification_results_job ON qualification_results(job_id, evaluation_index);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

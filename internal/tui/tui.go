@@ -62,6 +62,9 @@ const (
 	screenRecovery
 	screenIntake
 	screenDiscardConfirm
+	screenModels
+	screenQualification
+	screenModelInput
 )
 
 type section int
@@ -69,36 +72,45 @@ type section int
 const (
 	projectsSection section = iota
 	sessionsSection
+	modelsSection
 )
 
 type model struct {
-	client          transport
-	screen          screen
-	section         section
-	projects        []ipc.Project
-	sessions        []ipc.Session
-	projectCursor   int
-	sessionCursor   int
-	selectedProject *ipc.Project
-	selectedSession *ipc.Session
-	execution       *ipc.Execution
-	result          *ipc.ModelResult
-	evidence        *ipc.InvestigationEvidence
-	workPlan        *ipc.WorkPlan
-	intake          *ipc.ProjectIntake
-	input           string
-	busy            bool
-	status          string
-	recovery        string
-	width           int
-	height          int
-	scroll          int
+	client                   transport
+	screen                   screen
+	section                  section
+	projects                 []ipc.Project
+	sessions                 []ipc.Session
+	projectCursor            int
+	sessionCursor            int
+	selectedProject          *ipc.Project
+	selectedSession          *ipc.Session
+	execution                *ipc.Execution
+	result                   *ipc.ModelResult
+	evidence                 *ipc.InvestigationEvidence
+	workPlan                 *ipc.WorkPlan
+	provider                 *ipc.ProviderConfiguration
+	qualifications           []ipc.QualificationJob
+	qualificationCursor      int
+	selectedQualification    *ipc.QualificationJob
+	qualificationModel       string
+	qualificationRepetitions int
+	intake                   *ipc.ProjectIntake
+	input                    string
+	busy                     bool
+	status                   string
+	recovery                 string
+	width                    int
+	height                   int
+	scroll                   int
 }
 
 type loadedMsg struct {
-	projects []ipc.Project
-	sessions []ipc.Session
-	err      error
+	projects       []ipc.Project
+	sessions       []ipc.Session
+	provider       *ipc.ProviderConfiguration
+	qualifications []ipc.QualificationJob
+	err            error
 }
 
 type registeredMsg struct {
@@ -122,6 +134,13 @@ type sessionMsg struct {
 }
 type recoveredMsg struct{ err error }
 type pollMsg time.Time
+type qualificationMsg struct {
+	job      *ipc.QualificationJob
+	jobs     []ipc.QualificationJob
+	provider *ipc.ProviderConfiguration
+	status   string
+	err      error
+}
 
 func Run() error {
 	_, err := tea.NewProgram(newModel(daemonTransport{})).Run()
@@ -129,7 +148,7 @@ func Run() error {
 }
 
 func newModel(client transport) model {
-	return model{client: client, screen: screenHome, busy: true, width: 80, height: 24}
+	return model{client: client, screen: screenHome, busy: true, width: 80, height: 24, qualificationRepetitions: 3}
 }
 
 func (m model) Init() tea.Cmd { return m.loadCmd() }
@@ -147,7 +166,21 @@ func (m model) loadCmd() tea.Cmd {
 		if err != nil {
 			return loadedMsg{err: err}
 		}
-		return loadedMsg{projects: projects.Projects, sessions: sessions.Sessions}
+		models, err := m.client.Request(ipc.Request{Command: "models"})
+		if err != nil {
+			return loadedMsg{projects: projects.Projects, sessions: sessions.Sessions}
+		}
+		qualifications, err := m.client.Request(ipc.Request{Command: "qualification-list", Limit: 50})
+		if err != nil {
+			return loadedMsg{projects: projects.Projects, sessions: sessions.Sessions, provider: models.ProviderConfiguration}
+		}
+		visibleSessions := make([]ipc.Session, 0, len(sessions.Sessions))
+		for _, session := range sessions.Sessions {
+			if session.Kind != "qualification" {
+				visibleSessions = append(visibleSessions, session)
+			}
+		}
+		return loadedMsg{projects: projects.Projects, sessions: visibleSessions, provider: models.ProviderConfiguration, qualifications: qualifications.Qualifications}
 	}
 }
 
@@ -163,7 +196,10 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.screen = screenHome
-		m.projects, m.sessions = msg.projects, msg.sessions
+		m.projects, m.sessions, m.provider, m.qualifications = msg.projects, msg.sessions, msg.provider, msg.qualifications
+		if m.qualificationModel == "" && m.provider != nil {
+			m.qualificationModel = m.provider.Model
+		}
 		m.clampCursors()
 		m.status = "Connected"
 	case registeredMsg:
@@ -207,6 +243,35 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case pollMsg:
 		if m.screen == screenSession && m.selectedSession != nil {
 			return m, m.sessionCmd(m.selectedSession.ID)
+		}
+		if m.screen == screenModels {
+			return m, m.qualificationsCmd()
+		}
+		if m.screen == screenQualification && m.selectedQualification != nil {
+			return m, m.qualificationCmd(m.selectedQualification.ID)
+		}
+	case qualificationMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.status = "Qualification: " + msg.err.Error()
+			return m, nil
+		}
+		if msg.provider != nil {
+			m.provider = msg.provider
+		}
+		if msg.jobs != nil {
+			m.qualifications = msg.jobs
+			m.clampCursors()
+		}
+		if msg.job != nil {
+			m.selectedQualification = msg.job
+			m.replaceQualification(*msg.job)
+		}
+		if msg.status != "" {
+			m.status = msg.status
+		}
+		if (m.screen == screenModels && hasActiveQualification(m.qualifications)) || (m.screen == screenQualification && m.selectedQualification != nil && !terminalQualification(m.selectedQualification.Status)) {
+			return m, pollCmd()
 		}
 	case recoveredMsg:
 		m.busy = false
@@ -257,11 +322,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "q":
 			return m, tea.Quit
 		case "tab":
-			if m.section == projectsSection {
-				m.section = sessionsSection
-			} else {
-				m.section = projectsSection
-			}
+			m.section = (m.section + 1) % 3
 		case "up", "k":
 			m.move(-1)
 		case "down", "j":
@@ -280,8 +341,105 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.selectedSession, m.screen, m.busy = &session, screenSession, true
 				m.scroll = 0
 				return m, m.sessionCmd(session.ID)
+			} else if m.section == modelsSection {
+				m.screen = screenModels
+				return m, pollCmd()
 			}
 		}
+	case screenModels:
+		switch key {
+		case "q":
+			return m, tea.Quit
+		case "esc", "b":
+			m.screen = screenHome
+			return m, nil
+		case "up", "k":
+			m.qualificationCursor--
+			m.clampCursors()
+		case "down", "j":
+			m.qualificationCursor++
+			m.clampCursors()
+		case "left", "-":
+			if m.qualificationRepetitions > 1 {
+				m.qualificationRepetitions--
+			}
+		case "right", "+", "=":
+			if m.qualificationRepetitions < 20 {
+				m.qualificationRepetitions++
+			}
+		case "m":
+			m.screen, m.input = screenModelInput, m.qualificationModel
+		case "s":
+			m.busy = true
+			return m, m.startQualificationCmd()
+		case "r":
+			m.busy = true
+			return m, m.qualificationsCmd()
+		case "enter":
+			if len(m.qualifications) > 0 {
+				job := m.qualifications[m.qualificationCursor]
+				m.selectedQualification = &job
+				m.screen = screenQualification
+				return m, m.qualificationCmd(job.ID)
+			}
+		case "c":
+			if len(m.qualifications) > 0 {
+				job := m.qualifications[m.qualificationCursor]
+				if job.Status == "QUEUED" || job.Status == "RUNNING" {
+					m.busy = true
+					return m, m.qualificationActionCmd(job.ID, "qualification-cancel")
+				}
+			}
+		case "t":
+			if len(m.qualifications) > 0 {
+				job := m.qualifications[m.qualificationCursor]
+				if job.Status == "INTERRUPTED" {
+					m.busy = true
+					return m, m.qualificationActionCmd(job.ID, "qualification-retry")
+				}
+			}
+		}
+	case screenQualification:
+		switch key {
+		case "q":
+			return m, tea.Quit
+		case "esc", "b":
+			m.screen = screenModels
+			m.selectedQualification = nil
+			return m, pollCmd()
+		case "r":
+			if m.selectedQualification != nil {
+				m.busy = true
+				return m, m.qualificationCmd(m.selectedQualification.ID)
+			}
+		case "c":
+			if m.selectedQualification != nil && (m.selectedQualification.Status == "QUEUED" || m.selectedQualification.Status == "RUNNING") {
+				m.busy = true
+				return m, m.qualificationActionCmd(m.selectedQualification.ID, "qualification-cancel")
+			}
+		case "t":
+			if m.selectedQualification != nil && m.selectedQualification.Status == "INTERRUPTED" {
+				m.busy = true
+				return m, m.qualificationActionCmd(m.selectedQualification.ID, "qualification-retry")
+			}
+		}
+	case screenModelInput:
+		if key == "esc" {
+			m.screen = screenModels
+			m.input = ""
+			return m, nil
+		}
+		if key == "enter" {
+			if strings.TrimSpace(m.input) == "" {
+				m.status = "Model identifier is required"
+				return m, nil
+			}
+			m.qualificationModel = strings.TrimSpace(m.input)
+			m.input = ""
+			m.screen = screenModels
+			return m, nil
+		}
+		m.input = editInput(m.input, msg)
 	case screenQuestion:
 		if key == "esc" {
 			m.screen = screenHome
@@ -394,7 +552,7 @@ func editInput(value string, msg tea.KeyPressMsg) string {
 func (m *model) move(delta int) {
 	if m.section == projectsSection {
 		m.projectCursor += delta
-	} else {
+	} else if m.section == sessionsSection {
 		m.sessionCursor += delta
 	}
 	m.clampCursors()
@@ -412,6 +570,12 @@ func (m *model) clampCursors() {
 	}
 	if len(m.sessions) > 0 && m.sessionCursor >= len(m.sessions) {
 		m.sessionCursor = len(m.sessions) - 1
+	}
+	if m.qualificationCursor < 0 {
+		m.qualificationCursor = 0
+	}
+	if len(m.qualifications) > 0 && m.qualificationCursor >= len(m.qualifications) {
+		m.qualificationCursor = len(m.qualifications) - 1
 	}
 }
 
@@ -485,6 +649,75 @@ func (m model) sessionCmd(id int64) tea.Cmd {
 	}
 }
 
+func (m model) qualificationsCmd() tea.Cmd {
+	return func() tea.Msg {
+		models, err := m.client.Request(ipc.Request{Command: "models"})
+		if err != nil {
+			return qualificationMsg{err: err}
+		}
+		jobs, err := m.client.Request(ipc.Request{Command: "qualification-list", Limit: 50})
+		if err != nil {
+			return qualificationMsg{err: err}
+		}
+		return qualificationMsg{provider: models.ProviderConfiguration, jobs: jobs.Qualifications}
+	}
+}
+
+func (m model) startQualificationCmd() tea.Cmd {
+	return func() tea.Msg {
+		response, err := m.client.Request(ipc.Request{Command: "qualification-create", Model: strings.TrimSpace(m.qualificationModel), Capability: "planning", Repetitions: m.qualificationRepetitions})
+		if err != nil {
+			return qualificationMsg{err: err}
+		}
+		if response.Qualification == nil {
+			return qualificationMsg{err: errors.New("daemon returned no qualification job")}
+		}
+		return qualificationMsg{job: response.Qualification, status: "Qualification queued"}
+	}
+}
+
+func (m model) qualificationCmd(id int64) tea.Cmd {
+	return func() tea.Msg {
+		response, err := m.client.Request(ipc.Request{Command: "qualification-get", QualificationID: id})
+		if err != nil {
+			return qualificationMsg{err: err}
+		}
+		return qualificationMsg{job: response.Qualification}
+	}
+}
+
+func (m model) qualificationActionCmd(id int64, command string) tea.Cmd {
+	return func() tea.Msg {
+		response, err := m.client.Request(ipc.Request{Command: command, QualificationID: id, Reason: "cancelled from TUI"})
+		if err != nil {
+			return qualificationMsg{err: err}
+		}
+		return qualificationMsg{job: response.Qualification}
+	}
+}
+
+func (m *model) replaceQualification(job ipc.QualificationJob) {
+	for index := range m.qualifications {
+		if m.qualifications[index].ID == job.ID {
+			m.qualifications[index] = job
+			return
+		}
+	}
+	m.qualifications = append([]ipc.QualificationJob{job}, m.qualifications...)
+}
+
+func terminalQualification(status string) bool {
+	return status == "COMPLETED" || status == "FAILED" || status == "CANCELLED" || status == "INTERRUPTED"
+}
+func hasActiveQualification(jobs []ipc.QualificationJob) bool {
+	for _, job := range jobs {
+		if !terminalQualification(job.Status) {
+			return true
+		}
+	}
+	return false
+}
+
 func startServiceCmd(client transport) tea.Cmd {
 	return func() tea.Msg {
 		manager, err := service.NewManager()
@@ -535,6 +768,12 @@ func (m model) View() tea.View {
 		body = m.intakeView()
 	case screenDiscardConfirm:
 		body = m.inputView("Discard repository changes", "Type DISCARD to permanently delete all uncommitted and untracked changes")
+	case screenModels:
+		body = m.modelsView()
+	case screenQualification:
+		body = m.qualificationView()
+	case screenModelInput:
+		body = m.inputView("Select model", "Model identifier")
 	default:
 		body = m.homeView()
 	}
@@ -585,6 +824,12 @@ func (m model) homeView() string {
 		}
 		b.WriteString(row(i == m.sessionCursor && m.section == sessionsSection, label))
 	}
+	b.WriteString("\n" + sectionTitle("Models", m.section == modelsSection) + "\n")
+	providerLabel := "Provider not configured"
+	if m.provider != nil && m.provider.Configured {
+		providerLabel = m.provider.Provider + "  " + m.provider.Model
+	}
+	b.WriteString(row(m.section == modelsSection, providerLabel))
 	b.WriteString("\n↑/↓ select  tab switch  enter open  a add repository  r refresh  q quit\n")
 	if m.busy {
 		b.WriteString("\nWorking…\n")
@@ -613,6 +858,86 @@ func (m model) recoveryView() string {
 		working = "\n\nWorking…"
 	}
 	return "Forgehand · daemon unavailable\n\n" + m.recovery + "\n\nPress s to start the installed user service.\nPress r to retry, or q to quit.\nIf it is not installed: forgehand service install" + working + "\n"
+}
+
+func (m model) modelsView() string {
+	var b strings.Builder
+	b.WriteString("Forgehand · Models\n\n")
+	if m.provider == nil || !m.provider.Configured {
+		b.WriteString("Provider: not configured\n")
+	} else {
+		fmt.Fprintf(&b, "Provider: %s\nEndpoint: %s\nConfigured model: %s\n", m.provider.Provider, m.provider.Endpoint, m.provider.Model)
+	}
+	fmt.Fprintf(&b, "\nQualification\nCapability: planning\nModel: %s\nRepetitions: %d\n", m.qualificationModel, m.qualificationRepetitions)
+	b.WriteString("\nRecent evaluations\n")
+	if len(m.qualifications) == 0 {
+		b.WriteString("  No qualification jobs yet.\n")
+	}
+	for index, job := range m.qualifications {
+		label := fmt.Sprintf("#%d  %-16s planning  %d/%d  %s", job.ID, job.Model, job.CompletedEvaluations, job.TotalEvaluations, job.Status)
+		if job.Recommendation != "" {
+			label += "  " + job.Recommendation
+		}
+		b.WriteString(row(index == m.qualificationCursor, label))
+	}
+	b.WriteString("\ns start  m model  ←/→ repetitions  enter results  c cancel  t retry interrupted  r refresh  b/esc back  q quit\n")
+	if m.busy {
+		b.WriteString("\nWorking…\n")
+	} else if m.status != "" {
+		b.WriteString("\n" + m.status + "\n")
+	}
+	return b.String()
+}
+
+func (m model) qualificationView() string {
+	if m.selectedQualification == nil {
+		return "Forgehand · Qualification\n\nNo qualification selected.\n"
+	}
+	job := m.selectedQualification
+	var b strings.Builder
+	fmt.Fprintf(&b, "Forgehand · Qualification #%d\n\nModel: %s\nCapability: %s\nStatus: %s\nProgress: %d/%d\n", job.ID, job.Model, job.Capability, job.Status, job.CompletedEvaluations, job.TotalEvaluations)
+	if job.Recommendation != "" {
+		fmt.Fprintf(&b, "Recommendation: %s\n", job.Recommendation)
+	}
+	if job.FailureReason != "" {
+		fmt.Fprintf(&b, "Infrastructure failure (%s): %s\n", job.FailureKind, job.FailureReason)
+	}
+	if job.Status == "COMPLETED" {
+		a := job.Aggregate
+		fmt.Fprintf(&b, "\nResults\nPassing evaluations: %d/%d (%.0f%%)\nModel failures: %d\nInfrastructure failures: %d\n", a.PassingRuns, a.ExpectedRuns, a.PassRate*100, a.ModelFailures, a.InfrastructureFailures)
+		fmt.Fprintf(&b, "Requirement coverage: %d/%d\nConstraint preservation: %d/%d\nDependency correctness: %d/%d\nSupported operations: %d/%d\nEvidence specificity: %d/%d\nUnsupported-work recognition: %d/%d\n", a.RequirementCoverageRuns, a.CompletedRuns, a.ConstraintsPreservedRuns, a.CompletedRuns, a.DependenciesCorrectRuns, a.CompletedRuns, a.OperationsSupportedRuns, a.CompletedRuns, a.EvidenceRequirementsRuns, a.CompletedRuns, a.UnsupportedRecognizedRuns, a.CompletedRuns)
+	}
+	if len(job.Results) > 0 {
+		b.WriteString("\nEvaluation details\n")
+		for _, result := range job.Results {
+			if result.Passed {
+				continue
+			}
+			kind := "model"
+			if result.InfrastructureFailure {
+				kind = "infrastructure"
+			}
+			fmt.Fprintf(&b, "  %s attempt %d [%s]\n", result.Case, result.Attempt, kind)
+			c := result.Criteria
+			fmt.Fprintf(&b, "    schema:%t requirements:%t constraints:%t dependencies:%t operations:%t evidence:%t unsupported:%t\n", c.SchemaValid, c.RequirementCoverage, c.ConstraintsPreserved, c.DependenciesCorrect, c.OperationsSupported, c.EvidenceRequirements, c.UnsupportedRecognized)
+			for _, diagnostic := range result.ValidationErrors {
+				fmt.Fprintf(&b, "    %s\n", diagnostic)
+			}
+			for _, requirement := range result.RequirementResults {
+				if !requirement.Covered {
+					fmt.Fprintf(&b, "    missing requirement: %s\n", requirement.Requirement)
+				}
+			}
+		}
+	}
+	if len(job.Consistency) > 0 {
+		b.WriteString("\nConsistency\n")
+		for _, item := range job.Consistency {
+			fmt.Fprintf(&b, "  %-28s %d/%d\n", item.Case, item.PassingAttempts, item.Attempts)
+		}
+	}
+	b.WriteString("\nr refresh  c cancel  t retry interrupted  b/esc back  q quit\n")
+	return b.String()
 }
 
 func (m model) sessionView() string {
@@ -680,6 +1005,12 @@ func (m model) sessionBody() string {
 		fmt.Fprintf(&b, "\nObjective\n─────────\n%s\nPlan: %s · read-only: %t\n", m.workPlan.Objective, m.workPlan.Status, m.workPlan.ReadOnly)
 		if m.workPlan.Clarification != "" {
 			fmt.Fprintf(&b, "Clarification: %s\n", m.workPlan.Clarification)
+		}
+		if len(m.workPlan.Constraints) > 0 {
+			fmt.Fprintf(&b, "Constraints: %s\n", strings.Join(m.workPlan.Constraints, "; "))
+		}
+		for _, question := range m.workPlan.UnresolvedQuestions {
+			fmt.Fprintf(&b, "Unresolved: %s\n", question)
 		}
 		for _, task := range m.workPlan.Tasks {
 			marker := "[ ]"

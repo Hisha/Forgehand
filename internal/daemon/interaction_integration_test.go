@@ -13,7 +13,7 @@ import (
 
 const pauseStepEnvironment = "FORGEHAND_FAKE_WORKER_PAUSE_STEP=1"
 
-func waitForDaemonSessionState(
+func waitForDaemonSessionAndExecutionState(
 	t *testing.T,
 	socketPath string,
 	sessionID int64,
@@ -28,11 +28,11 @@ func waitForDaemonSessionState(
 			Command:   "session-status",
 			SessionID: sessionID,
 		})
-		if response.OK && response.Session != nil && response.Session.State == want {
+		if response.OK && response.Session != nil && response.Session.State == want && response.Execution != nil && response.Execution.Status == want {
 			return response
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("timed out waiting for session %d state %s; last = %#v", sessionID, want, response)
+			t.Fatalf("timed out waiting for session %d and execution state %s; last = %#v", sessionID, want, response)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}
@@ -100,7 +100,7 @@ func TestDaemonGracefulShutdownPreservesWaitingInteraction(t *testing.T) {
 		t.Fatalf("session-run response = %#v", run)
 	}
 
-	waiting := waitForDaemonSessionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 10*time.Second)
+	waiting := waitForDaemonSessionAndExecutionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 10*time.Second)
 	if waiting.Execution == nil || waiting.Execution.Status != state.ExecutionStatusWaitingForUser {
 		stopDaemon(t, process, syscall.SIGTERM, true)
 		t.Fatalf("waiting execution = %#v", waiting.Execution)
@@ -118,7 +118,7 @@ func TestDaemonGracefulShutdownPreservesWaitingInteraction(t *testing.T) {
 	restarted := startDaemonProcess(t, stateDir, socketPath, "0600", pauseStepEnvironment)
 	waitForDaemon(t, restarted, socketPath)
 
-	status := waitForDaemonSessionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 5*time.Second)
+	status := waitForDaemonSessionAndExecutionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 5*time.Second)
 	if status.Interaction == nil || status.Interaction.ID != interactionID {
 		stopDaemon(t, restarted, syscall.SIGTERM, true)
 		t.Fatalf("restarted interaction = %#v, want ID %d", status.Interaction, interactionID)
@@ -144,7 +144,7 @@ func TestDaemonGracefulShutdownPreservesWaitingInteraction(t *testing.T) {
 		t.Fatalf("resumed current step = %d, want 1", resume.Execution.CurrentStep)
 	}
 
-	running := waitForDaemonSessionState(t, socketPath, sessionID, state.SessionStateRunning, 5*time.Second)
+	running := waitForDaemonSessionAndExecutionState(t, socketPath, sessionID, state.SessionStateRunning, 5*time.Second)
 	if running.Execution == nil || running.Execution.Status != state.ExecutionStatusRunning {
 		stopDaemon(t, restarted, syscall.SIGTERM, true)
 		t.Fatalf("resumed execution = %#v", running.Execution)
@@ -177,7 +177,7 @@ func TestDaemonSIGKILLPreservesWaitingInteraction(t *testing.T) {
 		t.Fatalf("session-run response = %#v", run)
 	}
 
-	waiting := waitForDaemonSessionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 10*time.Second)
+	waiting := waitForDaemonSessionAndExecutionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 10*time.Second)
 	if waiting.Interaction == nil {
 		stopDaemon(t, process, syscall.SIGTERM, true)
 		t.Fatal("session-status reported no pending interaction")
@@ -191,7 +191,7 @@ func TestDaemonSIGKILLPreservesWaitingInteraction(t *testing.T) {
 	restarted := startDaemonProcess(t, stateDir, socketPath, "0600", pauseStepEnvironment)
 	waitForDaemon(t, restarted, socketPath)
 
-	status := waitForDaemonSessionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 5*time.Second)
+	status := waitForDaemonSessionAndExecutionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 5*time.Second)
 	if status.Interaction == nil || status.Interaction.ID != interactionID {
 		stopDaemon(t, restarted, syscall.SIGTERM, true)
 		t.Fatalf("restarted interaction = %#v, want ID %d", status.Interaction, interactionID)
@@ -223,7 +223,7 @@ func TestDaemonRestartDoesNotDuplicateWaitingQuestion(t *testing.T) {
 		t.Fatalf("session-run response = %#v", run)
 	}
 
-	waiting := waitForDaemonSessionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 10*time.Second)
+	waiting := waitForDaemonSessionAndExecutionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 10*time.Second)
 	if waiting.Interaction == nil {
 		stopDaemon(t, process, syscall.SIGTERM, true)
 		t.Fatal("session-status reported no pending interaction")

@@ -772,20 +772,65 @@ func (d *Database) SessionExecutionStatus(
 	sessionID int64,
 ) (Session, *SessionExecution, error) {
 	var (
-		session     Session
-		createdText string
-		updatedText string
+		session        Session
+		createdText    string
+		updatedText    string
+		projectID      sql.NullInt64
+		task           sql.NullString
+		kind           sql.NullString
+		provider       sql.NullString
+		model          sql.NullString
+		executionID    sql.NullInt64
+		executionSID   sql.NullInt64
+		executionState sql.NullString
+		currentStep    sql.NullInt64
+		totalSteps     sql.NullInt64
+		startedText    sql.NullString
+		completedText  sql.NullString
+		canceledText   sql.NullString
+		cancelReason   sql.NullString
+		failureKind    sql.NullString
+		failureReason  sql.NullString
+		queueSeq       sql.NullInt64
 	)
 
+	// Read the session and its latest execution in one SQLite statement. These
+	// states are updated in the same write transaction, so a single read
+	// snapshot prevents an IPC status response from pairing a newer session
+	// state with an older execution state (or vice versa).
 	err := d.db.QueryRowContext(ctx, `
 SELECT
-	id,
-	title,
-	state,
-	created_at,
-	updated_at
-FROM sessions
-WHERE id = ?
+	s.id,
+	s.title,
+	s.state,
+	s.created_at,
+	s.updated_at,
+	s.project_id,
+	s.task,
+	s.kind,
+	s.provider,
+	s.model,
+	e.id,
+	e.session_id,
+	e.status,
+	e.current_step,
+	e.total_steps,
+	e.started_at,
+	e.completed_at,
+	e.canceled_at,
+	e.cancel_reason,
+	e.failure_kind,
+	e.failure_reason,
+	e.queue_seq
+FROM sessions s
+LEFT JOIN session_executions e ON e.id = (
+	SELECT latest.id
+	FROM session_executions latest
+	WHERE latest.session_id = s.id
+	ORDER BY latest.id DESC
+	LIMIT 1
+)
+WHERE s.id = ?
 `,
 		sessionID,
 	).Scan(
@@ -794,6 +839,23 @@ WHERE id = ?
 		&session.State,
 		&createdText,
 		&updatedText,
+		&projectID,
+		&task,
+		&kind,
+		&provider,
+		&model,
+		&executionID,
+		&executionSID,
+		&executionState,
+		&currentStep,
+		&totalSteps,
+		&startedText,
+		&completedText,
+		&canceledText,
+		&cancelReason,
+		&failureKind,
+		&failureReason,
+		&queueSeq,
 	)
 	if err == sql.ErrNoRows {
 		return Session{}, nil, fmt.Errorf("session %d does not exist", sessionID)
@@ -819,64 +881,29 @@ WHERE id = ?
 			err,
 		)
 	}
+	if projectID.Valid {
+		value := projectID.Int64
+		session.ProjectID = &value
+	}
+	if task.Valid {
+		session.Task = task.String
+	}
+	if kind.Valid {
+		session.Kind = kind.String
+	}
+	if provider.Valid {
+		session.Provider = provider.String
+	}
+	if model.Valid {
+		session.Model = model.String
+	}
 
-	var (
-		execution     SessionExecution
-		startedText   string
-		completedText sql.NullString
-		canceledText  sql.NullString
-		cancelReason  sql.NullString
-		failureKind   sql.NullString
-		failureReason sql.NullString
-		queueSeq      sql.NullInt64
-	)
-
-	err = d.db.QueryRowContext(ctx, `
-SELECT
-	id,
-	session_id,
-	status,
-	current_step,
-	total_steps,
-	started_at,
-	completed_at,
-	canceled_at,
-	cancel_reason,
-	failure_kind,
-	failure_reason,
-	queue_seq
-FROM session_executions
-WHERE session_id = ?
-ORDER BY id DESC
-LIMIT 1
-`,
-		sessionID,
-	).Scan(
-		&execution.ID,
-		&execution.SessionID,
-		&execution.Status,
-		&execution.CurrentStep,
-		&execution.TotalSteps,
-		&startedText,
-		&completedText,
-		&canceledText,
-		&cancelReason,
-		&failureKind,
-		&failureReason,
-		&queueSeq,
-	)
-	if err == sql.ErrNoRows {
+	if !executionID.Valid {
 		return session, nil, nil
 	}
-	if err != nil {
-		return Session{}, nil, fmt.Errorf(
-			"read latest execution for session %d: %w",
-			sessionID,
-			err,
-		)
-	}
+	execution := SessionExecution{ID: executionID.Int64, SessionID: executionSID.Int64, Status: executionState.String, CurrentStep: int(currentStep.Int64), TotalSteps: int(totalSteps.Int64)}
 
-	execution.StartedAt, err = time.Parse(time.RFC3339Nano, startedText)
+	execution.StartedAt, err = time.Parse(time.RFC3339Nano, startedText.String)
 	if err != nil {
 		return Session{}, nil, fmt.Errorf(
 			"parse execution %d start time: %w",

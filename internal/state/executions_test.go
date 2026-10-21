@@ -583,6 +583,29 @@ func TestSessionExecutionStatusWithoutExecution(t *testing.T) {
 	}
 }
 
+func TestSessionExecutionStatusIncludesTypedSessionMetadata(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+	project, err := db.CreateProject(ctx, "fixture", t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := db.CreateCodingSession(ctx, "typed", project.ID, "bounded task", "test-provider", "test-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, execution, err := db.SessionExecutionStatus(ctx, session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution != nil {
+		t.Fatalf("execution = %#v, want nil", execution)
+	}
+	if loaded.ProjectID == nil || *loaded.ProjectID != project.ID || loaded.Task != "bounded task" || loaded.Kind != "coding" || loaded.Provider != "test-provider" || loaded.Model != "test-model" {
+		t.Fatalf("session metadata = %#v", loaded)
+	}
+}
+
 // TestConcurrentExecutionTransactionsComplete runs several full execution
 // lifecycles in parallel against one database. It reproduces the checkpoint
 // contention that previously produced SQLITE_BUSY and verifies every execution

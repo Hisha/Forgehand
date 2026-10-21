@@ -231,6 +231,69 @@ func TestFailedSessionViewShowsFailureDiagnostic(t *testing.T) {
 	}
 }
 
+func TestModelsNavigationStartsQualificationAndDisplaysProgress(t *testing.T) {
+	client := &fakeTransport{handler: func(request ipc.Request) (ipc.Response, error) {
+		switch request.Command {
+		case "qualification-create":
+			if request.Model != "worker" || request.Capability != "planning" || request.Repetitions != 3 {
+				t.Fatalf("request=%#v", request)
+			}
+			return ipc.Response{OK: true, Qualification: &ipc.QualificationJob{ID: 12, Model: "worker", Capability: "planning", Repetitions: 3, TotalEvaluations: 21, Status: "QUEUED"}}, nil
+		}
+		return ipc.Response{}, errors.New("unexpected")
+	}}
+	m := model{client: client, screen: screenHome, section: modelsSection, provider: &ipc.ProviderConfiguration{Configured: true, Provider: "openai-compatible", Endpoint: "http://127.0.0.1:8000/v1", Model: "worker"}, qualificationModel: "worker", qualificationRepetitions: 3, width: 80, height: 24}
+	updated, _ := m.Update(key(tea.KeyEnter, ""))
+	m = updated.(model)
+	if m.screen != screenModels {
+		t.Fatalf("screen=%v", m.screen)
+	}
+	updated, command := m.Update(key('s', "s"))
+	m = updated.(model)
+	message := command().(qualificationMsg)
+	updated, _ = m.Update(message)
+	m = updated.(model)
+	view := m.View().Content
+	for _, want := range []string{"Endpoint: http://127.0.0.1:8000/v1", "worker", "Repetitions: 3", "#12", "0/21", "QUEUED"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestQualificationResultViewDistinguishesModelAndInfrastructureFailures(t *testing.T) {
+	m := model{screen: screenQualification, selectedQualification: &ipc.QualificationJob{ID: 9, Model: "worker", Capability: "planning", Status: "FAILED", CompletedEvaluations: 1, TotalEvaluations: 21, Recommendation: "INCONCLUSIVE", FailureKind: "provider", FailureReason: "request timeout", Results: []ipc.QualificationResult{{Case: "huntmaster-geography", Attempt: 1, InfrastructureFailure: true, ValidationErrors: []string{"deadline exceeded"}}}}}
+	view := m.View().Content
+	for _, want := range []string{"INCONCLUSIVE", "Infrastructure failure (provider): request timeout", "huntmaster-geography", "[infrastructure]", "deadline exceeded"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("view missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestTUIReconnectsToPersistedQualification(t *testing.T) {
+	client := &fakeTransport{handler: func(request ipc.Request) (ipc.Response, error) {
+		switch request.Command {
+		case "status", "projects", "sessions":
+			return ipc.Response{OK: true}, nil
+		case "models":
+			return ipc.Response{OK: true, ProviderConfiguration: &ipc.ProviderConfiguration{Configured: true, Model: "worker"}}, nil
+		case "qualification-list":
+			return ipc.Response{OK: true, Qualifications: []ipc.QualificationJob{{ID: 13, Model: "worker", Capability: "planning", CompletedEvaluations: 8, TotalEvaluations: 21, Status: "RUNNING"}}}, nil
+		}
+		return ipc.Response{}, errors.New("unexpected")
+	}}
+	m := loadedModel(t, client)
+	if len(m.qualifications) != 1 || m.qualifications[0].CompletedEvaluations != 8 {
+		t.Fatalf("qualifications=%#v", m.qualifications)
+	}
+	m.screen = screenModels
+	view := m.View().Content
+	if !strings.Contains(view, "8/21") || !strings.Contains(view, "RUNNING") {
+		t.Fatalf("view=%s", view)
+	}
+}
+
 func TestUnavailableDaemonOffersRecoveryActions(t *testing.T) {
 	client := &fakeTransport{handler: func(ipc.Request) (ipc.Response, error) {
 		return ipc.Response{}, errors.New("daemon IPC protocol 0 is incompatible")

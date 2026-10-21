@@ -68,6 +68,9 @@ func main() {
 	case "task":
 		err = taskCommand(os.Args[2:])
 
+	case "model":
+		err = modelCommand(os.Args[2:])
+
 	case "sessions":
 		err = listSessions()
 
@@ -1890,6 +1893,7 @@ func usage() {
 	fmt.Println("  task approve <session-id>       Approve the pending proposal and resume the task")
 	fmt.Println("  task reject <session-id>        Reject the pending proposal and resume the task")
 	fmt.Println("  task cleanup <session-id>       Remove the isolated task workspace")
+	fmt.Println("  model qualify --model <id> --capability planning --runs <n> --output <path> [--timeout <duration>]  Evaluate a model without changing authorization")
 }
 
 func startCodingSession(title, task, model string, projectID int64) error {

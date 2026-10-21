@@ -20,15 +20,16 @@ const (
 )
 
 type Task struct {
-	Key                string
-	Objective          string
-	Method             string
-	DependsOn          []string
-	Inputs             map[string]string
-	RequiredEvidence   string
-	CompletionCriteria string
-	RequiresModel      bool
-	BlockedReason      string
+	Key                string            `json:"key"`
+	Objective          string            `json:"objective"`
+	Method             string            `json:"method"`
+	DependsOn          []string          `json:"depends_on,omitempty"`
+	Inputs             map[string]string `json:"inputs,omitempty"`
+	RequiredEvidence   string            `json:"required_evidence"`
+	CompletionCriteria string            `json:"completion_criteria"`
+	RequiresModel      bool              `json:"requires_model,omitempty"`
+	BlockedReason      string            `json:"blocked_reason,omitempty"`
+	FactRefs           []string          `json:"fact_refs,omitempty"`
 }
 
 type Plan struct {
@@ -112,6 +113,26 @@ func blocked(plan Plan, reason string) Plan {
 		Key: "clarify", Objective: "Clarify and semantically decompose the request",
 		Method: MethodSemanticPlanning, RequiredEvidence: "an unambiguous supported outcome and constraints",
 		CompletionCriteria: "produce a bounded plan without assuming repository facts",
+		RequiresModel:      true, BlockedReason: reason,
+	}}
+	return plan
+}
+
+// SemanticBootstrap creates the bounded first planning step used for ordinary
+// natural-language requests. It remains in the same durable work plan as the
+// tasks it later proposes.
+func SemanticBootstrap(request string, modelAvailable bool) Plan {
+	plan := Plan{Original: strings.TrimSpace(request), Objective: strings.TrimSpace(request), ReadOnly: true}
+	reason := ""
+	if !modelAvailable {
+		reason = "semantic planning requires a configured and qualified planning model"
+		plan.Clarification = reason
+	}
+	plan.Tasks = []Task{{
+		Key: "semantic-plan", Objective: "Decompose the request into bounded repository work",
+		Method: MethodSemanticPlanning, Inputs: map[string]string{"mode": "initial"},
+		RequiredEvidence:   "a schema-valid proposal using only supported operations",
+		CompletionCriteria: "persist a validated bounded task graph or actionable diagnostics",
 		RequiresModel:      true, BlockedReason: reason,
 	}}
 	return plan

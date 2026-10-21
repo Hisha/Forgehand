@@ -78,7 +78,7 @@ func TestDaemonCancelRunningSession(t *testing.T) {
 		t.Fatalf("session-run response = %#v", run)
 	}
 
-	waitForDaemonSessionState(t, socketPath, sessionID, state.SessionStateRunning, 5*time.Second)
+	waitForDaemonSessionAndExecutionState(t, socketPath, sessionID, state.SessionStateRunning, 5*time.Second)
 
 	cancel := sendDaemonRequest(t, socketPath, ipc.Request{
 		Command:   "session-cancel",
@@ -143,7 +143,7 @@ func TestDaemonCancelWaitingSessionIsIdempotent(t *testing.T) {
 		t.Fatalf("session-run response = %#v", run)
 	}
 
-	waitForDaemonSessionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 10*time.Second)
+	waitForDaemonSessionAndExecutionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 10*time.Second)
 
 	first := sendDaemonRequest(t, socketPath, ipc.Request{
 		Command:   "session-cancel",
@@ -252,7 +252,7 @@ func TestDaemonCancelSurvivesRestart(t *testing.T) {
 		stopDaemon(t, process, syscall.SIGTERM, true)
 		t.Fatalf("session-run response = %#v", run)
 	}
-	waitForDaemonSessionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 10*time.Second)
+	waitForDaemonSessionAndExecutionState(t, socketPath, sessionID, state.SessionStateWaitingForUser, 10*time.Second)
 
 	cancel := sendDaemonRequest(t, socketPath, ipc.Request{
 		Command:   "session-cancel",
@@ -269,7 +269,7 @@ func TestDaemonCancelSurvivesRestart(t *testing.T) {
 	restarted := startDaemonProcess(t, stateDir, socketPath, "0600", pauseStepEnvironment)
 	waitForDaemon(t, restarted, socketPath)
 
-	status := waitForDaemonSessionState(t, socketPath, sessionID, state.SessionStateCanceled, 5*time.Second)
+	status := waitForDaemonSessionAndExecutionState(t, socketPath, sessionID, state.SessionStateCanceled, 5*time.Second)
 	if status.Execution == nil || status.Execution.Status != state.ExecutionStatusCanceled {
 		stopDaemon(t, restarted, syscall.SIGTERM, true)
 		t.Fatalf("restarted execution = %#v", status.Execution)

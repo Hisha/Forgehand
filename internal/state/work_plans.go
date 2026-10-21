@@ -55,18 +55,21 @@ type WorkPlanTask struct {
 }
 
 type WorkPlan struct {
-	ID              int64
-	ProjectID       int64
-	SessionID       int64
-	Objective       string
-	OriginalRequest string
-	ReadOnly        bool
-	Status          string
-	Clarification   string
-	CommitHash      string
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
-	Tasks           []WorkPlanTask
+	ID                  int64
+	ProjectID           int64
+	SessionID           int64
+	Objective           string
+	OriginalRequest     string
+	ReadOnly            bool
+	Status              string
+	Clarification       string
+	Constraints         []string
+	UnresolvedQuestions []string
+	Revision            int
+	CommitHash          string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	Tasks               []WorkPlanTask
 }
 
 type WorkPlanTaskSpec struct {
@@ -80,6 +83,7 @@ type WorkPlanTaskSpec struct {
 type WorkPlanSpec struct {
 	Objective, OriginalRequest, Clarification string
 	ReadOnly                                  bool
+	Constraints, UnresolvedQuestions          []string
 	Tasks                                     []WorkPlanTaskSpec
 }
 
@@ -119,9 +123,11 @@ func (d *Database) CreateWorkPlanSession(ctx context.Context, title string, proj
 		return Session{}, WorkPlan{}, err
 	}
 	defer tx.Rollback()
+	constraints, _ := json.Marshal(spec.Constraints)
+	questions, _ := json.Marshal(spec.UnresolvedQuestions)
 	result, err := tx.ExecContext(ctx, `INSERT INTO work_plans
-(project_id, session_id, objective, original_request, read_only, status, clarification, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, projectID, session.ID, spec.Objective, spec.OriginalRequest, boolToInt(spec.ReadOnly), status, spec.Clarification, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
+(project_id, session_id, objective, original_request, read_only, status, clarification, constraints_json, unresolved_questions_json, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, projectID, session.ID, spec.Objective, spec.OriginalRequest, boolToInt(spec.ReadOnly), status, spec.Clarification, string(constraints), string(questions), now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano))
 	if err != nil {
 		return Session{}, WorkPlan{}, fmt.Errorf("create work plan: %w", err)
 	}
@@ -162,7 +168,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, planID, task.Key, i+1, task.Object
 }
 
 func (d *Database) GetWorkPlanBySession(ctx context.Context, sessionID int64) (*WorkPlan, error) {
-	row := d.db.QueryRowContext(ctx, `SELECT id, project_id, session_id, objective, original_request, read_only, status, clarification, commit_hash, created_at, updated_at FROM work_plans WHERE session_id = ?`, sessionID)
+	row := d.db.QueryRowContext(ctx, `SELECT id, project_id, session_id, objective, original_request, read_only, status, clarification, constraints_json, unresolved_questions_json, revision, commit_hash, created_at, updated_at FROM work_plans WHERE session_id = ?`, sessionID)
 	plan, err := scanWorkPlan(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -180,11 +186,18 @@ func (d *Database) GetWorkPlanBySession(ctx context.Context, sessionID int64) (*
 func scanWorkPlan(row interface{ Scan(...any) error }) (WorkPlan, error) {
 	var p WorkPlan
 	var ro int
+	var constraints, questions string
 	var created, updated string
-	if err := row.Scan(&p.ID, &p.ProjectID, &p.SessionID, &p.Objective, &p.OriginalRequest, &ro, &p.Status, &p.Clarification, &p.CommitHash, &created, &updated); err != nil {
+	if err := row.Scan(&p.ID, &p.ProjectID, &p.SessionID, &p.Objective, &p.OriginalRequest, &ro, &p.Status, &p.Clarification, &constraints, &questions, &p.Revision, &p.CommitHash, &created, &updated); err != nil {
 		return p, err
 	}
 	p.ReadOnly = ro != 0
+	if err := json.Unmarshal([]byte(constraints), &p.Constraints); err != nil {
+		return p, err
+	}
+	if err := json.Unmarshal([]byte(questions), &p.UnresolvedQuestions); err != nil {
+		return p, err
+	}
 	var err error
 	p.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
 	if err != nil {
@@ -192,6 +205,113 @@ func scanWorkPlan(row interface{ Scan(...any) error }) (WorkPlan, error) {
 	}
 	p.UpdatedAt, err = time.Parse(time.RFC3339Nano, updated)
 	return p, err
+}
+
+// ExpandWorkPlan appends a validated semantic proposal to the existing plan.
+// Existing task rows are never updated or deleted, so completed results and
+// evidence survive every revision. Root tasks in the proposal are ordered
+// after the planning task that triggered the revision.
+func (d *Database) ExpandWorkPlan(ctx context.Context, planID int64, triggerTaskKey string, spec WorkPlanSpec, proposalJSON string, maxTasks, maxRevisions int) error {
+	if len(spec.Tasks) == 0 {
+		return fmt.Errorf("work plan expansion requires at least one task")
+	}
+	if maxTasks <= 0 {
+		maxTasks = 24
+	}
+	if maxRevisions <= 0 {
+		maxRevisions = 3
+	}
+	tx, err := d.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var sessionID int64
+	var revision, existingCount int
+	if err := tx.QueryRowContext(ctx, `SELECT session_id, revision FROM work_plans WHERE id = ?`, planID).Scan(&sessionID, &revision); err != nil {
+		return err
+	}
+	if revision >= maxRevisions {
+		return fmt.Errorf("work plan revision limit of %d reached", maxRevisions)
+	}
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM work_plan_tasks WHERE plan_id = ?`, planID).Scan(&existingCount); err != nil {
+		return err
+	}
+	if existingCount+len(spec.Tasks) > maxTasks {
+		return fmt.Errorf("work plan expansion would create %d tasks; maximum is %d", existingCount+len(spec.Tasks), maxTasks)
+	}
+	var triggerStatus string
+	if err := tx.QueryRowContext(ctx, `SELECT status FROM work_plan_tasks WHERE plan_id = ? AND task_key = ?`, planID, triggerTaskKey).Scan(&triggerStatus); err != nil {
+		return err
+	}
+	if triggerStatus != WorkTaskStatusCompleted {
+		return fmt.Errorf("planning trigger task %q is %s, not completed", triggerTaskKey, triggerStatus)
+	}
+	existing := map[string]bool{}
+	rows, err := tx.QueryContext(ctx, `SELECT task_key FROM work_plan_tasks WHERE plan_id = ?`, planID)
+	if err != nil {
+		return err
+	}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return err
+		}
+		existing[key] = true
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	proposed := map[string]int{}
+	for i, task := range spec.Tasks {
+		_, duplicated := proposed[task.Key]
+		if task.Key == "" || existing[task.Key] || duplicated {
+			return fmt.Errorf("work plan expansion task key %q is empty or already used", task.Key)
+		}
+		proposed[task.Key] = i + 1
+	}
+	for i, task := range spec.Tasks {
+		deps := append([]string(nil), task.Dependencies...)
+		if len(deps) == 0 {
+			deps = []string{triggerTaskKey}
+		}
+		for _, dep := range deps {
+			proposedPosition, isProposed := proposed[dep]
+			if !existing[dep] && !isProposed {
+				return fmt.Errorf("task %s has unknown dependency %s", task.Key, dep)
+			}
+			if isProposed && proposedPosition > i {
+				return fmt.Errorf("task %s depends on later task %s", task.Key, dep)
+			}
+		}
+		depsJSON, _ := json.Marshal(deps)
+		inputsJSON, _ := json.Marshal(task.Inputs)
+		status := WorkTaskStatusPending
+		if task.BlockedReason != "" {
+			status = WorkTaskStatusBlocked
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO work_plan_tasks
+(plan_id, task_key, position, objective, execution_method, dependencies_json, inputs_json, required_evidence, completion_criteria, status, requires_model, blocked_reason)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, planID, task.Key, existingCount+i+1, task.Objective, task.ExecutionMethod, string(depsJSON), string(inputsJSON), task.RequiredEvidence, task.CompletionCriteria, status, boolToInt(task.RequiresModel), task.BlockedReason)
+		if err != nil {
+			return fmt.Errorf("append work plan task %s: %w", task.Key, err)
+		}
+	}
+	constraints, _ := json.Marshal(spec.Constraints)
+	questions, _ := json.Marshal(spec.UnresolvedQuestions)
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	newRevision := revision + 1
+	if _, err = tx.ExecContext(ctx, `UPDATE work_plans SET objective = ?, read_only = ?, constraints_json = ?, unresolved_questions_json = ?, clarification = ?, revision = ?, updated_at = ? WHERE id = ?`, spec.Objective, boolToInt(spec.ReadOnly), string(constraints), string(questions), spec.Clarification, newRevision, now, planID); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO work_plan_revisions (plan_id, revision, trigger_task_key, proposal_json, created_at) VALUES (?, ?, ?, ?, ?)`, planID, newRevision, triggerTaskKey, proposalJSON, now); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE session_executions SET total_steps = ? WHERE session_id = ? AND status = 'RUNNING'`, existingCount+len(spec.Tasks), sessionID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (d *Database) listWorkPlanTasks(ctx context.Context, planID int64) ([]WorkPlanTask, error) {
