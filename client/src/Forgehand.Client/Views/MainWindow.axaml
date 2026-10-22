@@ -1,0 +1,70 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:Forgehand.Client.Core.ViewModels;assembly=Forgehand.Client.Core"
+        xmlns:views="clr-namespace:Forgehand.Client.Views"
+        x:Class="Forgehand.Client.Views.MainWindow"
+        x:DataType="vm:ShellViewModel"
+        Title="Forgehand"
+        Width="1040" Height="700"
+        MinWidth="760" MinHeight="560"
+        Background="{DynamicResource WindowBackgroundBrush}">
+
+  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto">
+
+    <Border Grid.Row="0" Classes="header">
+      <Grid ColumnDefinitions="*,Auto">
+        <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+          <Border Classes="logo">
+            <TextBlock Text="F" FontWeight="Bold" Foreground="{DynamicResource AccentTextBrush}"
+                       HorizontalAlignment="Center" VerticalAlignment="Center" />
+          </Border>
+          <StackPanel Spacing="0" VerticalAlignment="Center">
+            <TextBlock Text="Forgehand" Classes="title" />
+            <TextBlock Text="Desktop client" Classes="muted small" />
+          </StackPanel>
+        </StackPanel>
+
+        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="16" VerticalAlignment="Center">
+          <TextBlock Text="{Binding SessionText}" Classes="muted small" VerticalAlignment="Center" />
+          <Button Content="Sign out" Command="{Binding SignOutCommand}" IsVisible="{Binding IsSignedIn}" />
+        </StackPanel>
+      </Grid>
+    </Border>
+
+    <Border Grid.Row="1" Classes="toolbar">
+      <Grid ColumnDefinitions="Auto,*,Auto,Auto" ColumnSpacing="12">
+        <TextBlock Text="Server" Classes="label" VerticalAlignment="Center" />
+        <TextBox Grid.Column="1"
+                 Text="{Binding EndpointText}"
+                 PlaceholderText="http://127.0.0.1:8787"
+                 IsEnabled="{Binding !IsEndpointLocked}" />
+        <Button Grid.Column="2" Content="Apply" Command="{Binding ApplyEndpointCommand}" />
+        <Button Grid.Column="3" Content="Check connection" Command="{Binding CheckConnectionCommand}" />
+      </Grid>
+    </Border>
+
+    <Border Grid.Row="2" Classes="error" Margin="20,12,20,0" IsVisible="{Binding HasEndpointError}">
+      <TextBlock Text="{Binding EndpointError}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+    </Border>
+
+    <Border Grid.Row="2" Classes="notice" IsVisible="{Binding HasNotice}" Margin="0,0,0,0">
+      <TextBlock Text="{Binding Notice}" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" />
+    </Border>
+
+    <Grid Grid.Row="3">
+      <Grid IsVisible="{Binding IsSignedOut}">
+        <views:LoginView DataContext="{Binding Login}" />
+      </Grid>
+      <Grid IsVisible="{Binding IsSignedIn}">
+        <views:ProjectsView DataContext="{Binding Projects}" />
+      </Grid>
+    </Grid>
+
+    <Border Grid.Row="4" Classes="statusbar">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Ellipse Classes="status-dot" Classes.connected="{Binding IsConnected}" VerticalAlignment="Center" />
+        <TextBlock Text="{Binding ConnectionText}" Classes="muted small" VerticalAlignment="Center" />
+      </StackPanel>
+    </Border>
+  </Grid>
+</Window>

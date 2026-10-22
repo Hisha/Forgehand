@@ -1,0 +1,29 @@
+<Application xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             x:Class="Forgehand.Client.App"
+             RequestedThemeVariant="Dark">
+
+  <Application.Resources>
+    <SolidColorBrush x:Key="WindowBackgroundBrush" Color="#0D1117" />
+    <SolidColorBrush x:Key="SurfaceBrush" Color="#161B22" />
+    <SolidColorBrush x:Key="SurfaceAltBrush" Color="#11151C" />
+    <SolidColorBrush x:Key="PanelBorderBrush" Color="#2A313C" />
+    <SolidColorBrush x:Key="TextBrush" Color="#E6EDF3" />
+    <SolidColorBrush x:Key="MutedTextBrush" Color="#8B949E" />
+    <SolidColorBrush x:Key="AccentBrush" Color="#2F81F7" />
+    <SolidColorBrush x:Key="AccentTextBrush" Color="#FFFFFF" />
+    <SolidColorBrush x:Key="SuccessBrush" Color="#3FB950" />
+    <SolidColorBrush x:Key="DangerBrush" Color="#F85149" />
+    <SolidColorBrush x:Key="DangerBackgroundBrush" Color="#2D1719" />
+    <SolidColorBrush x:Key="DangerBorderBrush" Color="#7A2E33" />
+    <SolidColorBrush x:Key="WarningBackgroundBrush" Color="#2E2510" />
+    <SolidColorBrush x:Key="WarningBorderBrush" Color="#7D5E1B" />
+    <SolidColorBrush x:Key="WarningTextBrush" Color="#E3B341" />
+  </Application.Resources>
+
+  <Application.Styles>
+    <FluentTheme />
+    <StyleInclude Source="avares://Forgehand.Client/Styles/ForgehandTheme.axaml" />
+  </Application.Styles>
+
+</Application>

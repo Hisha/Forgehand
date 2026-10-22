@@ -1,0 +1,55 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Forgehand.Client.Core.ViewModels;assembly=Forgehand.Client.Core"
+             x:Class="Forgehand.Client.Views.LoginView"
+             x:DataType="vm:LoginViewModel">
+
+  <Border Classes="card"
+          Width="420"
+          Padding="28"
+          HorizontalAlignment="Center"
+          VerticalAlignment="Center">
+    <StackPanel Spacing="14">
+
+      <StackPanel Spacing="4">
+        <TextBlock Text="Sign in" Classes="heading" />
+        <TextBlock Classes="muted"
+                   Text="Use your Forgehand username and password, plus the current code from your authenticator app." />
+      </StackPanel>
+
+      <StackPanel Spacing="6">
+        <TextBlock Text="Username" Classes="label" />
+        <TextBox Text="{Binding Username}"
+                 IsEnabled="{Binding !IsBusy}" />
+      </StackPanel>
+
+      <StackPanel Spacing="6">
+        <TextBlock Text="Password" Classes="label" />
+        <TextBox Text="{Binding Password}"
+                 PasswordChar="•"
+                 IsEnabled="{Binding !IsBusy}" />
+      </StackPanel>
+
+      <StackPanel Spacing="6">
+        <TextBlock Text="Authenticator code" Classes="label" />
+        <TextBox Text="{Binding TotpCode}"
+                 MaxLength="6"
+                 PlaceholderText="6-digit code"
+                 IsEnabled="{Binding !IsBusy}" />
+      </StackPanel>
+
+      <Border Classes="error" IsVisible="{Binding HasError}">
+        <TextBlock Text="{Binding ErrorMessage}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+      </Border>
+
+      <Button Classes="primary"
+              Content="Sign in"
+              IsDefault="True"
+              HorizontalAlignment="Stretch"
+              Command="{Binding SignInCommand}" />
+
+      <TextBlock Classes="muted small"
+                 Text="Passwords and authenticator codes are never saved by this client." />
+    </StackPanel>
+  </Border>
+</UserControl>
