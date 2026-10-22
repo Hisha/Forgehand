@@ -28,3 +28,15 @@ func styleActive(s string) string  { return "\x1b[36m" + s + ansiReset }
 func styleDisabled(s string) string {
 	return ansiDim + s + ansiReset
 }
+
+// Focused controls use a distinct but restrained highlight.
+func styleFocused(s string) string { return "\x1b[1;36m" + s + ansiReset }
+
+// Muted text for secondary details and placeholders.
+func styleMuted(s string) string { return ansiDim + s + ansiReset }
+
+// Status indicator helpers.
+func styleStatusOK(s string) string    { return "\x1b[32m" + s + ansiReset }
+func styleStatusWarn(s string) string  { return "\x1b[33m" + s + ansiReset }
+func styleStatusError(s string) string { return "\x1b[31m" + s + ansiReset }
+func styleStatusInfo(s string) string  { return "\x1b[36m" + s + ansiReset }

@@ -3,6 +3,8 @@ package tui
 import (
 	"fmt"
 	"strings"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // composeShell combines the main workspace, optional sidebar, persistent input
@@ -60,25 +62,79 @@ func (m model) composeShell(main, sidebar string) string {
 	return b.String()
 }
 
-// inputAreaLines renders the persistent interaction field.
+// inputAreaLines renders the persistent interaction field as a visually
+// distinct, multiline-capable composer.
 func (m model) inputAreaLines(mainWidth int) []string {
-	// Top separator.
-	top := styleDim(strings.Repeat("─", mainWidth))
-	// Input line.
-	prompt := styleRunning("❯")
-	value := m.input
-	cursor := "█"
-	if value == "" {
-		placeholder := m.inputPlaceholder()
-		value = styleDim(placeholder)
-		cursor = ""
+	height := m.inputAreaHeight()
+	lines := make([]string, 0, height)
+
+	focused := m.inputActive()
+	title := "Composer"
+	if !focused {
+		title = "Input"
 	}
-	inputLine := prompt + " " + value + cursor
-	inputLine = fitWidth(inputLine, mainWidth)
+	if m.screen == screenProject && m.projectNavigationFocused {
+		title += " (navigation focus)"
+	} else if focused {
+		title += " (focused)"
+	}
+	// Top border with a section title.
+	borderLabel := "─ " + title + " "
+	remaining := mainWidth - ansi.StringWidth(borderLabel)
+	if remaining < 0 {
+		remaining = 0
+	}
+	top := styleDim(borderLabel + strings.Repeat("─", remaining))
+	lines = append(lines, fitWidth(top, mainWidth))
+
+	// Input lines.
+	prompt := styleRunning("❯")
+	if !focused {
+		prompt = styleDim("❯")
+	}
+	inputLines := []string{""}
+	if m.input != "" {
+		inputLines = strings.Split(m.input, "\n")
+	} else {
+		inputLines = []string{styleDim(m.inputPlaceholder())}
+	}
+	// Show the trailing portion when the input exceeds the available height.
+	availableInputLines := height - 2
+	if availableInputLines < 1 {
+		availableInputLines = 1
+	}
+	if len(inputLines) > availableInputLines {
+		inputLines = inputLines[len(inputLines)-availableInputLines:]
+	}
+	for i, line := range inputLines {
+		prefix := "  "
+		if i == 0 {
+			prefix = prompt + " "
+		}
+		rendered := prefix + line
+		if i == len(inputLines)-1 && m.input != "" {
+			rendered += "█"
+		}
+		lines = append(lines, fitWidth(rendered, mainWidth))
+	}
+	for len(lines) < height-1 {
+		lines = append(lines, fitWidth("", mainWidth))
+	}
+
 	// Hint line.
 	hint := styleDim(m.inputHint())
-	hint = fitWidth(hint, mainWidth)
-	return []string{top, inputLine, hint}
+	if focused {
+		hint = styleMuted(m.inputHint())
+	}
+	lines = append(lines, fitWidth(hint, mainWidth))
+
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	for len(lines) < height {
+		lines = append(lines, fitWidth("", mainWidth))
+	}
+	return lines
 }
 
 func (m model) inputPlaceholder() string {
@@ -225,10 +281,10 @@ func (m model) writeProjectSidebar(b *strings.Builder) {
 
 	if session := m.projectSelectedSession(); session != nil {
 		b.WriteString("\n" + styleHeading("SELECTED SESSION") + "\n")
-		fmt.Fprintf(b, "%s\n", singleLine(session.Title))
+		fmt.Fprintf(b, "Title: %s\n", singleLine(session.Title))
 		fmt.Fprintf(b, "State: %s\n", session.State)
 		if session.Task != "" {
-			fmt.Fprintf(b, "Task: %s\n", singleLine(session.Task))
+			fmt.Fprintf(b, "Task: %s\n", compactLine(singleLine(session.Task), m.sidebarWidth()))
 		}
 		if m.selectedSession != nil && m.selectedSession.ID == session.ID && m.execution != nil {
 			fmt.Fprintf(b, "Execution: %s\n", m.execution.Status)
@@ -241,7 +297,7 @@ func (m model) writeProjectSidebar(b *strings.Builder) {
 	if len(entry.Pending) > 0 {
 		b.WriteString("\n" + styleHeading("PENDING") + "\n")
 		for _, p := range entry.Pending {
-			fmt.Fprintf(b, "- %s\n", singleLine(p.Interaction.Question))
+			fmt.Fprintf(b, "- %s\n", compactLine(singleLine(p.Interaction.Question), m.sidebarWidth()))
 		}
 	}
 	if len(entry.Active) > 0 {

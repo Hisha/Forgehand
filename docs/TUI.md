@@ -49,7 +49,8 @@ persistent engineering workspace:
 - a composer anchored near the bottom of the workspace
 
 Type a natural-language request directly into the composer and press `enter` to
-start an investigation work plan. `tab` switches focus between the composer and
+start an investigation work plan. `shift+enter` or `ctrl+j` inserts a newline
+for a multiline request. `tab` switches focus between the composer and
 session navigation. In navigation focus, `↑`/`↓` select a recent session and
 `enter` opens it. `esc` clears the composer or returns to the dashboard, `r`
 refreshes, and `b`/`esc` returns to the dashboard.

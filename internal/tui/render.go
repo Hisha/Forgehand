@@ -108,7 +108,7 @@ func (m model) sidebarVisible() bool {
 	default:
 		return false
 	}
-	return renderWidth(m.width) >= 70 && renderHeight(m.height) >= 12
+	return renderWidth(m.width) >= 90 && renderHeight(m.height) >= 14
 }
 
 func (m model) sidebarWidth() int {
@@ -142,11 +142,35 @@ func (m model) mainWidth() int {
 	return width
 }
 
-func (m model) inputAreaHeight() int {
-	if renderHeight(m.height) < 8 {
+func (m model) inputLineCount() int {
+	if strings.TrimSpace(m.input) == "" {
 		return 1
 	}
-	return 3
+	count := strings.Count(m.input, "\n") + 1
+	if count < 1 {
+		count = 1
+	}
+	if count > 6 {
+		count = 6
+	}
+	return count
+}
+
+func (m model) inputAreaHeight() int {
+	height := m.inputLineCount() + 2
+	if height < 3 {
+		height = 3
+	}
+	if height > 8 {
+		height = 8
+	}
+	if renderHeight(m.height) < height+3 {
+		height = renderHeight(m.height) - 3
+		if height < 1 {
+			height = 1
+		}
+	}
+	return height
 }
 
 func (m model) statusBarHeight() int { return 1 }

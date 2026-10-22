@@ -543,6 +543,10 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		// Composer-focused (default): ordinary typing goes to the composer.
 		if !m.projectNavigationFocused {
+			if isNewlineKey(msg) {
+				m.input += "\n"
+				return m, nil
+			}
 			switch key {
 			case "tab":
 				m.projectNavigationFocused = true
@@ -777,6 +781,10 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.screen = screenModels
 			return m, nil
 		}
+		if isNewlineKey(msg) {
+			m.input += "\n"
+			return m, nil
+		}
 		m.input = editInput(m.input, msg)
 	case screenQuestion:
 		if key == "esc" {
@@ -793,6 +801,10 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			return m, m.startCmd(*m.selectedProject, m.input)
 		}
+		if isNewlineKey(msg) {
+			m.input += "\n"
+			return m, nil
+		}
 		m.input = editInput(m.input, msg)
 	case screenRegister:
 		if key == "esc" {
@@ -808,6 +820,10 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			m.busy = true
 			return m, m.registerCmd(m.input)
+		}
+		if isNewlineKey(msg) {
+			m.input += "\n"
+			return m, nil
 		}
 		m.input = editInput(m.input, msg)
 	case screenSession:
@@ -864,12 +880,19 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			return m, m.resolveIntakeCmd("discard")
 		}
+		if isNewlineKey(msg) {
+			m.input += "\n"
+			return m, nil
+		}
 		m.input = editInput(m.input, msg)
 	}
 	return m, nil
 }
 
 func editInput(value string, msg tea.KeyPressMsg) string {
+	if isNewlineKey(msg) {
+		return value + "\n"
+	}
 	switch msg.String() {
 	case "backspace":
 		if value == "" {
@@ -888,6 +911,21 @@ func editInput(value string, msg tea.KeyPressMsg) string {
 		return value + text
 	}
 	return value
+}
+
+// isNewlineKey reports whether a key press should insert a newline into the
+// multiline composer instead of submitting.
+func isNewlineKey(msg tea.KeyPressMsg) bool {
+	if msg.Code == tea.KeyEnter {
+		if msg.Mod&(tea.ModShift|tea.ModAlt|tea.ModCtrl) != 0 {
+			return true
+		}
+	}
+	switch msg.String() {
+	case "shift+enter", "alt+enter", "ctrl+j", "ctrl+enter":
+		return true
+	}
+	return false
 }
 
 // openHelp opens the keyboard help and remembers the screen to return to.
@@ -1173,34 +1211,50 @@ func (m model) intakeView() string {
 }
 
 // projectBody renders the project workspace: header, pending decisions, active
-// work, and selectable recent sessions.
+// work, and selectable recent sessions. It is assembled from small component
+// renderers so each region can be reasoned about and tested independently.
 func (m model) projectBody() string {
 	if m.selectedProject == nil {
 		return "Forgehand · No project selected\n"
 	}
 
-	entry := m.projectEntry(*m.selectedProject)
-	sessions := m.projectSessions()
-	selectedIndex := m.projectSessionCursor
-	if selectedIndex < 0 || selectedIndex >= len(sessions) {
-		selectedIndex = 0
-	}
-
 	var b strings.Builder
-	// Header.
+	b.WriteString(m.renderProjectHeader())
+	b.WriteString("\n")
+	b.WriteString(m.renderProjectPending())
+	b.WriteString("\n")
+	b.WriteString(m.renderProjectActive())
+	b.WriteString("\n")
+	b.WriteString(m.renderProjectRecent())
+	b.WriteString("\n")
+	b.WriteString(styleSecondary("Composer: type a request and press Enter (Shift+Enter or Ctrl+J for a new line). Tab switches focus to session navigation.") + "\n")
+	return b.String()
+}
+
+// renderProjectHeader renders the top project header and status region.
+func (m model) renderProjectHeader() string {
+	entry := m.projectEntry(*m.selectedProject)
+	var b strings.Builder
 	b.WriteString(styleHeading(m.selectedProject.Name) + "\n")
-	fmt.Fprintf(&b, "%s\n", styleSecondary(m.selectedProject.RootPath))
-	fmt.Fprintf(&b, "Activity: %s", entry.activityLabel())
+	b.WriteString(styleSecondary(m.selectedProject.RootPath) + "\n")
+	activity := entry.activityLabel()
+	health := "Repository readiness has not been checked yet."
 	if entry.Health != nil {
-		fmt.Fprintf(&b, "   Health: %s", entry.healthSummary())
+		health = entry.healthSummary()
 	}
+	fmt.Fprintf(&b, "Activity: %s", styleActive(activity))
+	fmt.Fprintf(&b, "   Health: %s", styleMuted(health))
 	b.WriteString("\n")
 	if entry.healthWarning() {
 		fmt.Fprintf(&b, "%s %s\n", styleWarning("!"), styleWarning(entry.healthSummary()))
 	}
-	b.WriteString("\n")
+	return b.String()
+}
 
-	// Pending input.
+// renderProjectPending renders pending user input as concise activity entries.
+func (m model) renderProjectPending() string {
+	entry := m.projectEntry(*m.selectedProject)
+	var b strings.Builder
 	b.WriteString(styleHeading("PENDING INPUT") + "\n")
 	if len(entry.Pending) == 0 {
 		if len(entry.Waiting) > 0 {
@@ -1208,6 +1262,7 @@ func (m model) projectBody() string {
 		} else {
 			b.WriteString("  " + styleSecondary("Nothing is waiting for you.") + "\n")
 		}
+		return b.String()
 	}
 	for _, pending := range entry.Pending {
 		kind := "answer"
@@ -1216,12 +1271,17 @@ func (m model) projectBody() string {
 		}
 		fmt.Fprintf(&b, "  %s  %s\n", styleWarning("•"), fmt.Sprintf("%s · %s", kind, singleLine(pending.Interaction.Question)))
 	}
-	b.WriteString("\n")
+	return b.String()
+}
 
-	// Active work.
+// renderProjectActive renders running and queued work.
+func (m model) renderProjectActive() string {
+	entry := m.projectEntry(*m.selectedProject)
+	var b strings.Builder
 	b.WriteString(styleHeading("ACTIVE WORK") + "\n")
 	if len(entry.Active) == 0 {
 		b.WriteString("  " + styleSecondary("No running or queued work.") + "\n")
+		return b.String()
 	}
 	for _, session := range entry.Active {
 		marker := " "
@@ -1230,12 +1290,22 @@ func (m model) projectBody() string {
 		}
 		fmt.Fprintf(&b, "  %s %-12s %s\n", marker, session.State, singleLine(session.Title))
 	}
-	b.WriteString("\n")
+	return b.String()
+}
 
-	// Recent / selectable sessions.
+// renderProjectRecent renders selectable recent sessions with concise titles,
+// state, and selection highlighting.
+func (m model) renderProjectRecent() string {
+	sessions := m.projectSessions()
+	selectedIndex := m.projectSessionCursor
+	if selectedIndex < 0 || selectedIndex >= len(sessions) {
+		selectedIndex = 0
+	}
+	var b strings.Builder
 	b.WriteString(styleHeading("RECENT SESSIONS") + "\n")
 	if len(sessions) == 0 {
 		b.WriteString("  " + styleSecondary("No sessions yet.") + "\n")
+		return b.String()
 	}
 	for index, session := range sessions {
 		prefix := "  "
@@ -1256,13 +1326,12 @@ func (m model) projectBody() string {
 		}
 		fmt.Fprintf(&b, "%s %-12s %s\n", prefix, state, title)
 	}
-	b.WriteString("\n")
-	b.WriteString(styleSecondary("Composer: type a request and press Enter. Tab switches focus to session navigation.") + "\n")
-
 	return b.String()
 }
 
-// projectView renders the project workspace with scrolling and bottom alignment.
+// projectView renders the project workspace top-down. It never bottom-aligns
+// the content: the project header stays at the top of the main region and only
+// the composer/status bar are anchored to the bottom by the shell.
 func (m model) projectView() string {
 	lines := strings.Split(m.projectBody(), "\n")
 	visible := m.workspaceHeight()
@@ -1277,21 +1346,13 @@ func (m model) projectView() string {
 	}
 	end := min(total, offset+visible)
 	chunk := lines[offset:end]
-	if len(chunk) < visible && offset == 0 {
-		padding := make([]string, visible-len(chunk))
-		chunk = append(padding, chunk...)
-	}
-	out := strings.Join(chunk, "\n")
-	if m.busy {
-		// keep feedback visible at the bottom of the workspace
-	}
-	return out
+	return strings.Join(chunk, "\n")
 }
 
 // maxProjectScroll returns the largest scroll offset of the project view.
 func (m model) maxProjectScroll() int {
 	lines := strings.Split(m.projectBody(), "\n")
-	return max(0, len(lines)-max(6, m.workspaceHeight()-3))
+	return max(0, len(lines)-m.workspaceHeight())
 }
 
 // projectEntry returns the dashboard entry of a project.
