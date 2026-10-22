@@ -121,7 +121,7 @@ func TestSessionWrappingTracksTerminalResizeAndScrolling(t *testing.T) {
 func TestAllTUIViewsRespectTerminalWidth(t *testing.T) {
 	long := "A long piece of diagnostic or descriptive content with Unicode 漢字 that must remain within the terminal"
 	views := []model{
-		{screen: screenHome, width: 22, projects: []ipc.Project{{Name: long, RootPath: "/a/very/long/repository/path"}}, sessions: []ipc.Session{{Title: long, State: "RUNNING"}}},
+		{screen: screenDashboard, width: 22, entries: []projectEntry{{Project: ipc.Project{Name: long, RootPath: "/a/very/long/repository/path"}, Group: groupWorking}}},
 		{screen: screenQuestion, width: 22, selectedProject: &ipc.Project{Name: long}, input: long + "\n    intentionally indented"},
 		{screen: screenIntake, width: 22, intake: &ipc.ProjectIntake{RootPath: "/a/very/long/repository/path", Changes: []ipc.WorkingTreeChange{{Path: long}}}},
 		{screen: screenRecovery, width: 22, recovery: long},

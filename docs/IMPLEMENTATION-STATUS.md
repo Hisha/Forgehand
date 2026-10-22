@@ -53,7 +53,7 @@
 ## 5. Workers, TUI, Providers, AI Investigation (later phases)
 | Capability | Status | Evidence | Notes |
 |---|---|---|---|
-| Independent TUI (client of engine) | I | `internal/tui`, `forgehand`/`forgehand tui` | Bubble Tea client lists/selects projects and sessions, registers repositories, starts investigations, polls progress, and renders findings/evidence. |
+| Independent TUI (client of engine) | I | `internal/tui`, `forgehand`/`forgehand tui` | Bubble Tea client opens to a project dashboard grouped by activity (NEEDS ATTENTION/WORKING/IDLE), with independent repository-readiness indicators, registers repositories, starts work plans, polls progress, and renders findings/evidence. Sessions are reachable from the dashboard or a project, not from the home list. |
 | Model provider interfaces/adapters | I | `internal/provider/provider.go` | Single OpenAI-compatible adapter with optional JSON-schema response format and usage parsing; no routing/multiple providers, streaming, or tool calls. |
 | Real AI investigator worker | I | `internal/daemon/investigation_worker.go`, `internal/daemon/investigation_report.go`, CLI `session start --investigate`, `session result` | Single-pass, read-only worker with commit-pinned evidence, strict JSON request, citation validation, durable normalized report, explicit failure, and provider qualification. Broader evaluation remains Phase 4 work. |
 | Coding worker / planner / verifier roles | N | None | Planned (Phase 5). |

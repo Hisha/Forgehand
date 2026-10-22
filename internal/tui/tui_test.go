@@ -32,7 +32,8 @@ func loadedModel(t *testing.T, client *fakeTransport) model {
 	return updated.(model)
 }
 
-func TestLaunchListsProjectsAndSessionsWithoutIDs(t *testing.T) {
+func TestDashboardListsProjectsWithoutIDsAndWithoutSessionNoise(t *testing.T) {
+	projectID := int64(42)
 	client := &fakeTransport{handler: func(request ipc.Request) (ipc.Response, error) {
 		switch request.Command {
 		case "status":
@@ -40,16 +41,17 @@ func TestLaunchListsProjectsAndSessionsWithoutIDs(t *testing.T) {
 		case "projects":
 			return ipc.Response{OK: true, Projects: []ipc.Project{{ID: 42, Name: "mod-native-hunts", RootPath: "/src/hunts"}}}, nil
 		case "sessions":
-			return ipc.Response{OK: true, Sessions: []ipc.Session{{ID: 91, Title: "Huntmaster eligibility", State: "COMPLETED", Kind: "investigation"}}}, nil
+			return ipc.Response{OK: true, Sessions: []ipc.Session{{ID: 91, Title: "Huntmaster eligibility", State: "COMPLETED", Kind: "investigation", ProjectID: &projectID}}}, nil
 		}
 		return ipc.Response{}, errors.New("unexpected request")
 	}}
 	m := loadedModel(t, client)
 	view := m.View().Content
-	for _, want := range []string{"mod-native-hunts", "/src/hunts", "Huntmaster eligibility", "COMPLETED"} {
-		if !strings.Contains(view, want) {
-			t.Fatalf("view missing %q:\n%s", want, view)
-		}
+	if !strings.Contains(view, "mod-native-hunts") {
+		t.Fatalf("dashboard missing project name:\n%s", view)
+	}
+	if strings.Contains(view, "Huntmaster eligibility") {
+		t.Fatalf("dashboard let session history dominate the project list:\n%s", view)
 	}
 	if strings.Contains(view, "42") || strings.Contains(view, "91") {
 		t.Fatalf("view exposed database IDs:\n%s", view)
@@ -81,6 +83,11 @@ func TestSelectProjectAskQuestionAndStartWorkPlan(t *testing.T) {
 	}}
 	m := loadedModel(t, client)
 	updated, _ := m.Update(key(tea.KeyEnter, ""))
+	m = updated.(model)
+	if m.screen != screenProject {
+		t.Fatalf("screen = %v", m.screen)
+	}
+	updated, _ = m.Update(key('n', "n"))
 	m = updated.(model)
 	if m.screen != screenQuestion {
 		t.Fatalf("screen = %v", m.screen)
@@ -171,7 +178,7 @@ func TestEscapeCancelsPastedQuestion(t *testing.T) {
 	if command != nil {
 		t.Fatal("Escape returned a command")
 	}
-	if m.screen != screenHome || m.input != "" {
+	if m.screen != screenDashboard || m.input != "" {
 		t.Fatalf("Escape left model at screen %v with input %q", m.screen, m.input)
 	}
 }
@@ -204,8 +211,11 @@ func TestReopenCompletedInvestigationShowsFindingsAndEvidence(t *testing.T) {
 		return ipc.Response{}, errors.New("unexpected request")
 	}}
 	m := loadedModel(t, client)
-	updated, _ := m.Update(key(tea.KeyTab, ""))
+	updated, _ := m.Update(key('s', "s"))
 	m = updated.(model)
+	if m.screen != screenSessions {
+		t.Fatalf("screen = %v", m.screen)
+	}
 	updated, command := m.Update(key(tea.KeyEnter, ""))
 	m = updated.(model)
 	message := command().(sessionMsg)
@@ -270,8 +280,8 @@ func TestModelsNavigationStartsQualificationAndDisplaysProgress(t *testing.T) {
 		}
 		return ipc.Response{}, errors.New("unexpected")
 	}}
-	m := model{client: client, screen: screenHome, section: modelsSection, provider: &ipc.ProviderConfiguration{Configured: true, Provider: "openai-compatible", Endpoint: "http://127.0.0.1:8000/v1", Model: "worker"}, qualificationModel: "worker", qualificationRepetitions: 3, width: 80, height: 24}
-	updated, _ := m.Update(key(tea.KeyEnter, ""))
+	m := model{client: client, screen: screenDashboard, provider: &ipc.ProviderConfiguration{Configured: true, Provider: "openai-compatible", Endpoint: "http://127.0.0.1:8000/v1", Model: "worker"}, qualificationModel: "worker", qualificationRepetitions: 3, width: 80, height: 24}
+	updated, _ := m.Update(key('m', "m"))
 	m = updated.(model)
 	if m.screen != screenModels {
 		t.Fatalf("screen=%v", m.screen)

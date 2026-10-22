@@ -818,6 +818,21 @@ func handleConnection(
 			Projects: responseProjects,
 		})
 
+	case "project-health":
+		health, err := inspectProjectHealthList(context.Background(), stateDB)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{
+				OK:      false,
+				Message: err.Error(),
+			})
+			return
+		}
+
+		_ = encoder.Encode(ipc.Response{
+			OK:            true,
+			ProjectHealth: health,
+		})
+
 	case "status":
 		queued, err := stateDB.CountQueuedExecutions(context.Background())
 		if err != nil {

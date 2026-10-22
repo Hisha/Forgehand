@@ -54,7 +54,9 @@ func (daemonTransport) Request(request ipc.Request) (ipc.Response, error) {
 type screen int
 
 const (
-	screenHome screen = iota
+	// screenDashboard is the project-selection dashboard. It is the screen
+	// Forgehand opens to.
+	screenDashboard screen = iota
 	screenQuestion
 	screenRegister
 	screenSession
@@ -66,24 +68,25 @@ const (
 	screenModelInput
 	screenUpgrade
 	screenUpgradeConfirm
-)
-
-type section int
-
-const (
-	projectsSection section = iota
-	sessionsSection
-	modelsSection
+	// screenProject shows the detail of a single project.
+	screenProject
+	// screenSessions lists every durable session.
+	screenSessions
+	// screenHelp lists the keyboard actions of the current screen.
+	screenHelp
 )
 
 type model struct {
 	client                   transport
 	screen                   screen
-	section                  section
 	projects                 []ipc.Project
 	sessions                 []ipc.Session
+	entries                  []projectEntry
+	health                   []ipc.ProjectHealth
+	pending                  map[int64][]ipc.Interaction
+	daemonStatus             ipc.Response
 	projectCursor            int
-	sessionCursor            int
+	sessionsCursor           int
 	selectedProject          *ipc.Project
 	selectedSession          *ipc.Session
 	execution                *ipc.Execution
@@ -104,6 +107,9 @@ type model struct {
 	width                    int
 	height                   int
 	scroll                   int
+	ticks                    int
+	polling                  bool
+	helpReturn               screen
 	serviceFactory           serviceFactory
 	upgrade                  *daemonUpgrade
 	upgradeAction            string
@@ -112,10 +118,26 @@ type model struct {
 type loadedMsg struct {
 	projects       []ipc.Project
 	sessions       []ipc.Session
+	pending        map[int64][]ipc.Interaction
 	provider       *ipc.ProviderConfiguration
 	qualifications []ipc.QualificationJob
+	daemonStatus   ipc.Response
 	err            error
 	upgrade        *daemonUpgrade
+}
+
+// healthMsg carries the repository readiness of the registered projects. It is
+// advisory: a failure never hides the dashboard.
+type healthMsg struct {
+	health []ipc.ProjectHealth
+	err    error
+}
+
+// activityMsg carries refreshed session activity for the dashboard.
+type activityMsg struct {
+	sessions []ipc.Session
+	pending  map[int64][]ipc.Interaction
+	err      error
 }
 
 type registeredMsg struct {
@@ -156,7 +178,7 @@ func Run() error {
 }
 
 func newModel(client transport) model {
-	return model{client: client, serviceFactory: defaultServiceFactory, screen: screenHome, busy: true, width: 80, height: 24, qualificationRepetitions: 3}
+	return model{client: client, serviceFactory: defaultServiceFactory, screen: screenDashboard, busy: true, width: 80, height: 24, qualificationRepetitions: 3, pending: map[int64][]ipc.Interaction{}}
 }
 
 func (m model) Init() tea.Cmd { return m.loadCmd() }
@@ -178,21 +200,78 @@ func (m model) loadCmd() tea.Cmd {
 		if err != nil {
 			return loadedMsg{err: err}
 		}
+		visible := visibleSessions(sessions.Sessions)
+		pending := m.pendingInteractions(visible)
 		models, err := m.client.Request(ipc.Request{Command: "models"})
 		if err != nil {
-			return loadedMsg{projects: projects.Projects, sessions: sessions.Sessions}
+			return loadedMsg{projects: projects.Projects, sessions: visible, pending: pending, daemonStatus: status}
 		}
 		qualifications, err := m.client.Request(ipc.Request{Command: "qualification-list", Limit: 50})
 		if err != nil {
-			return loadedMsg{projects: projects.Projects, sessions: sessions.Sessions, provider: models.ProviderConfiguration}
+			return loadedMsg{projects: projects.Projects, sessions: visible, pending: pending, daemonStatus: status, provider: models.ProviderConfiguration}
 		}
-		visibleSessions := make([]ipc.Session, 0, len(sessions.Sessions))
-		for _, session := range sessions.Sessions {
-			if session.Kind != "qualification" {
-				visibleSessions = append(visibleSessions, session)
-			}
+		return loadedMsg{projects: projects.Projects, sessions: visible, pending: pending, daemonStatus: status, provider: models.ProviderConfiguration, qualifications: qualifications.Qualifications}
+	}
+}
+
+// visibleSessions drops the model-qualification sessions. They are not
+// project work and never belong to a project on the dashboard.
+func visibleSessions(sessions []ipc.Session) []ipc.Session {
+	visible := make([]ipc.Session, 0, len(sessions))
+	for _, session := range sessions {
+		if session.Kind != "qualification" {
+			visible = append(visible, session)
 		}
-		return loadedMsg{projects: projects.Projects, sessions: visibleSessions, provider: models.ProviderConfiguration, qualifications: qualifications.Qualifications}
+	}
+	return visible
+}
+
+// pendingInteractions loads the durable interactions that still wait for the
+// user. Only sessions whose durable state says they are waiting are asked
+// about, so the request count stays proportional to the number of waiting
+// sessions.
+//
+// A failure to read one session's questions does not fail the load: the
+// session state alone already proves that the project needs attention.
+func (m model) pendingInteractions(sessions []ipc.Session) map[int64][]ipc.Interaction {
+	pending := map[int64][]ipc.Interaction{}
+	for _, session := range sessions {
+		if session.State != "WAITING_FOR_USER" {
+			continue
+		}
+		response, err := m.client.Request(ipc.Request{Command: "session-questions", SessionID: session.ID})
+		if err != nil {
+			continue
+		}
+		if len(response.Interactions) > 0 {
+			pending[session.ID] = response.Interactions
+		}
+	}
+	return pending
+}
+
+// healthCmd asks the daemon for the repository readiness of every registered
+// project. It is a separate step so the dashboard appears without waiting for
+// the repository checks.
+func (m model) healthCmd() tea.Cmd {
+	return func() tea.Msg {
+		response, err := m.client.Request(ipc.Request{Command: "project-health"})
+		if err != nil {
+			return healthMsg{err: err}
+		}
+		return healthMsg{health: response.ProjectHealth}
+	}
+}
+
+// activityCmd refreshes the session activity shown by the dashboard.
+func (m model) activityCmd() tea.Cmd {
+	return func() tea.Msg {
+		sessions, err := m.client.Request(ipc.Request{Command: "sessions"})
+		if err != nil {
+			return activityMsg{err: err}
+		}
+		visible := visibleSessions(sessions.Sessions)
+		return activityMsg{sessions: visible, pending: m.pendingInteractions(visible)}
 	}
 }
 
@@ -214,13 +293,38 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.recovery = msg.err.Error()
 			return m, nil
 		}
-		m.screen = screenHome
+		m.screen = screenDashboard
 		m.projects, m.sessions, m.provider, m.qualifications = msg.projects, msg.sessions, msg.provider, msg.qualifications
+		m.pending, m.daemonStatus = msg.pending, msg.daemonStatus
 		if m.qualificationModel == "" && m.provider != nil {
 			m.qualificationModel = m.provider.Model
 		}
+		m.rebuildEntries()
 		m.clampCursors()
-		m.status = "Connected"
+		m.status = ""
+		if m.polling {
+			return m, m.healthCmd()
+		}
+		m.polling = true
+		return m, tea.Batch(m.healthCmd(), pollCmd())
+	case healthMsg:
+		if msg.err != nil {
+			// Readiness is advisory. The dashboard stays usable without it.
+			m.status = "Project readiness unavailable: " + msg.err.Error()
+			return m, nil
+		}
+		m.health = msg.health
+		m.rebuildEntries()
+		m.clampCursors()
+		return m, nil
+	case activityMsg:
+		if msg.err != nil {
+			return m, nil
+		}
+		m.sessions, m.pending = msg.sessions, msg.pending
+		m.rebuildEntries()
+		m.clampCursors()
+		return m, nil
 	case registeredMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -235,7 +339,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.status = "Registered " + msg.project.Name
 		m.intake = nil
-		m.screen = screenHome
+		m.screen = screenDashboard
 		return m, m.loadCmd()
 	case startedMsg:
 		m.busy = false
@@ -247,28 +351,41 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.result, m.evidence, m.workPlan = nil, nil, msg.workPlan
 		m.scroll = 0
 		m.screen = screenSession
-		return m, pollCmd()
+		return m, nil
 	case sessionMsg:
 		m.busy = false
 		if msg.err != nil {
 			m.status = "Refresh failed: " + msg.err.Error()
-			return m, pollCmd()
+			return m, nil
 		}
 		m.selectedSession, m.execution = msg.session, msg.execution
 		m.result, m.evidence, m.workPlan = msg.result, msg.evidence, msg.workPlan
-		if !terminalSession(msg.session) {
-			return m, pollCmd()
-		}
 	case pollMsg:
-		if m.screen == screenSession && m.selectedSession != nil {
-			return m, m.sessionCmd(m.selectedSession.ID)
+		// The polling chain is armed once and kept alive for the lifetime of
+		// the frontend, so exactly one chain exists no matter which screens
+		// the user visits.
+		m.ticks++
+		switch m.screen {
+		case screenSession:
+			if m.selectedSession != nil {
+				return m, tea.Batch(m.sessionCmd(m.selectedSession.ID), pollCmd())
+			}
+		case screenModels:
+			// The model screen only needs to poll while an evaluation is in
+			// flight; a finished list does not change on its own.
+			if hasActiveQualification(m.qualifications) {
+				return m, tea.Batch(m.qualificationsCmd(), pollCmd())
+			}
+		case screenQualification:
+			if m.selectedQualification != nil {
+				return m, tea.Batch(m.qualificationCmd(m.selectedQualification.ID), pollCmd())
+			}
+		case screenDashboard, screenProject:
+			if m.ticks%2 == 0 {
+				return m, tea.Batch(m.activityCmd(), pollCmd())
+			}
 		}
-		if m.screen == screenModels {
-			return m, m.qualificationsCmd()
-		}
-		if m.screen == screenQualification && m.selectedQualification != nil {
-			return m, m.qualificationCmd(m.selectedQualification.ID)
-		}
+		return m, pollCmd()
 	case qualificationMsg:
 		m.busy = false
 		if msg.err != nil {
@@ -289,9 +406,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.status != "" {
 			m.status = msg.status
 		}
-		if (m.screen == screenModels && hasActiveQualification(m.qualifications)) || (m.screen == screenQualification && m.selectedQualification != nil && !terminalQualification(m.selectedQualification.Status)) {
-			return m, pollCmd()
-		}
+		return m, nil
 	case recoveredMsg:
 		m.busy = false
 		if msg.refresh {
@@ -365,41 +480,106 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.busy = true
 			return m, startServiceCmd(m.client, m.serviceFactory)
 		}
-	case screenHome:
+	case screenDashboard:
 		switch key {
 		case "q":
 			return m, tea.Quit
-		case "tab":
-			m.section = (m.section + 1) % 3
 		case "up", "k":
-			m.move(-1)
+			m.moveProject(-1)
 		case "down", "j":
-			m.move(1)
+			m.moveProject(1)
 		case "r":
 			m.busy = true
 			return m, m.loadCmd()
 		case "a":
 			m.screen, m.input, m.status = screenRegister, "", "Enter an absolute or relative Git repository path"
+		case "s":
+			m.screen = screenSessions
+			m.sessionsCursor = 0
+			return m, nil
+		case "m":
+			m.screen = screenModels
+			return m, m.qualificationsCmd()
+		case "?":
+			return m.openHelp()
 		case "enter":
-			if m.section == projectsSection && len(m.projects) > 0 {
-				project := m.projects[m.projectCursor]
-				m.selectedProject, m.screen, m.input = &project, screenQuestion, ""
-			} else if m.section == sessionsSection && len(m.sessions) > 0 {
-				session := m.sessions[m.sessionCursor]
-				m.selectedSession, m.screen, m.busy = &session, screenSession, true
-				m.scroll = 0
-				return m, m.sessionCmd(session.ID)
-			} else if m.section == modelsSection {
-				m.screen = screenModels
-				return m, pollCmd()
+			if len(m.entries) == 0 {
+				return m, nil
 			}
+			entry := m.entries[m.projectCursor]
+			project := entry.Project
+			m.selectedProject, m.screen, m.input = &project, screenProject, ""
+			m.scroll = 0
+			return m, nil
+		}
+	case screenProject:
+		switch key {
+		case "q":
+			return m, tea.Quit
+		case "esc", "b":
+			m.screen = screenDashboard
+			return m, nil
+		case "r":
+			m.busy = true
+			return m, tea.Batch(m.loadCmd(), m.healthCmd())
+		case "n":
+			if m.selectedProject == nil {
+				return m, nil
+			}
+			m.screen, m.input = screenQuestion, ""
+			return m, nil
+		case "?":
+			return m.openHelp()
+		case "up", "k":
+			m.scroll--
+			if m.scroll < 0 {
+				m.scroll = 0
+			}
+		case "down", "j":
+			m.scroll++
+			if limit := m.maxProjectScroll(); m.scroll > limit {
+				m.scroll = limit
+			}
+		}
+	case screenSessions:
+		switch key {
+		case "q":
+			return m, tea.Quit
+		case "esc", "b":
+			m.screen = screenDashboard
+			return m, nil
+		case "r":
+			m.busy = true
+			return m, m.loadCmd()
+		case "up", "k":
+			m.moveSession(-1)
+		case "down", "j":
+			m.moveSession(1)
+		case "?":
+			return m.openHelp()
+		case "enter":
+			if len(m.sessions) == 0 {
+				return m, nil
+			}
+			session := m.sessions[m.sessionsCursor]
+			m.selectedSession, m.screen, m.busy = &session, screenSession, true
+			m.scroll = 0
+			return m, m.sessionCmd(session.ID)
+		}
+	case screenHelp:
+		switch key {
+		case "q":
+			return m, tea.Quit
+		case "esc", "b", "?":
+			m.screen = m.helpReturn
+			return m, nil
 		}
 	case screenModels:
 		switch key {
 		case "q":
 			return m, tea.Quit
 		case "esc", "b":
-			m.screen = screenHome
+			m.screen = screenDashboard
 			return m, nil
 		case "up", "k":
 			m.qualificationCursor--
@@ -490,7 +670,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.input = editInput(m.input, msg)
 	case screenQuestion:
 		if key == "esc" {
-			m.screen = screenHome
+			m.screen = m.returnScreen()
 			m.input = ""
 			return m, nil
 		}
@@ -505,7 +685,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.input = editInput(m.input, msg)
 	case screenRegister:
 		if key == "esc" {
-			m.screen = screenHome
+			m.screen = screenDashboard
 			m.input = ""
 			return m, nil
 		}
@@ -523,7 +703,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		case "q":
 			return m, tea.Quit
 		case "esc", "b":
-			m.screen = screenHome
+			m.screen = screenDashboard
 			m.selectedSession = nil
 			return m, nil
 		case "r":
@@ -551,7 +731,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case screenIntake:
 		switch key {
 		case "esc", "b":
-			m.screen, m.intake = screenHome, nil
+			m.screen, m.intake = screenDashboard, nil
 		case "c":
 			m.busy = true
 			return m, m.resolveIntakeCmd("commit")
@@ -597,12 +777,35 @@ func editInput(value string, msg tea.KeyPressMsg) string {
 	return value
 }
 
-func (m *model) move(delta int) {
-	if m.section == projectsSection {
-		m.projectCursor += delta
-	} else if m.section == sessionsSection {
-		m.sessionCursor += delta
+// openHelp opens the keyboard help and remembers the screen to return to.
+func (m model) openHelp() (tea.Model, tea.Cmd) {
+	m.helpReturn = m.screen
+	m.screen = screenHelp
+	return m, nil
+}
+
+// returnScreen reports the screen a sub-view returns to.
+func (m model) returnScreen() screen {
+	if m.selectedProject != nil {
+		return screenProject
 	}
+	return screenDashboard
+}
+
+// rebuildEntries regroups the projects after a state change.
+func (m *model) rebuildEntries() {
+	m.entries = groupProjects(m.projects, m.sessions, m.pending, m.health)
+}
+
+// moveProject moves the dashboard selection.
+func (m *model) moveProject(delta int) {
+	m.projectCursor += delta
+	m.clampCursors()
+}
+
+// moveSession moves the session-list selection.
+func (m *model) moveSession(delta int) {
+	m.sessionsCursor += delta
 	m.clampCursors()
 }
 
@@ -610,14 +813,14 @@ func (m *model) clampCursors() {
 	if m.projectCursor < 0 {
 		m.projectCursor = 0
 	}
-	if m.sessionCursor < 0 {
-		m.sessionCursor = 0
+	if m.sessionsCursor < 0 {
+		m.sessionsCursor = 0
 	}
-	if len(m.projects) > 0 && m.projectCursor >= len(m.projects) {
-		m.projectCursor = len(m.projects) - 1
+	if len(m.entries) > 0 && m.projectCursor >= len(m.entries) {
+		m.projectCursor = len(m.entries) - 1
 	}
-	if len(m.sessions) > 0 && m.sessionCursor >= len(m.sessions) {
-		m.sessionCursor = len(m.sessions) - 1
+	if len(m.sessions) > 0 && m.sessionsCursor >= len(m.sessions) {
+		m.sessionsCursor = len(m.sessions) - 1
 	}
 	if m.qualificationCursor < 0 {
 		m.qualificationCursor = 0
@@ -757,6 +960,8 @@ func (m *model) replaceQualification(job ipc.QualificationJob) {
 func terminalQualification(status string) bool {
 	return status == "COMPLETED" || status == "FAILED" || status == "CANCELLED" || status == "INTERRUPTED"
 }
+
+// hasActiveQualification reports whether any evaluation is still in flight.
 func hasActiveQualification(jobs []ipc.QualificationJob) bool {
 	for _, job := range jobs {
 		if !terminalQualification(job.Status) {
@@ -790,17 +995,6 @@ func startServiceCmd(client transport, factory serviceFactory) tea.Cmd {
 
 func pollCmd() tea.Cmd { return tea.Tick(time.Second, func(t time.Time) tea.Msg { return pollMsg(t) }) }
 
-func terminalSession(session *ipc.Session) bool {
-	if session == nil {
-		return false
-	}
-	switch session.State {
-	case "COMPLETED", "FAILED", "CANCELED":
-		return true
-	}
-	return false
-}
-
 func (m model) View() tea.View {
 	var body string
 	switch m.screen {
@@ -826,8 +1020,14 @@ func (m model) View() tea.View {
 		body = m.upgradeView()
 	case screenUpgradeConfirm:
 		body = m.upgradeConfirmView()
+	case screenProject:
+		body = m.projectView()
+	case screenSessions:
+		body = m.sessionsView()
+	case screenHelp:
+		body = m.helpView()
 	default:
-		body = m.homeView()
+		body = m.dashboardView()
 	}
 	// This final pass is a safety boundary for all present and future views.
 	// Session content is already wrapped before pagination, so this is a no-op
@@ -859,40 +1059,158 @@ func (m model) intakeView() string {
 	return b.String()
 }
 
-func (m model) homeView() string {
+// projectView renders the detail of the selected project: the user
+// interactions that wait for an answer, the maintenance warnings, the work
+// that is running, and the recent session history.
+func (m model) projectBody() string {
+	if m.selectedProject == nil {
+		return "Forgehand · No project selected\n"
+	}
+
+	entry := m.projectEntry(*m.selectedProject)
 	var b strings.Builder
-	b.WriteString("Forgehand\n\n")
-	b.WriteString(sectionTitle("Projects", m.section == projectsSection) + "\n")
-	if len(m.projects) == 0 {
-		b.WriteString("  No registered projects. Press a to add one.\n")
+
+	fmt.Fprintf(&b, "Forgehand · %s\n\n%s\n\n", m.selectedProject.Name, m.selectedProject.RootPath)
+
+	b.WriteString("PENDING INPUT\n")
+	if len(entry.Pending) == 0 {
+		if len(entry.Waiting) > 0 {
+			b.WriteString("  A session is waiting for input. Open it to read the question.\n")
+		} else {
+			b.WriteString("  Nothing is waiting for you.\n")
+		}
 	}
-	for i, project := range m.projects {
-		b.WriteString(compactRow(i == m.projectCursor && m.section == projectsSection, project.Name+"  "+project.RootPath, m.width))
+	for _, pending := range entry.Pending {
+		kind := "answer"
+		if isApprovalInteraction(pending.Interaction) {
+			kind = "approval"
+		}
+		fmt.Fprintf(&b, "  %s · %s\n", kind, singleLine(pending.Interaction.Question))
 	}
-	b.WriteString("\n" + sectionTitle("Work sessions", m.section == sessionsSection) + "\n")
+
+	b.WriteString("\nACTIVE WORK\n")
+	if len(entry.Active) == 0 {
+		b.WriteString("  No running or queued work.\n")
+	}
+	for _, session := range entry.Active {
+		fmt.Fprintf(&b, "  %-14s %s\n", session.State, singleLine(session.Title))
+	}
+
+	b.WriteString("\nRECENT SESSIONS\n")
+	if len(entry.Recent) == 0 {
+		b.WriteString("  No finished sessions yet.\n")
+	}
+	for _, session := range entry.Recent {
+		fmt.Fprintf(&b, "  %-14s %s\n", session.State, singleLine(session.Title))
+	}
+
+	b.WriteString("\nMAINTENANCE\n")
+	if entry.Health == nil {
+		b.WriteString("  Repository readiness has not been checked yet.\n")
+	} else if !entry.healthWarning() {
+		b.WriteString("  No maintenance warnings.\n")
+	} else {
+		fmt.Fprintf(&b, "  ! %s\n", entry.healthSummary())
+	}
+
+	return b.String()
+}
+
+// projectView renders the detail of the selected project with pagination.
+func (m model) projectView() string {
+	lines := strings.Split(m.projectBody(), "\n")
+	visible := max(6, m.height-3)
+	offset := min(m.scroll, max(0, len(lines)-visible))
+	end := min(len(lines), offset+visible)
+	footer := compactLine("n new request   r refresh   b/esc back   q quit", m.width)
+
+	out := strings.Join(lines[offset:end], "\n") + "\n" + footer + "\n"
+	if m.busy {
+		out += "\nWorking…\n"
+	} else if m.status != "" {
+		out += "\n" + m.status + "\n"
+	}
+	return out
+}
+
+// maxProjectScroll returns the largest scroll offset of the project view.
+func (m model) maxProjectScroll() int {
+	lines := strings.Split(m.projectBody(), "\n")
+	return max(0, len(lines)-max(6, m.height-3))
+}
+
+// projectEntry returns the dashboard entry of a project.
+func (m model) projectEntry(project ipc.Project) projectEntry {
+	for _, entry := range m.entries {
+		if entry.Project.ID == project.ID {
+			return entry
+		}
+	}
+	return projectEntry{Project: project, Group: groupIdle}
+}
+
+// sessionsView renders the durable session history.
+func (m model) sessionsView() string {
+	var b strings.Builder
+	b.WriteString("Forgehand · Sessions\n\n")
 	if len(m.sessions) == 0 {
 		b.WriteString("  No sessions yet.\n")
 	}
-	for i, session := range m.sessions {
-		label := fmt.Sprintf("%s  [%s]", session.Title, session.State)
-		if session.Kind != "" && session.Kind != "investigation" {
-			label += "  " + session.Kind
+	for index, session := range m.sessions {
+		label := fmt.Sprintf("%-14s %s", session.State, singleLine(session.Title))
+		if name := m.projectName(session.ProjectID); name != "" {
+			label = fmt.Sprintf("%-14s %-24s %s", session.State, name, singleLine(session.Title))
 		}
-		b.WriteString(compactRow(i == m.sessionCursor && m.section == sessionsSection, label, m.width))
+		b.WriteString(compactRow(index == m.sessionsCursor, label, m.width))
 	}
-	b.WriteString("\n" + sectionTitle("Models", m.section == modelsSection) + "\n")
-	providerLabel := "Provider not configured"
-	if m.provider != nil && m.provider.Configured {
-		providerLabel = m.provider.Provider + "  " + m.provider.Model
-	}
-	b.WriteString(compactRow(m.section == modelsSection, providerLabel, m.width))
-	b.WriteString("\n↑/↓ select  tab switch  enter open  a add repository  r refresh  q quit\n")
+	b.WriteString("\n↑/↓ select   enter open session   r refresh   b/esc back   q quit\n")
 	if m.busy {
 		b.WriteString("\nWorking…\n")
 	} else if m.status != "" {
 		b.WriteString("\n" + m.status + "\n")
 	}
 	return b.String()
+}
+
+// projectName returns the name of a project by identifier.
+func (m model) projectName(projectID *int64) string {
+	if projectID == nil {
+		return ""
+	}
+	for _, entry := range m.entries {
+		if entry.Project.ID == *projectID {
+			return entry.Project.Name
+		}
+	}
+	return ""
+}
+
+// helpView renders the keyboard help.
+func (m model) helpView() string {
+	return "Forgehand · Help\n\n" +
+		"Dashboard\n" +
+		"  ↑/↓ or j/k   select a project\n" +
+		"  enter        open the selected project\n" +
+		"  a            add a Git repository\n" +
+		"  s            list all sessions\n" +
+		"  m            model management\n" +
+		"  r            refresh\n" +
+		"  ?            this help\n" +
+		"  q            quit\n\n" +
+		"Project\n" +
+		"  n            new work plan request\n" +
+		"  r            refresh\n" +
+		"  b/esc        back to the dashboard\n\n" +
+		"b/esc returns to the previous screen. Quitting closes the frontend only;\n" +
+		"the daemon and its work keep running.\n"
+}
+
+// singleLine collapses a text into one line so a row keeps its shape.
+func singleLine(text string) string {
+	replaced := strings.ReplaceAll(text, "\r\n", " ")
+	replaced = strings.ReplaceAll(replaced, "\n", " ")
+	replaced = strings.ReplaceAll(replaced, "\r", " ")
+	return strings.TrimSpace(replaced)
 }
 
 func (m model) inputView(title, label string) string {
@@ -1138,12 +1456,6 @@ func (m model) sessionBody() string {
 	return b.String()
 }
 
-func sectionTitle(title string, active bool) string {
-	if active {
-		return "▶ " + title
-	}
-	return "  " + title
-}
 func shortHash(hash string) string {
 	if len(hash) > 12 {
 		return hash[:12]

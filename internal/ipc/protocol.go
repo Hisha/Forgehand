@@ -180,6 +180,7 @@ type Response struct {
 	Execution             *Execution             `json:"execution,omitempty"`
 	Project               *Project               `json:"project,omitempty"`
 	Projects              []Project              `json:"projects,omitempty"`
+	ProjectHealth         []ProjectHealth        `json:"project_health,omitempty"`
 	Snapshot              *RepositorySnapshot    `json:"snapshot,omitempty"`
 	Intake                *ProjectIntake         `json:"intake,omitempty"`
 	Discovery             *ProjectDiscovery      `json:"discovery,omitempty"`
@@ -370,6 +371,35 @@ type Project struct {
 	ID       int64  `json:"id"`
 	Name     string `json:"name"`
 	RootPath string `json:"root_path"`
+}
+
+// ProjectHealth reports one project's repository-readiness facts. It is
+// deliberately separate from session activity: health describes only whether
+// the stored repository observations still describe the live repository.
+//
+// Status is one of:
+//
+//   - "current": every stored observation matches the live repository HEAD.
+//   - "stale": at least one stored observation describes an older revision.
+//   - "unobserved": the project has no stored inventory or analysis yet.
+//   - "unavailable": the live repository revision could not be determined.
+//
+// A non-current status is advisory. It never prevents a project from being
+// opened; individual operations enforce their own prerequisites.
+type ProjectHealth struct {
+	ProjectID int64  `json:"project_id"`
+	Name      string `json:"name"`
+	RootPath  string `json:"root_path"`
+	Status    string `json:"status"`
+	// Head is the live repository revision the status was evaluated against.
+	Head string `json:"head,omitempty"`
+	// Dirty reports whether the working tree currently has uncommitted changes.
+	Dirty bool `json:"dirty"`
+	// InventoryCommit and AnalysisCommit are the revisions of the newest stored
+	// observations, when the project has any.
+	InventoryCommit string `json:"inventory_commit,omitempty"`
+	AnalysisCommit  string `json:"analysis_commit,omitempty"`
+	ObservedAt      string `json:"observed_at,omitempty"`
 }
 
 type RepositorySnapshot struct {
