@@ -275,6 +275,24 @@ func (e projectEntry) healthSummary() string {
 	}
 }
 
+// healthLabel describes the project's maintenance state in one word. It is
+// used where a full sentence would not fit, such as the contextual sidebar.
+func (e projectEntry) healthLabel() string {
+	if e.Health == nil {
+		return "unknown"
+	}
+	switch e.Health.Status {
+	case "current":
+		return "current"
+	case "stale":
+		return "stale"
+	case "unobserved":
+		return "unobserved"
+	default:
+		return "unavailable"
+	}
+}
+
 // staleCommit returns the revision the stored observations describe.
 func (e projectEntry) staleCommit() string {
 	if e.Health == nil {
@@ -287,12 +305,14 @@ func (e projectEntry) staleCommit() string {
 }
 
 // dashboardView renders the project dashboard.
+//
+// The application header and the status bar already carry the product name and
+// the daemon's connection state, so the dashboard body starts with the
+// project list itself. The activity groups are unchanged.
 func (m model) dashboardView() string {
 	var b strings.Builder
 
-	b.WriteString("FORGEHAND\n")
-	b.WriteString(m.connectionLine() + "\n\n")
-	b.WriteString("PROJECTS\n\n")
+	b.WriteString(styleHeading("PROJECTS") + "\n\n")
 
 	if len(m.entries) == 0 {
 		b.WriteString("  No projects registered yet. Press a to add a repository.\n")
@@ -327,16 +347,6 @@ func (m model) dashboardView() string {
 	}
 
 	return b.String()
-}
-
-// connectionLine describes the daemon connection and its worker activity.
-func (m model) connectionLine() string {
-	workers := m.daemonStatus.ActiveWorkers
-	line := fmt.Sprintf("Connected · %d %s", workers, pluralize(workers, "worker"))
-	if m.daemonStatus.QueuedExecutions > 0 {
-		line += fmt.Sprintf(" · %d queued", m.daemonStatus.QueuedExecutions)
-	}
-	return line
 }
 
 // pluralize returns the singular or plural form of a word for a count.

@@ -91,6 +91,24 @@ func compactLine(text string, width int) string {
 	return ansi.Truncate(text, width, tail)
 }
 
+// compactMiddle shortens a text to the given width while keeping both its
+// beginning and its end. Long session titles often share a beginning, so the
+// end is what tells them apart.
+func compactMiddle(text string, width int) string {
+	width = renderWidth(width)
+	if ansi.StringWidth(text) <= width {
+		return text
+	}
+	if width < 6 {
+		return compactLine(text, width)
+	}
+	head := (width - 1) / 2
+	tail := width - 1 - head
+	headText := ansi.Truncate(text, head, "")
+	tailText := ansi.TruncateLeft(text, ansi.StringWidth(text)-tail, "")
+	return headText + "…" + tailText
+}
+
 func compactRow(selected bool, text string, width int) string {
 	prefix := "    "
 	if selected {
@@ -164,19 +182,30 @@ func (m model) inputAreaHeight() int {
 	if height > 8 {
 		height = 8
 	}
-	if renderHeight(m.height) < height+3 {
-		height = renderHeight(m.height) - 3
-		if height < 1 {
-			height = 1
-		}
+	// The composer, the status bar, and the fixed chrome must all fit.
+	available := renderHeight(m.height) - m.statusBarHeight() - m.chromeHeight()
+	if available < 1 {
+		available = 1
+	}
+	if height > available {
+		height = available
 	}
 	return height
 }
 
 func (m model) statusBarHeight() int { return 1 }
 
+// chromeHeight returns the number of rows the shell reserves above the
+// scrolling workspace for its fixed chrome: the application header and the
+// session selector.
+func (m model) chromeHeight() int {
+	return len(m.headerLines()) + len(m.selectorLines())
+}
+
+// workspaceHeight returns the number of rows the scrolling workspace of the
+// main column can use.
 func (m model) workspaceHeight() int {
-	height := renderHeight(m.height) - m.inputAreaHeight() - m.statusBarHeight()
+	height := renderHeight(m.height) - m.inputAreaHeight() - m.statusBarHeight() - m.chromeHeight()
 	if height < 1 {
 		height = 1
 	}

@@ -97,7 +97,15 @@ func TestSelectProjectAskQuestionAndStartWorkPlan(t *testing.T) {
 	started := command().(startedMsg)
 	updated, _ = m.Update(started)
 	m = updated.(model)
-	if m.screen != screenSession || m.selectedSession == nil || m.execution == nil {
+	// The request was started from the project workspace, so the conversation
+	// stays on screen and shows the new session.
+	if m.screen != screenProject {
+		t.Fatalf("screen = %v", m.screen)
+	}
+	if m.workspace.Session == nil || m.workspace.Session.ID != 7 {
+		t.Fatalf("workspace = %#v", m.workspace)
+	}
+	if m.selectedSession == nil || m.execution == nil {
 		t.Fatalf("model did not open started session: %#v", m)
 	}
 }
@@ -107,6 +115,7 @@ func TestQuestionAcceptsBracketedPaste(t *testing.T) {
 		screen:          screenQuestion,
 		selectedProject: &ipc.Project{ID: 42, Name: "project"},
 		input:           "Explain ",
+		inputCursor:     len("Explain "),
 	}
 
 	if m.View().DisableBracketedPasteMode {

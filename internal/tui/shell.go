@@ -7,12 +7,19 @@ import (
 	"github.com/charmbracelet/x/ansi"
 )
 
-// composeShell combines the main workspace, optional sidebar, persistent input
-// area, and status bar into one full-screen view sized to the terminal.
+// composeShell combines the fixed application chrome, the main workspace, the
+// optional sidebar, the persistent input area, and the status bar into one
+// full-screen view sized to the terminal.
+//
+// The header and the session selector never move. Only the workspace between
+// them and the composer scrolls, so the conversation has room to grow without
+// pushing the composer or the sidebar around.
 func (m model) composeShell(main, sidebar string) string {
 	mainWidth := m.mainWidth()
 	sideWidth := m.sidebarWidth()
 	wsHeight := m.workspaceHeight()
+	selector := m.selectorLines()
+	bodyHeight := wsHeight + len(selector)
 
 	mainLines := strings.Split(main, "\n")
 	if len(mainLines) > wsHeight {
@@ -28,10 +35,10 @@ func (m model) composeShell(main, sidebar string) string {
 	var sideLines []string
 	if sideWidth > 0 {
 		sideLines = strings.Split(sidebar, "\n")
-		if len(sideLines) > wsHeight {
-			sideLines = sideLines[:wsHeight]
+		if len(sideLines) > bodyHeight {
+			sideLines = sideLines[:bodyHeight]
 		}
-		for len(sideLines) < wsHeight {
+		for len(sideLines) < bodyHeight {
 			sideLines = append(sideLines, "")
 		}
 		for i := range sideLines {
@@ -40,8 +47,17 @@ func (m model) composeShell(main, sidebar string) string {
 	}
 
 	var b strings.Builder
-	for i := 0; i < wsHeight; i++ {
-		line := mainLines[i]
+	// The application header spans the whole window.
+	for _, line := range m.headerLines() {
+		b.WriteString(fitWidth(line, m.width) + "\n")
+	}
+	for i := 0; i < bodyHeight; i++ {
+		line := ""
+		if i < len(selector) {
+			line = fitWidth(selector[i], mainWidth)
+		} else {
+			line = mainLines[i-len(selector)]
+		}
 		if sideWidth > 0 {
 			line += styleDim("│") + sideLines[i]
 		}
@@ -62,6 +78,79 @@ func (m model) composeShell(main, sidebar string) string {
 	return b.String()
 }
 
+// headerLines renders the fixed top bar of the application shell.
+func (m model) headerLines() []string {
+	return []string{m.headerLine()}
+}
+
+// selectorLines renders the fixed region between the header and the
+// scrolling workspace. The project workspace uses it for the session
+// selector.
+func (m model) selectorLines() []string {
+	if m.screen != screenProject {
+		return nil
+	}
+	lines := []string{m.sessionSelectorLine()}
+	if renderHeight(m.height) >= 18 {
+		lines = append(lines, styleDim(strings.Repeat("─", m.mainWidth())))
+	}
+	return lines
+}
+
+// headerLine renders the application header: the product name, the context
+// that is open, and the current view.
+func (m model) headerLine() string {
+	width := renderWidth(m.width)
+	brand := " " + styleAccent("Forgehand")
+	right := styleMuted(m.viewName())
+	available := width - ansi.StringWidth(brand) - ansi.StringWidth(right) - 8
+	if available < 8 {
+		available = 8
+	}
+	left := brand
+	if crumb := m.headerCrumbs(available); crumb != "" {
+		left += styleMuted("  ›  ") + crumb
+	}
+	gap := width - ansi.StringWidth(left) - ansi.StringWidth(right) - 1
+	if gap < 1 {
+		return fitWidth(left, width)
+	}
+	return left + strings.Repeat(" ", gap) + right + " "
+}
+
+// headerCrumbs describes what the interface currently has open. The crumb is
+// truncated so that the header always keeps the product name and the view.
+func (m model) headerCrumbs(available int) string {
+	switch m.screen {
+	case screenProject:
+		if m.selectedProject == nil {
+			return ""
+		}
+		crumb := compactLine(singleLine(m.selectedProject.Name), available)
+		if title := m.workspaceSessionTitle(); title != "" {
+			room := available - ansi.StringWidth(crumb) - 6
+			if room > 6 {
+				crumb += styleMuted("  ›  ") + compactLine(title, room)
+			}
+		}
+		return crumb
+	case screenSession:
+		if m.selectedSession != nil {
+			return compactLine(singleLine(m.selectedSession.Title), available)
+		}
+	}
+	return ""
+}
+
+// workspaceSessionTitle returns the title of the session the project
+// workspace is showing.
+func (m model) workspaceSessionTitle() string {
+	if m.workspace.Session == nil {
+		return ""
+	}
+	return singleLine(m.workspace.Session.Title)
+}
+
 // inputAreaLines renders the persistent interaction field as a visually
 // distinct, multiline-capable composer.
 func (m model) inputAreaLines(mainWidth int) []string {
@@ -70,13 +159,10 @@ func (m model) inputAreaLines(mainWidth int) []string {
 
 	focused := m.inputActive()
 	title := "Composer"
-	if !focused {
-		title = "Input"
-	}
 	if m.screen == screenProject && m.projectNavigationFocused {
-		title += " (navigation focus)"
+		title += " · session selector focused"
 	} else if focused {
-		title += " (focused)"
+		title += " · focused"
 	}
 	// Top border with a section title.
 	borderLabel := "─ " + title + " "
@@ -84,17 +170,20 @@ func (m model) inputAreaLines(mainWidth int) []string {
 	if remaining < 0 {
 		remaining = 0
 	}
-	top := styleDim(borderLabel + strings.Repeat("─", remaining))
-	lines = append(lines, fitWidth(top, mainWidth))
+	border := styleDim(borderLabel + strings.Repeat("─", remaining))
+	if focused {
+		border = styleAccentDim(borderLabel + strings.Repeat("─", remaining))
+	}
+	lines = append(lines, fitWidth(border, mainWidth))
 
 	// Input lines.
-	prompt := styleRunning("❯")
+	prompt := styleAccent("❯")
 	if !focused {
-		prompt = styleDim("❯")
+		prompt = ""
 	}
 	inputLines := []string{""}
 	if m.input != "" {
-		inputLines = strings.Split(m.input, "\n")
+		inputLines = insertCursorBlock(m.input, m.inputCursor)
 	} else {
 		inputLines = []string{styleDim(m.inputPlaceholder())}
 	}
@@ -112,9 +201,6 @@ func (m model) inputAreaLines(mainWidth int) []string {
 			prefix = prompt + " "
 		}
 		rendered := prefix + line
-		if i == len(inputLines)-1 && m.input != "" {
-			rendered += "█"
-		}
 		lines = append(lines, fitWidth(rendered, mainWidth))
 	}
 	for len(lines) < height-1 {
@@ -156,17 +242,11 @@ func (m model) inputPlaceholder() string {
 	case screenModels:
 		return "Model management input..."
 	default:
-		return "Input unavailable on this screen"
+		return "no text input on this screen"
 	}
 }
 
 func (m model) inputActive() bool {
-	switch m.screen {
-	case screenDashboard, screenSessions, screenModels, screenQualification,
-		screenSession, screenHelp, screenProject, screenUpgrade, screenUpgradeConfirm,
-		screenRecovery, screenIntake:
-		// screenProject allows input; keep active list explicit below.
-	}
 	switch m.screen {
 	case screenQuestion, screenRegister, screenModelInput, screenDiscardConfirm, screenProject:
 		return true
@@ -176,16 +256,16 @@ func (m model) inputActive() bool {
 
 func (m model) inputHint() string {
 	if !m.inputActive() {
-		return "Input disabled on this screen"
+		return ""
 	}
 	switch m.screen {
 	case screenDashboard:
 		return "Select a project to begin..."
 	case screenProject:
 		if m.projectNavigationFocused {
-			return "tab composer · ↑↓ select session · enter open · r refresh · b/esc back"
+			return "↑↓ switch session · enter open · n new request · tab composer · b back"
 		}
-		return "enter submit/open · esc clear · tab navigate"
+		return "enter send · shift+enter newline · tab sessions · esc clear"
 	case screenQuestion:
 		return "enter submit · esc cancel"
 	case screenRegister:
@@ -277,20 +357,37 @@ func (m model) writeProjectSidebar(b *strings.Builder) {
 	}
 	entry := m.projectEntry(*m.selectedProject)
 	fmt.Fprintf(b, "Activity: %s\n", entry.activityLabel())
-	b.WriteString("Health: " + entry.healthSummary() + "\n")
+	if entry.healthWarning() {
+		fmt.Fprintf(b, "%s %s\n", styleWarning("!"), styleWarning("Health: "+entry.healthLabel()))
+	} else {
+		fmt.Fprintf(b, "Health: %s\n", entry.healthLabel())
+	}
 
-	if session := m.projectSelectedSession(); session != nil {
-		b.WriteString("\n" + styleHeading("SELECTED SESSION") + "\n")
-		fmt.Fprintf(b, "Title: %s\n", singleLine(session.Title))
-		fmt.Fprintf(b, "State: %s\n", session.State)
-		if session.Task != "" {
-			fmt.Fprintf(b, "Task: %s\n", compactLine(singleLine(session.Task), m.sidebarWidth()))
+	if session := m.workspace.Session; session != nil {
+		b.WriteString("\n" + styleHeading("SESSION") + "\n")
+		fmt.Fprintf(b, "Title: %s\n", compactLine(singleLine(session.Title), m.sidebarWidth()))
+		fmt.Fprintf(b, "State: %s\n", styleState(session.State, session.State))
+		if session.Kind != "" {
+			fmt.Fprintf(b, "Kind: %s\n", session.Kind)
 		}
-		if m.selectedSession != nil && m.selectedSession.ID == session.ID && m.execution != nil {
-			fmt.Fprintf(b, "Execution: %s\n", m.execution.Status)
-			if m.execution.TotalSteps > 0 {
-				fmt.Fprintf(b, "Progress: %d/%d\n", m.execution.CurrentStep, m.execution.TotalSteps)
+		if session.Task != "" {
+			fmt.Fprintf(b, "Request: %s\n", compactLine(singleLine(session.Task), m.sidebarWidth()))
+		}
+		if m.workspace.Execution != nil {
+			fmt.Fprintf(b, "Execution: %s\n", styleState(m.workspace.Execution.Status, m.workspace.Execution.Status))
+			if m.workspace.Execution.TotalSteps > 0 {
+				fmt.Fprintf(b, "Progress: %d/%d\n", m.workspace.Execution.CurrentStep, m.workspace.Execution.TotalSteps)
 			}
+			if m.workspace.Execution.QueuePosition > 0 {
+				fmt.Fprintf(b, "Queue: %d\n", m.workspace.Execution.QueuePosition)
+			}
+		}
+		if m.workspace.WorkPlan != nil {
+			fmt.Fprintf(b, "Plan: %s\n", styleState(m.workspace.WorkPlan.Status, m.workspace.WorkPlan.Status))
+			fmt.Fprintf(b, "Read-only: %t\n", m.workspace.WorkPlan.ReadOnly)
+		}
+		if m.workspace.Result != nil && m.workspace.Result.Model != "" {
+			fmt.Fprintf(b, "Model: %s\n", m.workspace.Result.Model)
 		}
 	}
 
@@ -303,14 +400,13 @@ func (m model) writeProjectSidebar(b *strings.Builder) {
 	if len(entry.Active) > 0 {
 		b.WriteString("\n" + styleHeading("ACTIVE WORK") + "\n")
 		for _, sess := range entry.Active {
-			fmt.Fprintf(b, "- %s (%s)\n", singleLine(sess.Title), sess.State)
+			fmt.Fprintf(b, "- %s (%s)\n", compactLine(singleLine(sess.Title), m.sidebarWidth()), sess.State)
 		}
 	}
-	if len(entry.Recent) > 0 {
-		b.WriteString("\n" + styleHeading("RECENT") + "\n")
-		for _, sess := range entry.Recent {
-			fmt.Fprintf(b, "- %s\n", singleLine(sess.Title))
-		}
+	if m.provider != nil && m.provider.Configured {
+		b.WriteString("\n" + styleHeading("MODEL / PROVIDER") + "\n")
+		fmt.Fprintf(b, "Provider: %s\n", m.provider.Provider)
+		fmt.Fprintf(b, "Model: %s\n", m.provider.Model)
 	}
 }
 
@@ -386,12 +482,21 @@ func (m model) writeSessionsSidebar(b *strings.Builder) {
 }
 
 // statusBarLine renders the persistent bottom status/navigation bar.
+//
+// The bar never truncates: the keyboard shortcuts are dropped first when the
+// terminal is too narrow to hold them.
 func (m model) statusBarLine() string {
-	viewName := m.viewName()
+	width := renderWidth(m.width)
 	context := ""
-	if m.selectedProject != nil {
+	switch {
+	case m.screen == screenProject && m.selectedProject != nil:
 		context = m.selectedProject.Name
-	} else if len(m.entries) > 0 {
+		if title := m.workspaceSessionTitle(); title != "" {
+			context += "  ·  " + compactLine(title, 40)
+		}
+	case m.selectedProject != nil:
+		context = m.selectedProject.Name
+	case len(m.entries) > 0:
 		entry := m.selectedDashboardEntry()
 		if entry != nil {
 			context = entry.Project.Name
@@ -408,17 +513,26 @@ func (m model) statusBarLine() string {
 	if m.daemonStatus.QueuedExecutions > 0 {
 		workers += fmt.Sprintf(" · %d queued", m.daemonStatus.QueuedExecutions)
 	}
-	parts := []string{"Forgehand", viewName}
+	parts := []string{}
 	if context != "" {
 		parts = append(parts, context)
 	}
+	if status := m.statusText(); status != "" {
+		parts = append(parts, status)
+	}
 	parts = append(parts, conn, workers)
 	line := strings.Join(parts, "  ·  ")
-	shortcuts := m.statusShortcuts()
-	if shortcuts != "" {
-		line += "  ·  " + shortcuts
+	if ansi.StringWidth(line) >= width {
+		return styleDim(compactLine(line, width))
 	}
-	return styleDim(line)
+	shortcuts := m.statusShortcuts()
+	if shortcuts == "" {
+		return styleDim(fitWidth(line, width))
+	}
+	if ansi.StringWidth(line)+3+ansi.StringWidth(shortcuts) > width {
+		return styleDim(fitWidth(line, width))
+	}
+	return styleDim(fitWidth(line+"  ·  "+shortcuts, width))
 }
 
 func (m model) viewName() string {
@@ -457,7 +571,10 @@ func (m model) statusShortcuts() string {
 	case screenDashboard:
 		return "↑↓ select  enter open  a add  s sessions  m models  ? help  q quit"
 	case screenProject:
-		return "tab focus  ↑↓ select  enter submit/open  esc clear  r refresh  b back  ? help  q quit"
+		if m.projectNavigationFocused {
+			return "↑↓ session  enter open  n new  ? help  b back  q quit"
+		}
+		return "enter send  shift+enter newline  tab sessions  esc clear"
 	case screenSession:
 		return "↑↓ scroll  r refresh  b/esc back  q quit"
 	case screenSessions:

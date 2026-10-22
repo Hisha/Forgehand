@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"net"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -91,6 +91,9 @@ type model struct {
 	selectedSession          *ipc.Session
 	projectSessionCursor     int
 	projectNavigationFocused bool
+	// workspace holds the persisted details of the session shown in the
+	// project conversation workspace.
+	workspace                workspaceSession
 	execution                *ipc.Execution
 	result                   *ipc.ModelResult
 	evidence                 *ipc.InvestigationEvidence
@@ -103,6 +106,7 @@ type model struct {
 	qualificationRepetitions int
 	intake                   *ipc.ProjectIntake
 	input                    string
+	inputCursor              int
 	busy                     bool
 	status                   string
 	statusScreen             screen
@@ -161,6 +165,14 @@ type sessionMsg struct {
 	evidence  *ipc.InvestigationEvidence
 	workPlan  *ipc.WorkPlan
 	err       error
+}
+
+// workspaceSessionMsg carries the persisted details of the session shown in
+// the project conversation workspace.
+type workspaceSessionMsg struct {
+	id     int64
+	detail workspaceSession
+	err    error
 }
 type recoveredMsg struct {
 	err     error
@@ -288,6 +300,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == screenProject && m.scroll > m.maxProjectScroll() {
 			m.scroll = m.maxProjectScroll()
 		}
+	case tea.ColorProfileMsg:
+		setTerminalProfile(msg.Profile)
+		return m, nil
 	case loadedMsg:
 		m.busy = false
 		if msg.upgrade != nil {
@@ -331,6 +346,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions, m.pending = msg.sessions, msg.pending
 		m.rebuildEntries()
 		m.clampCursors()
+		m.syncWorkspaceSelection()
 		return m, nil
 	case registeredMsg:
 		m.busy = false
@@ -349,6 +365,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Registered " + msg.project.Name
 		m.statusScreen = m.screen
 		m.intake = nil
+		m.input, m.inputCursor = "", 0
 		m.screen = screenDashboard
 		return m, m.loadCmd()
 	case startedMsg:
@@ -361,9 +378,40 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.selectedSession, m.execution = msg.session, msg.execution
 		m.result, m.evidence, m.workPlan = nil, nil, msg.workPlan
 		m.scroll = 0
+		if m.screen == screenProject && msg.session != nil {
+			// The conversation workspace keeps showing the project; the new
+			// request becomes the conversation that is on screen.
+			m.input = ""
+			m.workspace = workspaceSession{
+				Session:   msg.session,
+				Execution: msg.execution,
+				WorkPlan:  msg.workPlan,
+				Loading:   true,
+			}
+			m.status = "Work started"
+			m.statusScreen = m.screen
+			return m, m.workspaceSessionCmd(msg.session.ID)
+		}
 		m.screen = screenSession
 		m.status = "Work started"
 		m.statusScreen = m.screen
+		return m, nil
+	case workspaceSessionMsg:
+		m.busy = false
+		if msg.err != nil {
+			m.workspace.Loading = false
+			m.workspace.Error = msg.err.Error()
+			m.status = "Could not load session: " + msg.err.Error()
+			m.statusScreen = m.screen
+			return m, nil
+		}
+		if m.workspace.sessionID() != 0 && m.workspace.sessionID() != msg.id {
+			// A newer session was selected while this load was in flight.
+			return m, nil
+		}
+		m.workspace = msg.detail
+		m.workspace.Loading = false
+		m.workspace.Error = ""
 		return m, nil
 	case sessionMsg:
 		m.busy = false
@@ -395,9 +443,16 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Batch(m.qualificationCmd(m.selectedQualification.ID), pollCmd())
 			}
 		case screenDashboard, screenProject:
+			commands := []tea.Cmd{pollCmd()}
 			if m.ticks%2 == 0 {
-				return m, tea.Batch(m.activityCmd(), pollCmd())
+				commands = append(commands, m.activityCmd())
 			}
+			if m.screen == screenProject && m.workspace.sessionID() != 0 {
+				// The conversation workspace keeps the selected session's
+				// persisted details current while it is open.
+				commands = append(commands, m.workspaceSessionCmd(m.workspace.sessionID()))
+			}
+			return m, tea.Batch(commands...)
 		}
 		return m, pollCmd()
 	case qualificationMsg:
@@ -446,7 +501,11 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			if m.screen == screenProject {
 				m.projectNavigationFocused = false
 			}
-			m.input += normalizePastedText(msg.Content)
+			m.input, m.inputCursor = insertText(
+				m.input,
+				m.inputCursor,
+				normalizePastedText(msg.Content),
+			)
 		}
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)
@@ -531,8 +590,9 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			m.selectedProject, m.screen, m.input = &project, screenProject, ""
 			m.projectSessionCursor = 0
 			m.projectNavigationFocused = false
+			m.inputCursor = 0
 			m.scroll = 0
-			return m, nil
+			return m, m.loadProjectSession()
 		}
 	case screenProject:
 		if key == "ctrl+c" {
@@ -544,7 +604,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		// Composer-focused (default): ordinary typing goes to the composer.
 		if !m.projectNavigationFocused {
 			if isNewlineKey(msg) {
-				m.input += "\n"
+				m.input, m.inputCursor = insertText(m.input, m.inputCursor, "\n")
 				return m, nil
 			}
 			switch key {
@@ -554,12 +614,13 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			case "esc":
 				if m.input != "" {
-					m.input = ""
+					m.input, m.inputCursor = "", 0
 					return m, nil
 				}
 				m.screen = screenDashboard
 				m.projectNavigationFocused = false
 				m.projectSessionCursor = 0
+				m.workspace = workspaceSession{}
 				return m, nil
 			case "enter":
 				if strings.TrimSpace(m.input) == "" {
@@ -571,83 +632,77 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.busy = true
 				m.statusScreen = m.screen
 				return m, m.startCmd(*m.selectedProject, m.input)
-			case "up", "k":
+			case "up":
+				if moved, ok := moveCursorLine(m.input, m.inputCursor, -1); ok {
+					m.inputCursor = moved
+					return m, nil
+				}
 				if m.scroll > 0 {
 					m.scroll--
 				}
 				return m, nil
-			case "down", "j":
+			case "down":
+				if moved, ok := moveCursorLine(m.input, m.inputCursor, 1); ok {
+					m.inputCursor = moved
+					return m, nil
+				}
 				if m.scroll < m.maxProjectScroll() {
 					m.scroll++
 				}
 				return m, nil
 			case "pgup":
-				m.scroll -= max(1, m.workspaceHeight()-5)
+				m.scroll -= max(1, m.conversationHeight()-1)
 				if m.scroll < 0 {
 					m.scroll = 0
 				}
 				return m, nil
 			case "pgdown":
-				m.scroll += max(1, m.workspaceHeight()-5)
+				m.scroll += max(1, m.conversationHeight()-1)
 				if limit := m.maxProjectScroll(); m.scroll > limit {
 					m.scroll = limit
 				}
 				return m, nil
 			}
-			m.input = editInput(m.input, msg)
+			m.applyComposerKey(msg)
 			return m, nil
 		}
-		// Navigation-focused: single-letter shortcuts are active.
+		// Navigation-focused: the session selector and the screen shortcuts are
+		// active.
 		switch key {
-		case "tab":
+		case "tab", "esc":
 			m.projectNavigationFocused = false
 			return m, nil
 		case "q":
 			return m, tea.Quit
-		case "esc", "b":
+		case "b":
 			m.screen = screenDashboard
 			m.projectNavigationFocused = false
 			m.projectSessionCursor = 0
+			m.workspace = workspaceSession{}
 			return m, nil
 		case "r":
-			m.busy = true
 			m.projectNavigationFocused = false
 			return m, tea.Batch(m.loadCmd(), m.healthCmd())
 		case "n":
-			m.screen, m.input = screenQuestion, ""
+			m.screen, m.input, m.inputCursor = screenQuestion, "", 0
 			m.projectNavigationFocused = false
 			return m, nil
 		case "?":
 			return m.openHelp()
 		case "up", "k":
-			m.projectSessionCursor--
-			m.clampProjectSessionCursor()
-			if m.scroll > 0 {
-				m.scroll--
-			}
+			m.moveProjectSession(-1)
 		case "down", "j":
-			m.projectSessionCursor++
-			m.clampProjectSessionCursor()
-			if m.scroll < m.maxProjectScroll() {
-				m.scroll++
-			}
+			m.moveProjectSession(1)
 		case "enter":
-			if session := m.projectSelectedSession(); session != nil {
-				opened := *session
-				m.selectedSession = &opened
-				m.screen = screenSession
-				m.busy = true
-				m.scroll = 0
-				m.projectNavigationFocused = false
-				return m, m.sessionCmd(opened.ID)
-			}
+			m.projectNavigationFocused = false
+			return m, m.loadProjectSession()
 		case "pgup":
-			m.scroll -= max(1, m.workspaceHeight()-5)
+			m.scroll -= max(1, m.conversationHeight()-1)
 			if m.scroll < 0 {
 				m.scroll = 0
 			}
 		case "pgdown":
-			m.scroll += max(1, m.workspaceHeight()-5)
+			m.scroll += max(1, m.conversationHeight()-1)
 			if limit := m.maxProjectScroll(); m.scroll > limit {
 				m.scroll = limit
 			}
@@ -710,6 +765,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		case "m":
 			m.screen, m.input = screenModelInput, m.qualificationModel
+			m.inputCursor = len(m.input)
 		case "s":
 			m.busy = true
 			return m, m.startQualificationCmd()
@@ -767,7 +823,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case screenModelInput:
 		if key == "esc" {
 			m.screen = screenModels
-			m.input = ""
+			m.input, m.inputCursor = "", 0
 			return m, nil
 		}
 		if key == "enter" {
@@ -777,19 +833,19 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.qualificationModel = strings.TrimSpace(m.input)
-			m.input = ""
+			m.input, m.inputCursor = "", 0
 			m.screen = screenModels
 			return m, nil
 		}
 		if isNewlineKey(msg) {
-			m.input += "\n"
+			m.input, m.inputCursor = insertText(m.input, m.inputCursor, "\n")
 			return m, nil
 		}
-		m.input = editInput(m.input, msg)
+		m.applyComposerKey(msg)
 	case screenQuestion:
 		if key == "esc" {
 			m.screen = m.returnScreen()
-			m.input = ""
+			m.input, m.inputCursor = "", 0
 			return m, nil
 		}
 		if key == "enter" {
@@ -802,14 +858,14 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.startCmd(*m.selectedProject, m.input)
 		}
 		if isNewlineKey(msg) {
-			m.input += "\n"
+			m.input, m.inputCursor = insertText(m.input, m.inputCursor, "\n")
 			return m, nil
 		}
-		m.input = editInput(m.input, msg)
+		m.applyComposerKey(msg)
 	case screenRegister:
 		if key == "esc" {
 			m.screen = screenDashboard
-			m.input = ""
+			m.input, m.inputCursor = "", 0
 			return m, nil
 		}
 		if key == "enter" {
@@ -822,10 +878,10 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.registerCmd(m.input)
 		}
 		if isNewlineKey(msg) {
-			m.input += "\n"
+			m.input, m.inputCursor = insertText(m.input, m.inputCursor, "\n")
 			return m, nil
 		}
-		m.input = editInput(m.input, msg)
+		m.applyComposerKey(msg)
 	case screenSession:
 		switch key {
 		case "q":
@@ -865,10 +921,12 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.resolveIntakeCmd("commit")
 		case "d":
 			m.screen, m.input = screenDiscardConfirm, ""
+			m.inputCursor = 0
 		}
 	case screenDiscardConfirm:
 		if key == "esc" {
 			m.screen, m.input = screenIntake, ""
+			m.inputCursor = 0
 			return m, nil
 		}
 		if key == "enter" {
@@ -881,36 +939,52 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.resolveIntakeCmd("discard")
 		}
 		if isNewlineKey(msg) {
-			m.input += "\n"
+			m.input, m.inputCursor = insertText(m.input, m.inputCursor, "\n")
 			return m, nil
 		}
-		m.input = editInput(m.input, msg)
+		m.applyComposerKey(msg)
 	}
 	return m, nil
 }
 
-func editInput(value string, msg tea.KeyPressMsg) string {
-	if isNewlineKey(msg) {
-		return value + "\n"
-	}
-	switch msg.String() {
+// applyComposerKey applies an editing key to the composer text and moves the
+// insertion point with it.
+func (m *model) applyComposerKey(msg tea.KeyPressMsg) {
+	key := msg.String()
+	switch key {
 	case "backspace":
-		if value == "" {
-			return value
-		}
-		_, size := utf8.DecodeLastRuneInString(value)
-		return value[:len(value)-size]
+		m.input, m.inputCursor = deleteBackward(m.input, m.inputCursor)
+		return
+	case "delete":
+		m.input, m.inputCursor = deleteForward(m.input, m.inputCursor)
+		return
 	case "ctrl+w":
-		trimmed := strings.TrimRight(value, " \t")
-		if index := strings.LastIndexAny(trimmed, " \t"); index >= 0 {
-			return strings.TrimRight(trimmed[:index], " \t")
+		m.input, m.inputCursor = deleteWordBackward(m.input, m.inputCursor)
+		return
+	case "left":
+		if msg.Mod&tea.ModCtrl != 0 {
+			m.inputCursor = moveCursorWord(m.input, m.inputCursor, -1)
+			return
 		}
-		return ""
+		m.inputCursor = moveCursorRune(m.input, m.inputCursor, -1)
+		return
+	case "right":
+		if msg.Mod&tea.ModCtrl != 0 {
+			m.inputCursor = moveCursorWord(m.input, m.inputCursor, 1)
+			return
+		}
+		m.inputCursor = moveCursorRune(m.input, m.inputCursor, 1)
+		return
+	case "home":
+		m.inputCursor = moveCursorLineEdge(m.input, m.inputCursor, false)
+		return
+	case "end":
+		m.inputCursor = moveCursorLineEdge(m.input, m.inputCursor, true)
+		return
 	}
 	if text := msg.Key().Text; text != "" {
-		return value + text
+		m.input, m.inputCursor = insertText(m.input, m.inputCursor, text)
 	}
-	return value
 }
 
 // isNewlineKey reports whether a key press should insert a newline into the
@@ -1050,6 +1124,49 @@ func (m model) sessionCmd(id int64) tea.Cmd {
 		}
 		return message
 	}
+}
+
+// workspaceSessionCmd loads the persisted details of the session shown in the
+// project conversation workspace.
+func (m model) workspaceSessionCmd(id int64) tea.Cmd {
+	return func() tea.Msg {
+		detail, err := m.fetchWorkspaceSession(id)
+		return workspaceSessionMsg{id: id, detail: detail, err: err}
+	}
+}
+
+// fetchWorkspaceSession reads everything the daemon has persisted for one
+// session: its state, its execution, its model response, its evidence
+// selection, its work plan, and its recorded events.
+//
+// A missing optional piece is not an error: the conversation simply shows
+// what the backend recorded.
+func (m model) fetchWorkspaceSession(id int64) (workspaceSession, error) {
+	response, err := m.client.Request(ipc.Request{Command: "session-status", SessionID: id})
+	if err != nil {
+		return workspaceSession{}, err
+	}
+	detail := workspaceSession{
+		Session:   response.Session,
+		Execution: response.Execution,
+		Evidence:  response.Evidence,
+		WorkPlan:  response.WorkPlan,
+		Loaded:    true,
+	}
+	if response.Session != nil && response.Session.State == "COMPLETED" {
+		result, resultErr := m.client.Request(ipc.Request{Command: "session-result", SessionID: id})
+		if resultErr == nil {
+			detail.Result = result.Result
+			if detail.Evidence == nil {
+				detail.Evidence = result.Evidence
+			}
+		}
+	}
+	events, eventsErr := m.client.Request(ipc.Request{Command: "session-events", SessionID: id, Limit: 200})
+	if eventsErr == nil {
+		detail.Events = events.Events
+	}
+	return detail, nil
 }
 
 func (m model) qualificationsCmd() tea.Cmd {
@@ -1210,134 +1327,43 @@ func (m model) intakeView() string {
 	return b.String()
 }
 
-// projectBody renders the project workspace: header, pending decisions, active
-// work, and selectable recent sessions. It is assembled from small component
-// renderers so each region can be reasoned about and tested independently.
+// projectBody renders the conversation timeline of the project workspace.
+//
+// The timeline is built from the persisted details of the selected session:
+// the original request, the worker's state, the plan Forgehand produced, the
+// findings, the evidence, and the recorded activity. Nothing is invented and
+// nothing is bottom-aligned: the conversation starts at the top of the
+// workspace and grows downwards.
 func (m model) projectBody() string {
 	if m.selectedProject == nil {
 		return "Forgehand · No project selected\n"
 	}
-
-	var b strings.Builder
-	b.WriteString(m.renderProjectHeader())
-	b.WriteString("\n")
-	b.WriteString(m.renderProjectPending())
-	b.WriteString("\n")
-	b.WriteString(m.renderProjectActive())
-	b.WriteString("\n")
-	b.WriteString(m.renderProjectRecent())
-	b.WriteString("\n")
-	b.WriteString(styleSecondary("Composer: type a request and press Enter (Shift+Enter or Ctrl+J for a new line). Tab switches focus to session navigation.") + "\n")
-	return b.String()
+	if m.workspace.Loading && !m.workspace.Loaded {
+		return styleMuted("Loading the selected session…") + "\n"
+	}
+	if m.workspace.Error != "" && !m.workspace.Loaded {
+		return styleWarning("Could not load the selected session: "+m.workspace.Error) + "\n"
+	}
+	return renderConversation(m.conversationEntries(), m.mainWidth())
 }
 
-// renderProjectHeader renders the top project header and status region.
-func (m model) renderProjectHeader() string {
-	entry := m.projectEntry(*m.selectedProject)
-	var b strings.Builder
-	b.WriteString(styleHeading(m.selectedProject.Name) + "\n")
-	b.WriteString(styleSecondary(m.selectedProject.RootPath) + "\n")
-	activity := entry.activityLabel()
-	health := "Repository readiness has not been checked yet."
-	if entry.Health != nil {
-		health = entry.healthSummary()
+// conversationHeight returns the number of rows the conversation timeline can
+// use. The header, the session selector, and the composer are fixed and are
+// not part of it.
+func (m model) conversationHeight() int {
+	height := m.workspaceHeight()
+	if height < 1 {
+		height = 1
 	}
-	fmt.Fprintf(&b, "Activity: %s", styleActive(activity))
-	fmt.Fprintf(&b, "   Health: %s", styleMuted(health))
-	b.WriteString("\n")
-	if entry.healthWarning() {
-		fmt.Fprintf(&b, "%s %s\n", styleWarning("!"), styleWarning(entry.healthSummary()))
-	}
-	return b.String()
-}
-
-// renderProjectPending renders pending user input as concise activity entries.
-func (m model) renderProjectPending() string {
-	entry := m.projectEntry(*m.selectedProject)
-	var b strings.Builder
-	b.WriteString(styleHeading("PENDING INPUT") + "\n")
-	if len(entry.Pending) == 0 {
-		if len(entry.Waiting) > 0 {
-			b.WriteString("  " + styleSecondary("A session is waiting for input. Open it to read the question.") + "\n")
-		} else {
-			b.WriteString("  " + styleSecondary("Nothing is waiting for you.") + "\n")
-		}
-		return b.String()
-	}
-	for _, pending := range entry.Pending {
-		kind := "answer"
-		if isApprovalInteraction(pending.Interaction) {
-			kind = "approval"
-		}
-		fmt.Fprintf(&b, "  %s  %s\n", styleWarning("•"), fmt.Sprintf("%s · %s", kind, singleLine(pending.Interaction.Question)))
-	}
-	return b.String()
-}
-
-// renderProjectActive renders running and queued work.
-func (m model) renderProjectActive() string {
-	entry := m.projectEntry(*m.selectedProject)
-	var b strings.Builder
-	b.WriteString(styleHeading("ACTIVE WORK") + "\n")
-	if len(entry.Active) == 0 {
-		b.WriteString("  " + styleSecondary("No running or queued work.") + "\n")
-		return b.String()
-	}
-	for _, session := range entry.Active {
-		marker := " "
-		if session.State == "RUNNING" {
-			marker = styleActive(">")
-		}
-		fmt.Fprintf(&b, "  %s %-12s %s\n", marker, session.State, singleLine(session.Title))
-	}
-	return b.String()
-}
-
-// renderProjectRecent renders selectable recent sessions with concise titles,
-// state, and selection highlighting.
-func (m model) renderProjectRecent() string {
-	sessions := m.projectSessions()
-	selectedIndex := m.projectSessionCursor
-	if selectedIndex < 0 || selectedIndex >= len(sessions) {
-		selectedIndex = 0
-	}
-	var b strings.Builder
-	b.WriteString(styleHeading("RECENT SESSIONS") + "\n")
-	if len(sessions) == 0 {
-		b.WriteString("  " + styleSecondary("No sessions yet.") + "\n")
-		return b.String()
-	}
-	for index, session := range sessions {
-		prefix := "  "
-		if index == selectedIndex {
-			prefix = styleSelected(" >")
-		}
-		state := session.State
-		if session.State == "COMPLETED" {
-			state = styleCompleted(state)
-		} else if session.State == "RUNNING" || session.State == "QUEUED" || session.State == "READY" {
-			state = styleActive(state)
-		} else if session.State == "FAILED" || session.State == "BLOCKED" {
-			state = styleWarning(state)
-		}
-		title := singleLine(session.Title)
-		if title == "" {
-			title = singleLine(session.Task)
-		}
-		fmt.Fprintf(&b, "%s %-12s %s\n", prefix, state, title)
-	}
-	return b.String()
+	return height
 }
 
 // projectView renders the project workspace top-down. It never bottom-aligns
-// the content: the project header stays at the top of the main region and only
+// the content: the conversation starts at the top of the main region and only
 // the composer/status bar are anchored to the bottom by the shell.
 func (m model) projectView() string {
 	lines := strings.Split(m.projectBody(), "\n")
-	visible := m.workspaceHeight()
-	if visible < 1 {
-		visible = 1
-	}
+	visible := m.conversationHeight()
 	total := len(lines)
 	offset := m.scroll
 	limit := max(0, total-visible)
@@ -1352,7 +1378,7 @@ func (m model) projectView() string {
 // maxProjectScroll returns the largest scroll offset of the project view.
 func (m model) maxProjectScroll() int {
 	lines := strings.Split(m.projectBody(), "\n")
-	return max(0, len(lines)-m.workspaceHeight())
+	return max(0, len(lines)-m.conversationHeight())
 }
 
 // projectEntry returns the dashboard entry of a project.
@@ -1365,14 +1391,49 @@ func (m model) projectEntry(project ipc.Project) projectEntry {
 	return projectEntry{Project: project, Group: groupIdle}
 }
 
-// projectSessions returns the selectable sessions for the open project, in a
-// stable order: waiting, active, then recent. Duplicates are removed.
+// projectSessions returns the selectable sessions for the open project.
+//
+// The selector shows every session of the project, not only the finished
+// ones: a session that is running or waiting for the user is exactly what a
+// reader wants to reach.
 func (m model) projectSessions() []ipc.Session {
 	if m.selectedProject == nil {
 		return nil
 	}
-	entry := m.projectEntry(*m.selectedProject)
-	return entry.Recent
+	return projectSessionList(m.sessions, m.selectedProject.ID)
+}
+
+// projectSessionList returns every session that belongs to a project, ordered
+// so that the sessions which need the user come first, then the running work,
+// then the most recent history.
+func projectSessionList(sessions []ipc.Session, projectID int64) []ipc.Session {
+	selected := make([]ipc.Session, 0, len(sessions))
+	for _, session := range sessions {
+		if session.ProjectID == nil || *session.ProjectID != projectID {
+			continue
+		}
+		selected = append(selected, session)
+	}
+	sort.SliceStable(selected, func(i, j int) bool {
+		left, right := sessionRank(selected[i]), sessionRank(selected[j])
+		if left != right {
+			return left < right
+		}
+		return selected[i].ID > selected[j].ID
+	})
+	return selected
+}
+
+// sessionRank orders sessions by how much they need the reader's attention.
+func sessionRank(session ipc.Session) int {
+	switch session.State {
+	case "WAITING_FOR_USER":
+		return 0
+	case "RUNNING", "QUEUED", "READY":
+		return 1
+	default:
+		return 2
+	}
 }
 
 // projectSelectedSession returns the session currently highlighted in the
@@ -1399,6 +1460,54 @@ func (m *model) clampProjectSessionCursor() {
 	if len(sessions) > 0 && m.projectSessionCursor >= len(sessions) {
 		m.projectSessionCursor = len(sessions) - 1
 	}
+}
+
+// moveProjectSession moves the session selection of the project workspace and
+// loads the newly selected session.
+func (m *model) moveProjectSession(delta int) tea.Cmd {
+	sessions := m.projectSessions()
+	if len(sessions) == 0 {
+		return nil
+	}
+	m.projectSessionCursor += delta
+	m.clampProjectSessionCursor()
+	return m.loadProjectSession()
+}
+
+// loadProjectSession loads the persisted details of the session that the
+// project workspace has selected.
+func (m *model) loadProjectSession() tea.Cmd {
+	session := m.projectSelectedSession()
+	if session == nil {
+		m.workspace = workspaceSession{}
+		m.scroll = 0
+		return nil
+	}
+	m.workspace = workspaceSession{Session: session, Loading: true}
+	m.scroll = 0
+	return m.workspaceSessionCmd(session.ID)
+}
+
+// syncWorkspaceSelection keeps the workspace's session selection pointing at
+// the same session after the session list was refreshed.
+func (m *model) syncWorkspaceSelection() {
+	if m.selectedProject == nil {
+		return
+	}
+	sessions := m.projectSessions()
+	if len(sessions) == 0 {
+		m.projectSessionCursor = 0
+		return
+	}
+	if current := m.workspace.sessionID(); current != 0 {
+		for index, session := range sessions {
+			if session.ID == current {
+				m.projectSessionCursor = index
+				return
+			}
+		}
+	}
+	m.clampProjectSessionCursor()
 }
 
 // statusText returns the status message only when it belongs to the current
@@ -1461,15 +1570,22 @@ func (m model) helpView() string {
 		"  r            refresh\n" +
 		"  ?            this help\n" +
 		"  q            quit\n\n" +
-		"Project\n" +
+		"Project workspace\n" +
 		"  type          enter a natural-language request directly\n" +
-		"  enter        submit request or open selected session\n" +
-		"  tab          switch focus between composer and session navigation\n" +
-		"  ↑/↓          select or scroll sessions\n" +
-		"  esc          clear input or leave composer focus\n" +
-		"  n            focus the composer for a new request\n" +
-		"  r            refresh\n" +
-		"  b/esc        back to the dashboard\n\n" +
+		"  enter         send the request and open the new conversation\n" +
+		"  shift+enter   insert a new line (ctrl+j also works)\n" +
+		"  tab           switch focus to the session selector\n" +
+		"  ↑/↓          scroll the conversation\n" +
+		"  esc           clear the composer, or leave the workspace\n" +
+		"  ctrl+c        quit\n\n" +
+		"Session selector (after tab)\n" +
+		"  ↑/↓ or j/k   choose another session of the project\n" +
+		"  enter         open the chosen session\n" +
+		"  n             write a request on a full-screen form\n" +
+		"  ?             this help\n" +
+		"  tab or esc    return to the composer\n" +
+		"  b             back to the dashboard\n" +
+		"  q             quit\n\n" +
 		"b/esc returns to the previous screen. Quitting closes the frontend only;\n" +
 		"the daemon and its work keep running.\n"
 }

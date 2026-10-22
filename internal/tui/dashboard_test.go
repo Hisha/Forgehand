@@ -544,18 +544,78 @@ func TestProjectViewShowsTheSessionsOfTheSelectedProject(t *testing.T) {
 				{ID: 11, ProjectID: projectID(1), Title: "Running work", State: "RUNNING", Kind: "work-plan"},
 				{ID: 12, ProjectID: projectID(1), Title: "Finished work", State: "COMPLETED", Kind: "investigation"},
 			}}, nil
+		case "session-status":
+			return ipc.Response{OK: true, Session: &ipc.Session{ID: request.SessionID, Title: "Finished work", State: "COMPLETED", Kind: "investigation", Task: "which zones are eligible"}}, nil
+		case "session-events":
+			return ipc.Response{OK: true}, nil
 		}
 		return ipc.Response{}, errors.New("unexpected request")
 	}}
 
 	m := loadedModel(t, client)
-	updated, _ := m.Update(key(tea.KeyEnter, ""))
+	updated, command := m.Update(key(tea.KeyEnter, ""))
 	m = updated.(model)
+	if command != nil {
+		updated, _ = m.Update(command().(workspaceSessionMsg))
+		m = updated.(model)
+	}
 	view := m.View().Content
-	for _, want := range []string{"PENDING INPUT", "ACTIVE WORK", "RECENT SESSIONS", "Running work", "Finished work"} {
+	// The project workspace is a conversation: the sessions of the project are
+	// selectable and the selected session's persisted request is on screen.
+	for _, want := range []string{"SESSIONS", "Running work", "Finished work", "which zones are eligible"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("project view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestDashboardKeepsItsActivityGroupings(t *testing.T) {
+	projects := []ipc.Project{
+		{ID: 1, Name: "needs-a-question", RootPath: "/src/one"},
+		{ID: 2, Name: "is-working", RootPath: "/src/two"},
+		{ID: 3, Name: "is-idle", RootPath: "/src/three"},
+	}
+	sessions := []ipc.Session{
+		{ID: 11, ProjectID: projectID(1), Title: "Waiting", State: "WAITING_FOR_USER", Kind: "investigation"},
+		{ID: 12, ProjectID: projectID(2), Title: "Running", State: "RUNNING", Kind: "work-plan"},
+	}
+	pending := map[int64][]ipc.Interaction{
+		11: {{ID: 1, SessionID: 11, Question: "Which zone?"}},
+	}
+
+	m := model{
+		screen:  screenDashboard,
+		width:   120,
+		height:  35,
+		entries: groupProjects(projects, sessions, pending, nil),
+	}
+	view := m.View().Content
+	for _, want := range []string{"NEEDS ATTENTION", "WORKING", "IDLE", "needs-a-question", "is-working", "is-idle"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, view)
+		}
+	}
+	// The groups keep their order and their membership.
+	needsAt := strings.Index(view, "NEEDS ATTENTION")
+	workingAt := strings.Index(view, "WORKING")
+	idleAt := strings.Index(view, "IDLE")
+	if !(needsAt < workingAt && workingAt < idleAt) {
+		t.Fatalf("the dashboard groups are out of order: %d %d %d", needsAt, workingAt, idleAt)
+	}
+	if groupOf(m.entries, "needs-a-question") != groupNeedsAttention {
+		t.Fatalf("the waiting project moved out of NEEDS ATTENTION")
+	}
+	if groupOf(m.entries, "is-working") != groupWorking {
+		t.Fatalf("the running project moved out of WORKING")
+	}
+	if groupOf(m.entries, "is-idle") != groupIdle {
+		t.Fatalf("the idle project moved out of IDLE")
+	}
+	// The dashboard still opens the project workspace on enter.
+	updated, _ := m.Update(key(tea.KeyEnter, ""))
+	m = updated.(model)
+	if m.screen != screenProject {
+		t.Fatalf("screen = %v, want the project workspace", m.screen)
 	}
 }
 
