@@ -718,12 +718,12 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				m.scroll++
 			}
 		case "pgup":
-			m.scroll -= max(1, m.height-5)
+			m.scroll -= max(1, m.workspaceHeight()-5)
 			if m.scroll < 0 {
 				m.scroll = 0
 			}
 		case "pgdown":
-			m.scroll += max(1, m.height-5)
+			m.scroll += max(1, m.workspaceHeight()-5)
 			if limit := m.maxSessionScroll(); m.scroll > limit {
 				m.scroll = limit
 			}
@@ -1029,11 +1029,10 @@ func (m model) View() tea.View {
 	default:
 		body = m.dashboardView()
 	}
-	// This final pass is a safety boundary for all present and future views.
-	// Session content is already wrapped before pagination, so this is a no-op
-	// there except for guarding newly added footer text.
-	body = wrapContent(body, m.width)
-	view := tea.NewView(body)
+	// Safety boundary for authored lines; wrap to the main workspace width so
+	// the full-screen shell can place the sidebar beside it.
+	body = wrapContent(body, m.mainWidth())
+	view := tea.NewView(m.composeShell(body, m.sidebarContent()))
 	view.AltScreen = true
 	return view
 }
@@ -1119,10 +1118,10 @@ func (m model) projectBody() string {
 // projectView renders the detail of the selected project with pagination.
 func (m model) projectView() string {
 	lines := strings.Split(m.projectBody(), "\n")
-	visible := max(6, m.height-3)
+	visible := max(6, m.workspaceHeight()-3)
 	offset := min(m.scroll, max(0, len(lines)-visible))
 	end := min(len(lines), offset+visible)
-	footer := compactLine("n new request   r refresh   b/esc back   q quit", m.width)
+	footer := compactLine("n new request   r refresh   b/esc back   q quit", m.mainWidth())
 
 	out := strings.Join(lines[offset:end], "\n") + "\n" + footer + "\n"
 	if m.busy {
@@ -1136,7 +1135,7 @@ func (m model) projectView() string {
 // maxProjectScroll returns the largest scroll offset of the project view.
 func (m model) maxProjectScroll() int {
 	lines := strings.Split(m.projectBody(), "\n")
-	return max(0, len(lines)-max(6, m.height-3))
+	return max(0, len(lines)-max(6, m.workspaceHeight()-3))
 }
 
 // projectEntry returns the dashboard entry of a project.
@@ -1161,7 +1160,7 @@ func (m model) sessionsView() string {
 		if name := m.projectName(session.ProjectID); name != "" {
 			label = fmt.Sprintf("%-14s %-24s %s", session.State, name, singleLine(session.Title))
 		}
-		b.WriteString(compactRow(index == m.sessionsCursor, label, m.width))
+		b.WriteString(compactRow(index == m.sessionsCursor, label, m.mainWidth()))
 	}
 	b.WriteString("\n↑/↓ select   enter open session   r refresh   b/esc back   q quit\n")
 	if m.busy {
@@ -1252,7 +1251,7 @@ func (m model) modelsView() string {
 		if job.Recommendation != "" {
 			label += "  " + job.Recommendation
 		}
-		b.WriteString(compactRow(index == m.qualificationCursor, label, m.width))
+		b.WriteString(compactRow(index == m.qualificationCursor, label, m.mainWidth()))
 	}
 	b.WriteString("\ns start  m model  ←/→ repetitions  enter results  c cancel  t retry interrupted  r refresh  b/esc back  q quit\n")
 	if m.busy {
@@ -1317,23 +1316,23 @@ func (m model) qualificationView() string {
 func (m model) sessionView() string {
 	body := m.renderedSessionBody()
 	lines := strings.Split(body, "\n")
-	visible := max(6, m.height-3)
+	visible := max(6, m.workspaceHeight()-3)
 	offset := m.scroll
 	limit := max(0, len(lines)-visible)
 	if offset > limit {
 		offset = limit
 	}
 	end := min(len(lines), offset+visible)
-	footer := compactLine("↑/↓ scroll  r refresh  b/esc back  q quit (daemon keeps working)", m.width)
+	footer := compactLine("↑/↓ scroll  r refresh  b/esc back  q quit (daemon keeps working)", m.mainWidth())
 	return strings.Join(lines[offset:end], "\n") + "\n" + footer + "\n"
 }
 
 func (m model) maxSessionScroll() int {
-	return max(0, len(strings.Split(m.renderedSessionBody(), "\n"))-max(6, m.height-3))
+	return max(0, len(strings.Split(m.renderedSessionBody(), "\n"))-max(6, m.workspaceHeight()-3))
 }
 
 func (m model) renderedSessionBody() string {
-	return wrapContent(m.sessionBody(), m.width)
+	return wrapContent(m.sessionBody(), m.mainWidth())
 }
 
 func (m model) sessionBody() string {

@@ -117,3 +117,26 @@ update`.
 - The dashboard shows the project list and its activity. A full project-detail
   redesign, a complete model-management interface, and session export are not
   part of this phase.
+
+## Application shell
+
+Forgehand now opens as a full-screen application shell rather than a scrolling
+command transcript:
+
+- The main workspace occupies the left portion of the terminal and holds the
+  current view (dashboard, project, session, models, ...). It scrolls
+  independently.
+- On sufficiently wide terminals a contextual sidebar appears on the right
+  (~25-30% of the width). Its contents follow the current view and selection:
+  project identity, repository readiness, worker activity, pending decisions,
+  or session identity, progress, and provider information.
+- A persistent input field sits near the bottom of the main workspace. On the
+  dashboard it shows `Select a project to begin...` and does not submit work
+  against an arbitrary project. When a project is open, `n` focuses the field
+  for a natural-language investigation request.
+- A compact status bar spans the bottom of the window and reports daemon
+  connection status, worker activity, the current view/project context, and the
+  most relevant keyboard shortcuts.
+
+The shell adapts to the actual terminal size: the sidebar narrows and then
+collapses on small terminals, while navigation and input remain available.

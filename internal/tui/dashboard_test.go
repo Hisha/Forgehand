@@ -7,6 +7,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
+	"github.com/charmbracelet/x/ansi"
+
 	"github.com/Hisha/Forgehand/internal/ipc"
 )
 
@@ -19,8 +21,16 @@ func projectID(id int64) *int64 {
 func dashboardRowFor(t *testing.T, view string, name string) string {
 	t.Helper()
 	for _, line := range strings.Split(view, "\n") {
-		if strings.Contains(line, name) {
-			return line
+		// The application shell places the contextual sidebar beside the
+		// main workspace, so strip the sidebar portion before inspecting a
+		// dashboard row.
+		main := line
+		if idx := strings.Index(main, "│"); idx >= 0 {
+			main = main[:idx]
+		}
+		main = ansi.Strip(main)
+		if strings.Contains(main, name) {
+			return strings.TrimRight(main, " ")
 		}
 	}
 	t.Fatalf("dashboard has no row for %q:\n%s", name, view)

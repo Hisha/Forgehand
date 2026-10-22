@@ -7,6 +7,7 @@ import (
 )
 
 const defaultTerminalWidth = 80
+const defaultTerminalHeight = 24
 
 // renderWidth returns a usable width before Bubble Tea has delivered its first
 // WindowSizeMsg. A width of one is still valid and is handled by the wrappers.
@@ -15,6 +16,13 @@ func renderWidth(width int) int {
 		return defaultTerminalWidth
 	}
 	return max(1, width)
+}
+
+func renderHeight(height int) int {
+	if height <= 0 {
+		return defaultTerminalHeight
+	}
+	return max(1, height)
 }
 
 // wrapContent wraps every physical line independently so authored line breaks
@@ -89,4 +97,72 @@ func compactRow(selected bool, text string, width int) string {
 		prefix = "  > "
 	}
 	return compactLine(prefix+text, width) + "\n"
+}
+
+// Application shell layout helpers.
+
+func (m model) sidebarVisible() bool {
+	switch m.screen {
+	case screenDashboard, screenProject, screenSession, screenSessions,
+		screenModels, screenQualification:
+	default:
+		return false
+	}
+	return renderWidth(m.width) >= 70 && renderHeight(m.height) >= 12
+}
+
+func (m model) sidebarWidth() int {
+	if !m.sidebarVisible() {
+		return 0
+	}
+	width := renderWidth(m.width) * 28 / 100
+	if width < 22 {
+		width = 22
+	}
+	if width > 40 {
+		width = 40
+	}
+	if renderWidth(m.width)-width-1 < 40 {
+		width = m.width - 41
+	}
+	if width < 0 {
+		width = 0
+	}
+	return width
+}
+
+func (m model) mainWidth() int {
+	width := renderWidth(m.width) - m.sidebarWidth()
+	if m.sidebarWidth() > 0 {
+		width-- // separator column
+	}
+	if width < 1 {
+		width = 1
+	}
+	return width
+}
+
+func (m model) inputAreaHeight() int {
+	if renderHeight(m.height) < 8 {
+		return 1
+	}
+	return 3
+}
+
+func (m model) statusBarHeight() int { return 1 }
+
+func (m model) workspaceHeight() int {
+	height := renderHeight(m.height) - m.inputAreaHeight() - m.statusBarHeight()
+	if height < 1 {
+		height = 1
+	}
+	return height
+}
+
+func fitWidth(text string, width int) string {
+	width = renderWidth(width)
+	if ansi.StringWidth(text) > width {
+		return compactLine(text, width)
+	}
+	return text + strings.Repeat(" ", width-ansi.StringWidth(text))
 }

@@ -300,7 +300,7 @@ func (m model) dashboardView() string {
 
 	nameWidth := m.projectNameWidth()
 	for _, group := range projectGroups {
-		b.WriteString(group.title() + "\n")
+		b.WriteString(styleHeading(group.title()) + "\n")
 		for index := range m.entries {
 			entry := m.entries[index]
 			if entry.Group != group {
@@ -312,12 +312,12 @@ func (m model) dashboardView() string {
 				entry.activityLabel(),
 				entry.healthWarning(),
 				nameWidth,
-				m.width,
+				m.mainWidth(),
 			))
 		}
 	}
 
-	b.WriteString("\n" + separatorLine(m.width) + "\n")
+	b.WriteString("\n" + separatorLine(m.mainWidth()) + "\n")
 	b.WriteString(dashboardHelpLine() + "\n")
 
 	if m.busy {
@@ -375,6 +375,7 @@ func dashboardRow(
 	prefix := "    "
 	if selected {
 		prefix = "  > "
+		prefix = styleSelected(prefix)
 	}
 	content := prefix + padRight(name, nameWidth) + "  " + label
 
