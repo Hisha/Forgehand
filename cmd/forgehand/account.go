@@ -164,11 +164,7 @@ func listAccounts(args []string) error {
 
 // grantAccountProject authorizes an account to access a project.
 func grantAccountProject(args []string) error {
-	username, err := singleUsernameArgument(args, "--username")
-	if err != nil {
-		return err
-	}
-	projectID, err := singleProjectIDArgument(args)
+	username, projectID, err := usernameAndProjectArguments(args)
 	if err != nil {
 		return err
 	}
@@ -187,11 +183,7 @@ func grantAccountProject(args []string) error {
 
 // revokeAccountProject removes an account's authorization for a project.
 func revokeAccountProject(args []string) error {
-	username, err := singleUsernameArgument(args, "--username")
-	if err != nil {
-		return err
-	}
-	projectID, err := singleProjectIDArgument(args)
+	username, projectID, err := usernameAndProjectArguments(args)
 	if err != nil {
 		return err
 	}
@@ -265,27 +257,52 @@ func singleUsernameArgument(args []string, flag string) (string, error) {
 	return username, nil
 }
 
-// singleProjectIDArgument extracts a project identifier from a flag list.
-func singleProjectIDArgument(args []string) (int64, error) {
+// usernameAndProjectArguments parses the shared flags required by account
+// commands that operate on both an account and a project. Both flags may be
+// supplied in either order; missing values, unknown flags, duplicate flags,
+// empty usernames, and invalid project IDs are rejected.
+func usernameAndProjectArguments(args []string) (string, int64, error) {
+	var username string
+	usernameSet := false
 	var projectID int64
+	projectSet := false
+
 	for index := 0; index < len(args); index++ {
 		switch args[index] {
+		case "--username":
+			if index+1 >= len(args) {
+				return "", 0, fmt.Errorf("missing value for --username")
+			}
+			if usernameSet {
+				return "", 0, fmt.Errorf("duplicate flag: --username")
+			}
+			username = args[index+1]
+			usernameSet = true
+			index++
 		case "--project":
 			if index+1 >= len(args) {
-				return 0, fmt.Errorf("missing value for --project")
+				return "", 0, fmt.Errorf("missing value for --project")
+			}
+			if projectSet {
+				return "", 0, fmt.Errorf("duplicate flag: --project")
 			}
 			parsed, err := strconv.ParseInt(args[index+1], 10, 64)
 			if err != nil || parsed <= 0 {
-				return 0, fmt.Errorf("invalid project ID: %s", args[index+1])
+				return "", 0, fmt.Errorf("invalid project ID: %s", args[index+1])
 			}
 			projectID = parsed
+			projectSet = true
 			index++
 		default:
-			return 0, fmt.Errorf("unknown flag: %s", args[index])
+			return "", 0, fmt.Errorf("unknown flag: %s", args[index])
 		}
 	}
-	if projectID <= 0 {
-		return 0, fmt.Errorf("--project is required")
+
+	if !usernameSet || strings.TrimSpace(username) == "" {
+		return "", 0, fmt.Errorf("--username is required")
 	}
-	return projectID, nil
+	if !projectSet || projectID <= 0 {
+		return "", 0, fmt.Errorf("--project is required")
+	}
+	return username, projectID, nil
 }
