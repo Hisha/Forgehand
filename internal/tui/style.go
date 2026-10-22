@@ -14,12 +14,17 @@ const (
 func styleBold(s string) string    { return ansiBold + s + ansiReset }
 func styleDim(s string) string     { return ansiDim + s + ansiReset }
 func styleHeading(s string) string { return ansiBold + s + ansiReset }
+func styleSecondary(s string) string {
+	return ansiDim + s + ansiReset
+}
 func styleSelected(s string) string {
 	return "\x1b[7m" + s + ansiReset
 }
 func styleWarning(s string) string { return "\x1b[33;1m" + s + ansiReset }
 func styleSuccess(s string) string { return "\x1b[32m" + s + ansiReset }
+func styleCompleted(s string) string { return "\x1b[32m" + s + ansiReset }
 func styleRunning(s string) string { return "\x1b[36m" + s + ansiReset }
+func styleActive(s string) string  { return "\x1b[36m" + s + ansiReset }
 func styleDisabled(s string) string {
 	return ansiDim + s + ansiReset
 }

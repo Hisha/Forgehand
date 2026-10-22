@@ -87,11 +87,6 @@ func TestSelectProjectAskQuestionAndStartWorkPlan(t *testing.T) {
 	if m.screen != screenProject {
 		t.Fatalf("screen = %v", m.screen)
 	}
-	updated, _ = m.Update(key('n', "n"))
-	m = updated.(model)
-	if m.screen != screenQuestion {
-		t.Fatalf("screen = %v", m.screen)
-	}
 	question := "Which zones are eligible for Huntmaster?"
 	for _, r := range question {
 		updated, _ = m.Update(key(r, string(r)))

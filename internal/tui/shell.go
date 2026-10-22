@@ -126,7 +126,10 @@ func (m model) inputHint() string {
 	case screenDashboard:
 		return "Select a project to begin..."
 	case screenProject:
-		return "enter submit investigation · esc clear"
+		if m.projectNavigationFocused {
+			return "tab composer · ↑↓ select session · enter open · r refresh · b/esc back"
+		}
+		return "enter submit/open · esc clear · tab navigate"
 	case screenQuestion:
 		return "enter submit · esc cancel"
 	case screenRegister:
@@ -219,22 +222,38 @@ func (m model) writeProjectSidebar(b *strings.Builder) {
 	entry := m.projectEntry(*m.selectedProject)
 	fmt.Fprintf(b, "Activity: %s\n", entry.activityLabel())
 	b.WriteString("Health: " + entry.healthSummary() + "\n")
+
+	if session := m.projectSelectedSession(); session != nil {
+		b.WriteString("\n" + styleHeading("SELECTED SESSION") + "\n")
+		fmt.Fprintf(b, "%s\n", singleLine(session.Title))
+		fmt.Fprintf(b, "State: %s\n", session.State)
+		if session.Task != "" {
+			fmt.Fprintf(b, "Task: %s\n", singleLine(session.Task))
+		}
+		if m.selectedSession != nil && m.selectedSession.ID == session.ID && m.execution != nil {
+			fmt.Fprintf(b, "Execution: %s\n", m.execution.Status)
+			if m.execution.TotalSteps > 0 {
+				fmt.Fprintf(b, "Progress: %d/%d\n", m.execution.CurrentStep, m.execution.TotalSteps)
+			}
+		}
+	}
+
 	if len(entry.Pending) > 0 {
-		b.WriteString("\n" + styleHeading("PENDING DECISIONS") + "\n")
+		b.WriteString("\n" + styleHeading("PENDING") + "\n")
 		for _, p := range entry.Pending {
 			fmt.Fprintf(b, "- %s\n", singleLine(p.Interaction.Question))
 		}
 	}
 	if len(entry.Active) > 0 {
-		b.WriteString("\n" + styleHeading("WORKER ACTIVITY") + "\n")
-		for _, s := range entry.Active {
-			fmt.Fprintf(b, "- %s (%s)\n", singleLine(s.Title), s.State)
+		b.WriteString("\n" + styleHeading("ACTIVE WORK") + "\n")
+		for _, sess := range entry.Active {
+			fmt.Fprintf(b, "- %s (%s)\n", singleLine(sess.Title), sess.State)
 		}
 	}
 	if len(entry.Recent) > 0 {
 		b.WriteString("\n" + styleHeading("RECENT") + "\n")
-		for _, s := range entry.Recent {
-			fmt.Fprintf(b, "- %s\n", singleLine(s.Title))
+		for _, sess := range entry.Recent {
+			fmt.Fprintf(b, "- %s\n", singleLine(sess.Title))
 		}
 	}
 }
@@ -382,7 +401,7 @@ func (m model) statusShortcuts() string {
 	case screenDashboard:
 		return "↑↓ select  enter open  a add  s sessions  m models  ? help  q quit"
 	case screenProject:
-		return "n new  r refresh  b/esc back  ? help  q quit"
+		return "tab focus  ↑↓ select  enter submit/open  esc clear  r refresh  b back  ? help  q quit"
 	case screenSession:
 		return "↑↓ scroll  r refresh  b/esc back  q quit"
 	case screenSessions:

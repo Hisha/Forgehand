@@ -39,17 +39,20 @@ sessions), so a long session log never pushes the projects out of view.
 
 ## Project screen
 
-`enter` on the dashboard opens the selected project. The project screen shows
-what the project needs, what it is doing, what it has done, and whether its
-repository observations are current:
+`enter` on the dashboard opens the selected project. The project screen is a
+persistent engineering workspace:
 
-- `PENDING INPUT` — the questions and approvals that are waiting for an answer.
-- `ACTIVE WORK` — running and queued sessions.
-- `RECENT SESSIONS` — the most recent finished sessions.
-- `MAINTENANCE` — the repository readiness summary.
+- a project header with repository identity, activity, and health
+- `PENDING INPUT` — the questions and approvals that are waiting for an answer
+- `ACTIVE WORK` — running and queued sessions
+- `RECENT SESSIONS` — selectable recent sessions
+- a composer anchored near the bottom of the workspace
 
-Press `n` to start a new work plan request for the project, and `b`/`esc` to
-return to the dashboard.
+Type a natural-language request directly into the composer and press `enter` to
+start an investigation work plan. `tab` switches focus between the composer and
+session navigation. In navigation focus, `↑`/`↓` select a recent session and
+`enter` opens it. `esc` clears the composer or returns to the dashboard, `r`
+refreshes, and `b`/`esc` returns to the dashboard.
 
 ## Repository readiness
 
@@ -132,8 +135,8 @@ command transcript:
   or session identity, progress, and provider information.
 - A persistent input field sits near the bottom of the main workspace. On the
   dashboard it shows `Select a project to begin...` and does not submit work
-  against an arbitrary project. When a project is open, `n` focuses the field
-  for a natural-language investigation request.
+  against an arbitrary project. When a project is open, type directly into the
+  composer; `tab` switches focus between the composer and session navigation.
 - A compact status bar spans the bottom of the window and reports daemon
   connection status, worker activity, the current view/project context, and the
   most relevant keyboard shortcuts.

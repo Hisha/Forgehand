@@ -89,6 +89,8 @@ type model struct {
 	sessionsCursor           int
 	selectedProject          *ipc.Project
 	selectedSession          *ipc.Session
+	projectSessionCursor     int
+	projectNavigationFocused bool
 	execution                *ipc.Execution
 	result                   *ipc.ModelResult
 	evidence                 *ipc.InvestigationEvidence
@@ -103,6 +105,7 @@ type model struct {
 	input                    string
 	busy                     bool
 	status                   string
+	statusScreen             screen
 	recovery                 string
 	width                    int
 	height                   int
@@ -282,6 +285,9 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.screen == screenSession && m.scroll > m.maxSessionScroll() {
 			m.scroll = m.maxSessionScroll()
 		}
+		if m.screen == screenProject && m.scroll > m.maxProjectScroll() {
+			m.scroll = m.maxProjectScroll()
+		}
 	case loadedMsg:
 		m.busy = false
 		if msg.upgrade != nil {
@@ -301,7 +307,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.rebuildEntries()
 		m.clampCursors()
-		m.status = ""
+		m.status, m.statusScreen = "", 0
 		if m.polling {
 			return m, m.healthCmd()
 		}
@@ -311,6 +317,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			// Readiness is advisory. The dashboard stays usable without it.
 			m.status = "Project readiness unavailable: " + msg.err.Error()
+			m.statusScreen = m.screen
 			return m, nil
 		}
 		m.health = msg.health
@@ -329,15 +336,18 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		if msg.err != nil {
 			m.status = "Registration failed: " + msg.err.Error()
+			m.statusScreen = m.screen
 			return m, nil
 		}
 		if msg.intake != nil {
 			m.intake = msg.intake
 			m.screen = screenIntake
 			m.status = "Choose how to establish the source-control baseline"
+			m.statusScreen = m.screen
 			return m, nil
 		}
 		m.status = "Registered " + msg.project.Name
+		m.statusScreen = m.screen
 		m.intake = nil
 		m.screen = screenDashboard
 		return m, m.loadCmd()
@@ -345,17 +355,21 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		if msg.err != nil {
 			m.status = "Could not start work plan: " + msg.err.Error()
+			m.statusScreen = m.screen
 			return m, nil
 		}
 		m.selectedSession, m.execution = msg.session, msg.execution
 		m.result, m.evidence, m.workPlan = nil, nil, msg.workPlan
 		m.scroll = 0
 		m.screen = screenSession
+		m.status = "Work started"
+		m.statusScreen = m.screen
 		return m, nil
 	case sessionMsg:
 		m.busy = false
 		if msg.err != nil {
 			m.status = "Refresh failed: " + msg.err.Error()
+			m.statusScreen = m.screen
 			return m, nil
 		}
 		m.selectedSession, m.execution = msg.session, msg.execution
@@ -390,6 +404,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = false
 		if msg.err != nil {
 			m.status = "Qualification: " + msg.err.Error()
+			m.statusScreen = m.screen
 			return m, nil
 		}
 		if msg.provider != nil {
@@ -405,6 +420,7 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.status != "" {
 			m.status = msg.status
+			m.statusScreen = m.screen
 		}
 		return m, nil
 	case recoveredMsg:
@@ -426,7 +442,10 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		m.busy = true
 		return m, m.loadCmd()
 	case tea.PasteMsg:
-		if !m.busy && m.screen == screenQuestion {
+		if !m.busy && (m.screen == screenQuestion || m.screen == screenProject) {
+			if m.screen == screenProject {
+				m.projectNavigationFocused = false
+			}
 			m.input += normalizePastedText(msg.Content)
 		}
 	case tea.KeyPressMsg:
@@ -493,6 +512,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m, m.loadCmd()
 		case "a":
 			m.screen, m.input, m.status = screenRegister, "", "Enter an absolute or relative Git repository path"
+			m.statusScreen = screenRegister
 		case "s":
 			m.screen = screenSessions
 			m.sessionsCursor = 0
@@ -509,38 +529,127 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			entry := m.entries[m.projectCursor]
 			project := entry.Project
 			m.selectedProject, m.screen, m.input = &project, screenProject, ""
+			m.projectSessionCursor = 0
+			m.projectNavigationFocused = false
 			m.scroll = 0
 			return m, nil
 		}
 	case screenProject:
+		if key == "ctrl+c" {
+			return m, tea.Quit
+		}
+		if m.busy {
+			return m, nil
+		}
+		// Composer-focused (default): ordinary typing goes to the composer.
+		if !m.projectNavigationFocused {
+			switch key {
+			case "tab":
+				m.projectNavigationFocused = true
+				m.clampProjectSessionCursor()
+				return m, nil
+			case "esc":
+				if m.input != "" {
+					m.input = ""
+					return m, nil
+				}
+				m.screen = screenDashboard
+				m.projectNavigationFocused = false
+				m.projectSessionCursor = 0
+				return m, nil
+			case "enter":
+				if strings.TrimSpace(m.input) == "" {
+					return m, nil
+				}
+				if m.selectedProject == nil {
+					return m, nil
+				}
+				m.busy = true
+				m.statusScreen = m.screen
+				return m, m.startCmd(*m.selectedProject, m.input)
+			case "up", "k":
+				if m.scroll > 0 {
+					m.scroll--
+				}
+				return m, nil
+			case "down", "j":
+				if m.scroll < m.maxProjectScroll() {
+					m.scroll++
+				}
+				return m, nil
+			case "pgup":
+				m.scroll -= max(1, m.workspaceHeight()-5)
+				if m.scroll < 0 {
+					m.scroll = 0
+				}
+				return m, nil
+			case "pgdown":
+				m.scroll += max(1, m.workspaceHeight()-5)
+				if limit := m.maxProjectScroll(); m.scroll > limit {
+					m.scroll = limit
+				}
+				return m, nil
+			}
+			m.input = editInput(m.input, msg)
+			return m, nil
+		}
+		// Navigation-focused: single-letter shortcuts are active.
 		switch key {
+		case "tab":
+			m.projectNavigationFocused = false
+			return m, nil
 		case "q":
 			return m, tea.Quit
 		case "esc", "b":
 			m.screen = screenDashboard
+			m.projectNavigationFocused = false
+			m.projectSessionCursor = 0
 			return m, nil
 		case "r":
 			m.busy = true
+			m.projectNavigationFocused = false
 			return m, tea.Batch(m.loadCmd(), m.healthCmd())
 		case "n":
-			if m.selectedProject == nil {
-				return m, nil
-			}
 			m.screen, m.input = screenQuestion, ""
+			m.projectNavigationFocused = false
 			return m, nil
 		case "?":
 			return m.openHelp()
 		case "up", "k":
-			m.scroll--
+			m.projectSessionCursor--
+			m.clampProjectSessionCursor()
+			if m.scroll > 0 {
+				m.scroll--
+			}
+		case "down", "j":
+			m.projectSessionCursor++
+			m.clampProjectSessionCursor()
+			if m.scroll < m.maxProjectScroll() {
+				m.scroll++
+			}
+		case "enter":
+			if session := m.projectSelectedSession(); session != nil {
+				opened := *session
+				m.selectedSession = &opened
+				m.screen = screenSession
+				m.busy = true
+				m.scroll = 0
+				m.projectNavigationFocused = false
+				return m, m.sessionCmd(opened.ID)
+			}
+		case "pgup":
+			m.scroll -= max(1, m.workspaceHeight()-5)
 			if m.scroll < 0 {
 				m.scroll = 0
 			}
-		case "down", "j":
-			m.scroll++
+		case "pgdown":
+			m.scroll += max(1, m.workspaceHeight()-5)
 			if limit := m.maxProjectScroll(); m.scroll > limit {
 				m.scroll = limit
 			}
 		}
+		return m, nil
+
 	case screenSessions:
 		switch key {
 		case "q":
@@ -660,6 +769,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if key == "enter" {
 			if strings.TrimSpace(m.input) == "" {
 				m.status = "Model identifier is required"
+				m.statusScreen = m.screen
 				return m, nil
 			}
 			m.qualificationModel = strings.TrimSpace(m.input)
@@ -677,6 +787,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if key == "enter" {
 			if strings.TrimSpace(m.input) == "" {
 				m.status = "Enter a question first"
+				m.statusScreen = m.screen
 				return m, nil
 			}
 			m.busy = true
@@ -692,6 +803,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if key == "enter" {
 			if strings.TrimSpace(m.input) == "" {
 				m.status = "Enter a repository path first"
+				m.statusScreen = m.screen
 				return m, nil
 			}
 			m.busy = true
@@ -746,6 +858,7 @@ func (m model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if key == "enter" {
 			if m.input != "DISCARD" {
 				m.status = "Confirmation must be exactly DISCARD"
+				m.statusScreen = m.screen
 				return m, nil
 			}
 			m.busy = true
@@ -822,6 +935,7 @@ func (m *model) clampCursors() {
 	if len(m.sessions) > 0 && m.sessionsCursor >= len(m.sessions) {
 		m.sessionsCursor = len(m.sessions) - 1
 	}
+	m.clampProjectSessionCursor()
 	if m.qualificationCursor < 0 {
 		m.qualificationCursor = 0
 	}
@@ -1058,25 +1172,41 @@ func (m model) intakeView() string {
 	return b.String()
 }
 
-// projectView renders the detail of the selected project: the user
-// interactions that wait for an answer, the maintenance warnings, the work
-// that is running, and the recent session history.
+// projectBody renders the project workspace: header, pending decisions, active
+// work, and selectable recent sessions.
 func (m model) projectBody() string {
 	if m.selectedProject == nil {
 		return "Forgehand · No project selected\n"
 	}
 
 	entry := m.projectEntry(*m.selectedProject)
+	sessions := m.projectSessions()
+	selectedIndex := m.projectSessionCursor
+	if selectedIndex < 0 || selectedIndex >= len(sessions) {
+		selectedIndex = 0
+	}
+
 	var b strings.Builder
+	// Header.
+	b.WriteString(styleHeading(m.selectedProject.Name) + "\n")
+	fmt.Fprintf(&b, "%s\n", styleSecondary(m.selectedProject.RootPath))
+	fmt.Fprintf(&b, "Activity: %s", entry.activityLabel())
+	if entry.Health != nil {
+		fmt.Fprintf(&b, "   Health: %s", entry.healthSummary())
+	}
+	b.WriteString("\n")
+	if entry.healthWarning() {
+		fmt.Fprintf(&b, "%s %s\n", styleWarning("!"), styleWarning(entry.healthSummary()))
+	}
+	b.WriteString("\n")
 
-	fmt.Fprintf(&b, "Forgehand · %s\n\n%s\n\n", m.selectedProject.Name, m.selectedProject.RootPath)
-
-	b.WriteString("PENDING INPUT\n")
+	// Pending input.
+	b.WriteString(styleHeading("PENDING INPUT") + "\n")
 	if len(entry.Pending) == 0 {
 		if len(entry.Waiting) > 0 {
-			b.WriteString("  A session is waiting for input. Open it to read the question.\n")
+			b.WriteString("  " + styleSecondary("A session is waiting for input. Open it to read the question.") + "\n")
 		} else {
-			b.WriteString("  Nothing is waiting for you.\n")
+			b.WriteString("  " + styleSecondary("Nothing is waiting for you.") + "\n")
 		}
 	}
 	for _, pending := range entry.Pending {
@@ -1084,50 +1214,76 @@ func (m model) projectBody() string {
 		if isApprovalInteraction(pending.Interaction) {
 			kind = "approval"
 		}
-		fmt.Fprintf(&b, "  %s · %s\n", kind, singleLine(pending.Interaction.Question))
+		fmt.Fprintf(&b, "  %s  %s\n", styleWarning("•"), fmt.Sprintf("%s · %s", kind, singleLine(pending.Interaction.Question)))
 	}
+	b.WriteString("\n")
 
-	b.WriteString("\nACTIVE WORK\n")
+	// Active work.
+	b.WriteString(styleHeading("ACTIVE WORK") + "\n")
 	if len(entry.Active) == 0 {
-		b.WriteString("  No running or queued work.\n")
+		b.WriteString("  " + styleSecondary("No running or queued work.") + "\n")
 	}
 	for _, session := range entry.Active {
-		fmt.Fprintf(&b, "  %-14s %s\n", session.State, singleLine(session.Title))
+		marker := " "
+		if session.State == "RUNNING" {
+			marker = styleActive(">")
+		}
+		fmt.Fprintf(&b, "  %s %-12s %s\n", marker, session.State, singleLine(session.Title))
 	}
+	b.WriteString("\n")
 
-	b.WriteString("\nRECENT SESSIONS\n")
-	if len(entry.Recent) == 0 {
-		b.WriteString("  No finished sessions yet.\n")
+	// Recent / selectable sessions.
+	b.WriteString(styleHeading("RECENT SESSIONS") + "\n")
+	if len(sessions) == 0 {
+		b.WriteString("  " + styleSecondary("No sessions yet.") + "\n")
 	}
-	for _, session := range entry.Recent {
-		fmt.Fprintf(&b, "  %-14s %s\n", session.State, singleLine(session.Title))
+	for index, session := range sessions {
+		prefix := "  "
+		if index == selectedIndex {
+			prefix = styleSelected(" >")
+		}
+		state := session.State
+		if session.State == "COMPLETED" {
+			state = styleCompleted(state)
+		} else if session.State == "RUNNING" || session.State == "QUEUED" || session.State == "READY" {
+			state = styleActive(state)
+		} else if session.State == "FAILED" || session.State == "BLOCKED" {
+			state = styleWarning(state)
+		}
+		title := singleLine(session.Title)
+		if title == "" {
+			title = singleLine(session.Task)
+		}
+		fmt.Fprintf(&b, "%s %-12s %s\n", prefix, state, title)
 	}
-
-	b.WriteString("\nMAINTENANCE\n")
-	if entry.Health == nil {
-		b.WriteString("  Repository readiness has not been checked yet.\n")
-	} else if !entry.healthWarning() {
-		b.WriteString("  No maintenance warnings.\n")
-	} else {
-		fmt.Fprintf(&b, "  ! %s\n", entry.healthSummary())
-	}
+	b.WriteString("\n")
+	b.WriteString(styleSecondary("Composer: type a request and press Enter. Tab switches focus to session navigation.") + "\n")
 
 	return b.String()
 }
 
-// projectView renders the detail of the selected project with pagination.
+// projectView renders the project workspace with scrolling and bottom alignment.
 func (m model) projectView() string {
 	lines := strings.Split(m.projectBody(), "\n")
-	visible := max(6, m.workspaceHeight()-3)
-	offset := min(m.scroll, max(0, len(lines)-visible))
-	end := min(len(lines), offset+visible)
-	footer := compactLine("n new request   r refresh   b/esc back   q quit", m.mainWidth())
-
-	out := strings.Join(lines[offset:end], "\n") + "\n" + footer + "\n"
+	visible := m.workspaceHeight()
+	if visible < 1 {
+		visible = 1
+	}
+	total := len(lines)
+	offset := m.scroll
+	limit := max(0, total-visible)
+	if offset > limit {
+		offset = limit
+	}
+	end := min(total, offset+visible)
+	chunk := lines[offset:end]
+	if len(chunk) < visible && offset == 0 {
+		padding := make([]string, visible-len(chunk))
+		chunk = append(padding, chunk...)
+	}
+	out := strings.Join(chunk, "\n")
 	if m.busy {
-		out += "\nWorking…\n"
-	} else if m.status != "" {
-		out += "\n" + m.status + "\n"
+		// keep feedback visible at the bottom of the workspace
 	}
 	return out
 }
@@ -1148,6 +1304,54 @@ func (m model) projectEntry(project ipc.Project) projectEntry {
 	return projectEntry{Project: project, Group: groupIdle}
 }
 
+// projectSessions returns the selectable sessions for the open project, in a
+// stable order: waiting, active, then recent. Duplicates are removed.
+func (m model) projectSessions() []ipc.Session {
+	if m.selectedProject == nil {
+		return nil
+	}
+	entry := m.projectEntry(*m.selectedProject)
+	return entry.Recent
+}
+
+// projectSelectedSession returns the session currently highlighted in the
+// project workspace, if any.
+func (m model) projectSelectedSession() *ipc.Session {
+	sessions := m.projectSessions()
+	if len(sessions) == 0 {
+		return nil
+	}
+	index := m.projectSessionCursor
+	if index < 0 || index >= len(sessions) {
+		index = 0
+	}
+	session := sessions[index]
+	return &session
+}
+
+// clampProjectSessionCursor keeps the project session cursor in range.
+func (m *model) clampProjectSessionCursor() {
+	sessions := m.projectSessions()
+	if m.projectSessionCursor < 0 {
+		m.projectSessionCursor = 0
+	}
+	if len(sessions) > 0 && m.projectSessionCursor >= len(sessions) {
+		m.projectSessionCursor = len(sessions) - 1
+	}
+}
+
+// statusText returns the status message only when it belongs to the current
+// screen, preventing messages from leaking between unrelated screens.
+func (m model) statusText() string {
+	if m.status == "" {
+		return ""
+	}
+	if m.statusScreen != 0 && m.statusScreen != m.screen {
+		return ""
+	}
+	return m.status
+}
+
 // sessionsView renders the durable session history.
 func (m model) sessionsView() string {
 	var b strings.Builder
@@ -1165,8 +1369,8 @@ func (m model) sessionsView() string {
 	b.WriteString("\n↑/↓ select   enter open session   r refresh   b/esc back   q quit\n")
 	if m.busy {
 		b.WriteString("\nWorking…\n")
-	} else if m.status != "" {
-		b.WriteString("\n" + m.status + "\n")
+	} else if m.statusText() != "" {
+		b.WriteString("\n" + m.statusText() + "\n")
 	}
 	return b.String()
 }
@@ -1197,7 +1401,12 @@ func (m model) helpView() string {
 		"  ?            this help\n" +
 		"  q            quit\n\n" +
 		"Project\n" +
-		"  n            new work plan request\n" +
+		"  type          enter a natural-language request directly\n" +
+		"  enter        submit request or open selected session\n" +
+		"  tab          switch focus between composer and session navigation\n" +
+		"  ↑/↓          select or scroll sessions\n" +
+		"  esc          clear input or leave composer focus\n" +
+		"  n            focus the composer for a new request\n" +
 		"  r            refresh\n" +
 		"  b/esc        back to the dashboard\n\n" +
 		"b/esc returns to the previous screen. Quitting closes the frontend only;\n" +
@@ -1222,7 +1431,7 @@ func (m model) inputView(title, label string) string {
 		busy = "\n\nWorking…"
 	}
 	displayedInput := strings.ReplaceAll(m.input, "\n", "\n  ")
-	return fmt.Sprintf("Forgehand · %s%s\n\n%s:\n> %s█\n\nenter submit  esc cancel%s\n\n%s\n", title, project, label, displayedInput, busy, m.status)
+	return fmt.Sprintf("Forgehand · %s%s\n\n%s:\n> %s█\n\nenter submit  esc cancel%s\n\n%s\n", title, project, label, displayedInput, busy, m.statusText())
 }
 
 func (m model) recoveryView() string {
@@ -1256,8 +1465,8 @@ func (m model) modelsView() string {
 	b.WriteString("\ns start  m model  ←/→ repetitions  enter results  c cancel  t retry interrupted  r refresh  b/esc back  q quit\n")
 	if m.busy {
 		b.WriteString("\nWorking…\n")
-	} else if m.status != "" {
-		b.WriteString("\n" + m.status + "\n")
+	} else if m.statusText() != "" {
+		b.WriteString("\n" + m.statusText() + "\n")
 	}
 	return b.String()
 }
