@@ -38,6 +38,7 @@ The system will maintain durable project knowledge, coordinate specialized worke
 - [Deterministic work planner](docs/WORK-PLANNER.md)
 - [Linux Installation Guide](docs/LINUX-INSTALLATION.md)
 - [Remote API foundation and mandatory TOTP](docs/REMOTE-API-PHASE1.md)
+- [Desktop client (Avalonia, Phase 1)](docs/DESKTOP-CLIENT.md)
 
 ## Security
 
