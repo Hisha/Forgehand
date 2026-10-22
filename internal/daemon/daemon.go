@@ -314,11 +314,11 @@ func runWithIdentity(realUID, effectiveUID int, capabilities uint64) error {
 	return runConfigured(configured)
 }
 
-func runConfigured(config Config) error {
-	if err := state.EnsureDirAt(config.StateDir); err != nil {
+func runConfigured(settings Config) error {
+	if err := state.EnsureDirAt(settings.StateDir); err != nil {
 		return err
 	}
-	ownership, err := acquireStateOwnership(config.StateDir)
+	ownership, err := acquireStateOwnership(settings.StateDir)
 	if err != nil {
 		return err
 	}
@@ -327,32 +327,32 @@ func runConfigured(config Config) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	stateDB, err := state.OpenAt(ctx, config.StateDir)
+	stateDB, err := state.OpenAt(ctx, settings.StateDir)
 	if err != nil {
 		return fmt.Errorf("open persistent state: %w", err)
 	}
 	defer stateDB.Close()
 
-	if err := ensureRuntimeDir(config.SocketPath, config.SocketMode); err != nil {
+	if err := ensureRuntimeDir(settings.SocketPath, settings.SocketMode); err != nil {
 		return err
 	}
 
-	if err := prepareSocketPath(config.SocketPath); err != nil {
+	if err := prepareSocketPath(settings.SocketPath); err != nil {
 		return err
 	}
 
-	listener, err := net.Listen("unix", config.SocketPath)
+	listener, err := net.Listen("unix", settings.SocketPath)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", config.SocketPath, err)
+		return fmt.Errorf("listen on %s: %w", settings.SocketPath, err)
 	}
 
 	cleanup := func() {
 		listener.Close()
-		os.Remove(config.SocketPath)
+		os.Remove(settings.SocketPath)
 	}
 	defer cleanup()
 
-	if err := os.Chmod(config.SocketPath, config.SocketMode); err != nil {
+	if err := os.Chmod(settings.SocketPath, settings.SocketMode); err != nil {
 		return fmt.Errorf("secure socket: %w", err)
 	}
 
@@ -398,7 +398,7 @@ func runConfigured(config Config) error {
 	}()
 
 	fmt.Printf("Forgehand daemon running\n")
-	fmt.Printf("Socket: %s\n", config.SocketPath)
+	fmt.Printf("Socket: %s\n", settings.SocketPath)
 	fmt.Printf("PID: %d\n", os.Getpid())
 
 	runID, err := stateDB.StartDaemonRun(
@@ -410,14 +410,14 @@ func runConfigured(config Config) error {
 		return fmt.Errorf("record daemon run: %w", err)
 	}
 
-	model := buildModelRuntime(config.Provider, stateDB)
+	model := buildModelRuntime(settings.Provider, stateDB)
 	if model == nil {
 		fmt.Printf("Model provider not configured; coding sessions will fail\n")
 	} else {
-		fmt.Printf("Model provider configured: %s (model %s)\n", provider.ProviderID, config.Provider.Model)
+		fmt.Printf("Model provider configured: %s (model %s)\n", provider.ProviderID, settings.Provider.Model)
 	}
 
-	task := buildTaskRuntime(model, config.Task)
+	task := buildTaskRuntime(model, settings.Task)
 	if task == nil {
 		fmt.Printf("Task worker not configured; task sessions will fail\n")
 	} else {
@@ -425,7 +425,14 @@ func runConfigured(config Config) error {
 	}
 
 	var workers workerGroup
-	dispatcher := newDispatcher(stateDB, &workers, config.MaxConcurrentWorkers, model, task)
+	dispatcher := newDispatcher(stateDB, &workers, settings.MaxConcurrentWorkers, model, task)
+
+	apiConfig, _, err := config.API()
+	if err != nil {
+		return fmt.Errorf("load remote API configuration: %w", err)
+	}
+
+	accounts := newAccountManager(settings.StateDir, stateDB, apiConfig.SessionTTL)
 
 	defer func() {
 		cancel()
@@ -440,6 +447,18 @@ func runConfigured(config Config) error {
 	}()
 
 	go dispatcher.run(ctx)
+
+	apiServer, err := startRemoteAPI(ctx, accounts)
+	if err != nil {
+		return err
+	}
+	if apiServer != nil {
+		defer func() {
+			shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer shutdownCancel()
+			_ = apiServer.Shutdown(shutdownCtx)
+		}()
+	}
 
 	for {
 		conn, err := listener.Accept()
@@ -459,7 +478,7 @@ func runConfigured(config Config) error {
 			continue
 		}
 
-		go handleConnection(ctx, stateDB, &workers, dispatcher, conn, client)
+		go handleConnection(ctx, stateDB, &workers, dispatcher, conn, client, accounts)
 	}
 }
 
@@ -470,6 +489,7 @@ func handleConnection(
 	disp *dispatcher,
 	conn net.Conn,
 	client ClientIdentity,
+	accounts *accountManager,
 ) {
 	defer conn.Close()
 
@@ -498,6 +518,14 @@ func handleConnection(
 			OK:      false,
 			Message: fmt.Sprintf("incompatible Forgehand build: daemon is %q, client is %q; update or restart the daemon", version.BuildIdentity(), request.ClientBuildIdentity),
 		})
+		return
+	}
+
+	// Local account administration is dispatched before the ordinary command
+	// set. It requires the connecting peer to share the daemon's own user
+	// identity, so it is not reachable by an unauthenticated remote caller.
+	if response, handled := handleAccountCommand(ctx, request, client, accounts); handled {
+		_ = encoder.Encode(response)
 		return
 	}
 

@@ -479,6 +479,81 @@ ALTER TABLE model_results ADD COLUMN total_tokens INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE model_results ADD COLUMN latency_ms INTEGER NOT NULL DEFAULT 0;
 `,
 	},
+	{
+		version: 22,
+		sql: `
+CREATE TABLE accounts (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	username TEXT NOT NULL UNIQUE,
+	display_name TEXT NOT NULL DEFAULT '',
+	role TEXT NOT NULL DEFAULT 'user',
+	status TEXT NOT NULL DEFAULT 'pending',
+	password_hash TEXT NOT NULL,
+	totp_algorithm TEXT NOT NULL DEFAULT 'SHA1',
+	totp_secret_ciphertext TEXT NOT NULL DEFAULT '',
+	totp_confirmed INTEGER NOT NULL DEFAULT 0,
+	totp_last_counter INTEGER NOT NULL DEFAULT -1,
+	failed_attempts INTEGER NOT NULL DEFAULT 0,
+	locked_until TEXT,
+	created_at TEXT NOT NULL,
+	updated_at TEXT NOT NULL,
+	activated_at TEXT
+);
+
+CREATE TABLE account_recovery_codes (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_id INTEGER NOT NULL,
+	code_hash TEXT NOT NULL,
+	used_at TEXT,
+	created_at TEXT NOT NULL,
+	FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+);
+
+CREATE UNIQUE INDEX idx_account_recovery_codes_hash
+ON account_recovery_codes(code_hash);
+
+CREATE INDEX idx_account_recovery_codes_account_id
+ON account_recovery_codes(account_id);
+
+CREATE TABLE account_sessions (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	account_id INTEGER NOT NULL,
+	token_hash TEXT NOT NULL UNIQUE,
+	created_at TEXT NOT NULL,
+	expires_at TEXT NOT NULL,
+	last_seen_at TEXT,
+	revoked_at TEXT,
+	revoked_reason TEXT NOT NULL DEFAULT '',
+	FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE
+);
+
+CREATE INDEX idx_account_sessions_account_id
+ON account_sessions(account_id);
+
+CREATE TABLE account_projects (
+	account_id INTEGER NOT NULL,
+	project_id INTEGER NOT NULL,
+	granted_at TEXT NOT NULL,
+	PRIMARY KEY (account_id, project_id),
+	FOREIGN KEY(account_id) REFERENCES accounts(id) ON DELETE CASCADE,
+	FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE TABLE auth_audit_events (
+	id INTEGER PRIMARY KEY AUTOINCREMENT,
+	event_type TEXT NOT NULL,
+	account_id INTEGER,
+	username TEXT NOT NULL DEFAULT '',
+	remote_address TEXT NOT NULL DEFAULT '',
+	outcome TEXT NOT NULL DEFAULT '',
+	detail TEXT NOT NULL DEFAULT '',
+	created_at TEXT NOT NULL
+);
+
+CREATE INDEX idx_auth_audit_events_created_at
+ON auth_audit_events(created_at);
+`,
+	},
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

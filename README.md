@@ -37,10 +37,19 @@ The system will maintain durable project knowledge, coordinate specialized worke
 - [Terminal interface](docs/TUI.md)
 - [Deterministic work planner](docs/WORK-PLANNER.md)
 - [Linux Installation Guide](docs/LINUX-INSTALLATION.md)
+- [Remote API foundation and mandatory TOTP](docs/REMOTE-API-PHASE1.md)
 
 ## Security
 
 Forgehand treats security as a core architectural requirement. All generated and externally supplied code is untrusted until verified; security verification is separate from functional verification and operates under a fail-closed model. See [Security Principles](docs/SECURITY-PRINCIPLES.md) for details. Planned security capabilities (scanning, authorization, sandboxing, etc.) are documented there as future work, not current implementations.
+
+The daemon can expose a versioned, authenticated network API for native desktop
+clients. The listener is **disabled by default** and, when enabled, is
+restricted to the loopback interface. Interactive access requires a password
+**and** an RFC 6238 one-time password; there is no password-only mode. The
+public-exposure release gate in `docs/SECURITY-PRINCIPLES.md` is not satisfied
+yet, so the daemon must not be exposed to a public network. See
+[Remote API foundation and mandatory TOTP](docs/REMOTE-API-PHASE1.md).
 
 ## License
 

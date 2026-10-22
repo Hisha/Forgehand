@@ -255,7 +255,7 @@ func roundTripRequest(
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleConnection(ctx, db, workers, dispatcher, server, ClientIdentity{})
+		handleConnection(ctx, db, workers, dispatcher, server, ClientIdentity{}, nil)
 	}()
 
 	if err := json.NewEncoder(client).Encode(request); err != nil {

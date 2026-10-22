@@ -151,7 +151,7 @@ func qualificationRoundTrip(t *testing.T, db *state.Database, workers *workerGro
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		handleConnection(context.Background(), db, workers, dispatcher, server, ClientIdentity{})
+		handleConnection(context.Background(), db, workers, dispatcher, server, ClientIdentity{}, nil)
 	}()
 	if err := json.NewEncoder(client).Encode(request); err != nil {
 		t.Fatal(err)

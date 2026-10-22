@@ -74,6 +74,9 @@ func main() {
 	case "sessions":
 		err = listSessions()
 
+	case "account":
+		err = accountCommand(os.Args[2:])
+
 	default:
 		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", os.Args[1])
 		usage()
@@ -1897,6 +1900,13 @@ func usage() {
 	fmt.Println("  task reject <session-id>        Reject the pending proposal and resume the task")
 	fmt.Println("  task cleanup <session-id>       Remove the isolated task workspace")
 	fmt.Println("  model qualify --model <id> --capability planning --runs <n> --output <path> [--timeout <duration>]  Evaluate a model without changing authorization")
+	fmt.Println("  account bootstrap-admin --username <name>  Create the first administrator and print its one-time enrollment material")
+	fmt.Println("  account activate --username <name>  Confirm one-time password enrollment and activate the account")
+	fmt.Println("  account list  List the known accounts")
+	fmt.Println("  account grant --username <name> --project <id>  Authorize an account to access a project")
+	fmt.Println("  account revoke --username <name> --project <id>  Remove an account's authorization for a project")
+	fmt.Println("  account disable --username <name>  Disable an account and revoke its sessions")
+	fmt.Println("  account revoke-sessions --username <name>  Revoke every session of an account")
 }
 
 func startCodingSession(title, task, model string, projectID int64) error {

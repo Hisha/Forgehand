@@ -51,6 +51,14 @@ type Request struct {
 	QualificationID int64    `json:"qualification_id,omitempty"`
 	Capability      string   `json:"capability,omitempty"`
 	Repetitions     int      `json:"repetitions,omitempty"`
+	// Account administration fields. They are accepted only by the local
+	// Unix socket commands, which require the connecting peer to share the
+	// daemon's own user identity.
+	Username     string `json:"username,omitempty"`
+	DisplayName  string `json:"display_name,omitempty"`
+	Password     string `json:"password,omitempty"`
+	TOTPCode     string `json:"totp_code,omitempty"`
+	RecoveryCode string `json:"recovery_code,omitempty"`
 }
 
 type Session struct {
@@ -216,6 +224,34 @@ type Response struct {
 	// ResourceBlockedExecutions counts QUEUED executions currently blocked by
 	// an exclusive resource held by a running execution.
 	ResourceBlockedExecutions int `json:"resource_blocked_executions,omitempty"`
+	// Account describes a remote-access identity without any secret.
+	Account *Account `json:"account,omitempty"`
+	// Accounts lists remote-access identities without any secret.
+	Accounts []Account `json:"accounts,omitempty"`
+	// Enrollment carries the one-time enrollment material of a newly created
+	// account. It is produced only by the local administrative command and
+	// is never logged.
+	Enrollment *Enrollment `json:"enrollment,omitempty"`
+}
+
+// Account is a remote-access identity as exposed over the local IPC. It
+// carries no password hash, no one-time password secret, and no token.
+type Account struct {
+	ID           int64  `json:"id"`
+	Username     string `json:"username"`
+	DisplayName  string `json:"display_name,omitempty"`
+	Role         string `json:"role"`
+	Status       string `json:"status"`
+	TOTPEnrolled bool   `json:"totp_enrolled"`
+}
+
+// Enrollment is the one-time material required to enrol an authenticator
+// application. The secret and the recovery codes are shown exactly once and
+// are never persisted in plaintext.
+type Enrollment struct {
+	Secret          string   `json:"secret"`
+	ProvisioningURI string   `json:"provisioning_uri"`
+	RecoveryCodes   []string `json:"recovery_codes"`
 }
 
 type ProviderConfiguration struct {
