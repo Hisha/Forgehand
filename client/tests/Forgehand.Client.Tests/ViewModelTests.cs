@@ -154,6 +154,193 @@ public sealed class ProjectsViewModelTests
     }
 }
 
+public sealed class WorkspaceViewModelTests
+{
+    private static async Task<(ForgehandService Service, ProjectsViewModel Workspace)> CreateAsync(FakeForgehandApi api)
+    {
+        var service = new ForgehandService(ServerEndpoint.Default, _ => api);
+        await service.SignInAsync("alice", "pw", "123456", CancellationToken.None);
+        var workspace = new ProjectsViewModel(service);
+        await workspace.LoadAsync();
+        return (service, workspace);
+    }
+
+    private static FakeForgehandApi ApiWithProjects(params ProjectResponse[] projects) => new()
+    {
+        Projects = _ => Task.FromResult<IReadOnlyList<ProjectResponse>>(projects),
+    };
+
+    [Fact]
+    public async Task SelectingProjectLoadsItsSessions()
+    {
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", "/srv/alpha"));
+        api.ProjectSessions = (_, projectId, _) => Task.FromResult<IReadOnlyList<SessionSummaryResponse>>(
+            [TestData.SessionSummary(11, projectId)]);
+        var (_, workspace) = await CreateAsync(api);
+
+        await workspace.SelectProjectAsync(Assert.Single(workspace.Projects));
+
+        Assert.Equal(1, workspace.SelectedProject!.Id);
+        Assert.Equal(11, Assert.Single(workspace.Sessions).Id);
+        Assert.True(workspace.HasLoadedSessions);
+        Assert.Equal(1, api.ProjectSessionCalls);
+    }
+
+    [Fact]
+    public async Task SelectingSessionLoadsReadOnlyDetails()
+    {
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", "/srv/alpha"));
+        api.ProjectSessions = (_, _, _) => Task.FromResult<IReadOnlyList<SessionSummaryResponse>>(
+            [TestData.SessionSummary(11, 1)]);
+        api.SessionDetails = (_, id, _) => Task.FromResult(TestData.SessionSummary(id, 1, "Detailed title"));
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+
+        await workspace.SelectSessionAsync(workspace.Sessions[0]);
+
+        Assert.Equal("Detailed title", workspace.SessionDetails!.Title);
+        Assert.True(workspace.HasSessionDetails);
+        Assert.Equal(1, api.SessionCalls);
+    }
+
+    [Fact]
+    public async Task EmptySessionListShowsEmptyState()
+    {
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        var (_, workspace) = await CreateAsync(api);
+
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+
+        Assert.Empty(workspace.Sessions);
+        Assert.True(workspace.ShowSessionEmptyState);
+    }
+
+    [Fact]
+    public async Task SwitchingProjectsDiscardsLateSessionResponse()
+    {
+        var pending = new TaskCompletionSource<IReadOnlyList<SessionSummaryResponse>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var api = ApiWithProjects(
+            new ProjectResponse(1, "Alpha", null),
+            new ProjectResponse(2, "Beta", null));
+        api.ProjectSessions = (_, projectId, _) => projectId == 1
+            ? pending.Task
+            : Task.FromResult<IReadOnlyList<SessionSummaryResponse>>([TestData.SessionSummary(22, 2, "Beta session")]);
+        var (_, workspace) = await CreateAsync(api);
+
+        var firstLoad = workspace.SelectProjectAsync(workspace.Projects[0]);
+        await workspace.SelectProjectAsync(workspace.Projects[1]);
+        pending.SetResult([TestData.SessionSummary(11, 1, "Stale Alpha session")]);
+        await firstLoad;
+
+        Assert.Equal(2, workspace.SelectedProject!.Id);
+        Assert.Equal("Beta session", Assert.Single(workspace.Sessions).Title);
+    }
+
+    [Fact]
+    public async Task RefreshingSessionsReplacesOldData()
+    {
+        var responses = new Queue<IReadOnlyList<SessionSummaryResponse>>();
+        responses.Enqueue([TestData.SessionSummary(11, 1, "Before")]);
+        responses.Enqueue([TestData.SessionSummary(12, 1, "After")]);
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        api.ProjectSessions = (_, _, _) => Task.FromResult(responses.Dequeue());
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+
+        await workspace.RefreshSessionsCommand.ExecuteAsync(null);
+
+        Assert.Equal("After", Assert.Single(workspace.Sessions).Title);
+        Assert.Equal(2, api.ProjectSessionCalls);
+    }
+
+    [Fact]
+    public async Task RefreshRemovesRevokedSelectedProjectAndAllScopedData()
+    {
+        IReadOnlyList<ProjectResponse> grants = [new ProjectResponse(1, "Alpha", null)];
+        var api = new FakeForgehandApi
+        {
+            Projects = _ => Task.FromResult(grants),
+            ProjectSessions = (_, _, _) => Task.FromResult<IReadOnlyList<SessionSummaryResponse>>(
+                [TestData.SessionSummary(11, 1)]),
+            SessionDetails = (_, _, _) => Task.FromResult(TestData.SessionSummary(11, 1)),
+        };
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+        await workspace.SelectSessionAsync(workspace.Sessions[0]);
+
+        grants = [];
+        await workspace.LoadAsync();
+
+        Assert.Empty(workspace.Projects);
+        Assert.Null(workspace.SelectedProject);
+        Assert.Empty(workspace.Sessions);
+        Assert.Null(workspace.SelectedSession);
+        Assert.Null(workspace.SessionDetails);
+    }
+
+    [Fact]
+    public async Task MissingSessionClearsDetailsAndShowsSpecificMessage()
+    {
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        api.ProjectSessions = (_, _, _) => Task.FromResult<IReadOnlyList<SessionSummaryResponse>>(
+            [TestData.SessionSummary(11, 1)]);
+        api.SessionDetails = (_, _, _) => Task.FromException<SessionSummaryResponse>(
+            ForgehandApiException.For(ApiFailure.NotFound));
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+
+        await workspace.SelectSessionAsync(workspace.Sessions[0]);
+
+        Assert.Null(workspace.SessionDetails);
+        Assert.True(workspace.HasSessionDetailError);
+        Assert.Contains("no longer available", workspace.SessionDetailErrorMessage);
+    }
+
+    [Fact]
+    public async Task LogoutWhileSessionsPendingPreventsLateDataFromReturning()
+    {
+        var pending = new TaskCompletionSource<IReadOnlyList<SessionSummaryResponse>>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        api.ProjectSessions = (_, _, _) => pending.Task;
+        var (service, workspace) = await CreateAsync(api);
+
+        var load = workspace.SelectProjectAsync(workspace.Projects[0]);
+        await service.SignOutAsync();
+        workspace.Clear();
+        pending.SetResult([TestData.SessionSummary(11, 1)]);
+        await load;
+
+        Assert.Empty(workspace.Projects);
+        Assert.Empty(workspace.Sessions);
+        Assert.Null(workspace.SessionDetails);
+    }
+
+    [Fact]
+    public async Task LateSessionDetailsCannotRepopulateAfterNavigation()
+    {
+        var pending = new TaskCompletionSource<SessionSummaryResponse>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        api.ProjectSessions = (_, _, _) => Task.FromResult<IReadOnlyList<SessionSummaryResponse>>(
+            [TestData.SessionSummary(11, 1), TestData.SessionSummary(12, 1)]);
+        api.SessionDetails = (_, id, _) => id == 11
+            ? pending.Task
+            : Task.FromResult(TestData.SessionSummary(12, 1, "Current"));
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+
+        var first = workspace.SelectSessionAsync(workspace.Sessions[0]);
+        await workspace.SelectSessionAsync(workspace.Sessions[1]);
+        pending.SetResult(TestData.SessionSummary(11, 1, "Stale"));
+        await first;
+
+        Assert.Equal(12, workspace.SelectedSession!.Id);
+        Assert.Equal("Current", workspace.SessionDetails!.Title);
+    }
+}
+
 public sealed class ShellViewModelTests : IDisposable
 {
     private readonly string _settingsPath = Path.Combine(

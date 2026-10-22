@@ -128,6 +128,53 @@ public sealed class ForgehandApiClientTests
     }
 
     [Fact]
+    public async Task ProjectSessionsUseAuthorizedProjectRouteAndParseReturnedFields()
+    {
+        var handler = new ScriptedHttpHandler(_ => ScriptedHttpHandler.Json(
+            HttpStatusCode.OK,
+            """[{"id":41,"title":"Investigate","state":"RUNNING","project_id":7,"task":"Find cause","kind":"task","provider":"openai","model":"gpt-test","created_at":"2026-10-22T12:00:00Z","updated_at":"2026-10-22T12:05:00Z"}]"""));
+        using var client = CreateClient(handler);
+
+        var sessions = await client.GetProjectSessionsAsync("tok-123", 7, CancellationToken.None);
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("/api/v1/projects/7/sessions", request.Path);
+        Assert.Equal("Bearer tok-123", request.Authorization);
+        var session = Assert.Single(sessions);
+        Assert.Equal(41, session.Id);
+        Assert.Equal("Find cause", session.Task);
+        Assert.Equal("gpt-test", session.Model);
+    }
+
+    [Fact]
+    public async Task SessionDetailsUseReadOnlySessionRoute()
+    {
+        var handler = new ScriptedHttpHandler(_ => ScriptedHttpHandler.Json(
+            HttpStatusCode.OK,
+            """{"id":41,"title":"Investigate","state":"COMPLETED","project_id":7,"created_at":"2026-10-22T12:00:00Z","updated_at":"2026-10-22T12:05:00Z"}"""));
+        using var client = CreateClient(handler);
+
+        var session = await client.GetSessionAsync("tok-123", 41, CancellationToken.None);
+
+        Assert.Equal("/api/v1/sessions/41", Assert.Single(handler.Requests).Path);
+        Assert.Equal("COMPLETED", session.State);
+    }
+
+    [Fact]
+    public async Task MissingSessionMapsToNotFoundWithoutExposingServerText()
+    {
+        var handler = new ScriptedHttpHandler(_ => ScriptedHttpHandler.Json(
+            HttpStatusCode.NotFound,
+            """{"error":{"code":"not_found","message":"session 41 belongs to private project"}}"""));
+        using var client = CreateClient(handler);
+
+        var exception = await ExpectFailureAsync(() => client.GetSessionAsync("tok-123", 41, CancellationToken.None));
+
+        Assert.Equal(ApiFailure.NotFound, exception.Failure);
+        Assert.DoesNotContain("private", exception.Message);
+    }
+
+    [Fact]
     public async Task ProjectsUnauthorizedMeansSessionExpired()
     {
         var handler = new ScriptedHttpHandler(_ => ScriptedHttpHandler.Json(

@@ -5,8 +5,8 @@
         x:Class="Forgehand.Client.Views.MainWindow"
         x:DataType="vm:ShellViewModel"
         Title="Forgehand"
-        Width="1040" Height="700"
-        MinWidth="760" MinHeight="560"
+        Width="1180" Height="760"
+        MinWidth="820" MinHeight="580"
         Background="{DynamicResource WindowBackgroundBrush}">
 
   <Grid RowDefinitions="Auto,Auto,Auto,*,Auto">

@@ -97,17 +97,41 @@ public sealed class ForgehandService : IDisposable
 
     public async Task<IReadOnlyList<ProjectResponse>> GetProjectsAsync(CancellationToken cancellationToken)
     {
-        var session = _session ?? throw new InvalidOperationException("Sign in before loading projects.");
+        return await WithSessionAsync(
+            (api, token, cancellation) => api.GetProjectsAsync(token, cancellation),
+            cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<SessionSummaryResponse>> GetProjectSessionsAsync(
+        long projectId,
+        CancellationToken cancellationToken)
+    {
+        return await WithSessionAsync(
+            (api, token, cancellation) => api.GetProjectSessionsAsync(token, projectId, cancellation),
+            cancellationToken);
+    }
+
+    public async Task<SessionSummaryResponse> GetSessionAsync(long sessionId, CancellationToken cancellationToken)
+    {
+        return await WithSessionAsync(
+            (api, token, cancellation) => api.GetSessionAsync(token, sessionId, cancellation),
+            cancellationToken);
+    }
+
+    private async Task<T> WithSessionAsync<T>(
+        Func<IForgehandApi, string, CancellationToken, Task<T>> request,
+        CancellationToken cancellationToken)
+    {
+        var session = _session ?? throw new InvalidOperationException("Sign in before loading Forgehand data.");
         try
         {
-            var projects = await _api.GetProjectsAsync(session.Token, cancellationToken);
+            var result = await request(_api, session.Token, cancellationToken);
             if (!ReferenceEquals(session, _session))
             {
-                // Sign-out happened while the request was in flight. Discard the result.
-                throw new OperationCanceledException("The session ended before the project list was received.");
+                throw new OperationCanceledException("The session ended before the response was received.");
             }
 
-            return projects;
+            return result;
         }
         catch (ForgehandApiException exception) when (exception.Failure == ApiFailure.SessionExpired)
         {

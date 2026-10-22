@@ -55,6 +55,10 @@ internal static class TestData
         token,
         "2026-10-22T20:00:00Z",
         new AccountResponse(7, "alice", "Alice", "admin", "active", true));
+
+    public static SessionSummaryResponse SessionSummary(long id, long projectId, string title = "Investigate") => new(
+        id, title, "RUNNING", projectId, "Inspect the failure", "task", "openai", "gpt-test",
+        "2026-10-22T12:00:00Z", "2026-10-22T12:05:00Z");
 }
 
 /// <summary>An in-memory API double for service and view model tests.</summary>
@@ -71,9 +75,19 @@ internal sealed class FakeForgehandApi : IForgehandApi
     public Func<string, Task<IReadOnlyList<ProjectResponse>>> Projects { get; set; } =
         _ => Task.FromResult<IReadOnlyList<ProjectResponse>>(Array.Empty<ProjectResponse>());
 
+    public Func<string, long, CancellationToken, Task<IReadOnlyList<SessionSummaryResponse>>> ProjectSessions { get; set; } =
+        (_, _, _) => Task.FromResult<IReadOnlyList<SessionSummaryResponse>>(Array.Empty<SessionSummaryResponse>());
+
+    public Func<string, long, CancellationToken, Task<SessionSummaryResponse>> SessionDetails { get; set; } =
+        (_, id, _) => Task.FromResult(TestData.SessionSummary(id, 1));
+
     public int LoginCalls { get; private set; }
 
     public int ProjectCalls { get; private set; }
+
+    public int ProjectSessionCalls { get; private set; }
+
+    public int SessionCalls { get; private set; }
 
     public Task<HealthResponse> GetHealthAsync(CancellationToken cancellationToken) => Health(cancellationToken);
 
@@ -89,6 +103,20 @@ internal sealed class FakeForgehandApi : IForgehandApi
     {
         ProjectCalls++;
         return Projects(token);
+    }
+
+    public Task<IReadOnlyList<SessionSummaryResponse>> GetProjectSessionsAsync(
+        string token, long projectId, CancellationToken cancellationToken)
+    {
+        ProjectSessionCalls++;
+        return ProjectSessions(token, projectId, cancellationToken);
+    }
+
+    public Task<SessionSummaryResponse> GetSessionAsync(
+        string token, long sessionId, CancellationToken cancellationToken)
+    {
+        SessionCalls++;
+        return SessionDetails(token, sessionId, cancellationToken);
     }
 
     public void Dispose()

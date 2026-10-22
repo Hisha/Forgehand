@@ -4,63 +4,194 @@
              x:Class="Forgehand.Client.Views.ProjectsView"
              x:DataType="vm:ProjectsViewModel">
 
-  <Grid Margin="28" RowDefinitions="Auto,Auto,Auto,*">
+  <Grid ColumnDefinitions="240,*">
+    <Border Grid.Column="0" Classes="sidebar">
+      <Grid RowDefinitions="Auto,Auto,Auto,*">
+        <Grid ColumnDefinitions="*,Auto">
+          <StackPanel Spacing="3">
+            <TextBlock Text="Projects" Classes="heading" />
+            <TextBlock Text="Authorized access" Classes="muted small" />
+          </StackPanel>
+          <Button Grid.Column="1" Content="Refresh" Command="{Binding RefreshCommand}" VerticalAlignment="Top" />
+        </Grid>
 
-    <Grid Grid.Row="0" ColumnDefinitions="*,Auto">
-      <StackPanel Spacing="4">
-        <TextBlock Text="Authorized projects" Classes="heading" />
-        <TextBlock Classes="muted"
-                   Text="Only the projects that the daemon authorizes for your account are listed." />
-      </StackPanel>
-      <Button Grid.Column="1"
-              Content="Refresh"
-              VerticalAlignment="Top"
-              Command="{Binding RefreshCommand}" />
-    </Grid>
+        <Border Grid.Row="1" Classes="error" Margin="0,14,0,0" IsVisible="{Binding HasError}">
+          <TextBlock Text="{Binding ErrorMessage}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+        </Border>
 
-    <Border Grid.Row="1" Classes="error" Margin="0,16,0,0" IsVisible="{Binding HasError}">
-      <TextBlock Text="{Binding ErrorMessage}" Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+        <TextBlock Grid.Row="2" Margin="0,14,0,0" Classes="muted"
+                   Text="Loading projects…" IsVisible="{Binding IsLoading}" />
+
+        <Border Grid.Row="3" Classes="card" Padding="14" Margin="0,14,0,0"
+                VerticalAlignment="Top" IsVisible="{Binding ShowProjectEmptyState}">
+          <StackPanel Spacing="6">
+            <TextBlock Text="No authorized projects" FontWeight="SemiBold" />
+            <TextBlock Classes="muted small"
+                       Text="Ask an administrator to grant access, then refresh." />
+          </StackPanel>
+        </Border>
+
+        <ListBox Grid.Row="3" Margin="0,14,0,0"
+                 ItemsSource="{Binding Projects}"
+                 SelectedItem="{Binding SelectedProject, Mode=TwoWay}"
+                 IsVisible="{Binding ShowProjects}">
+          <ListBox.ItemTemplate>
+            <DataTemplate x:DataType="vm:ProjectItem">
+              <StackPanel Margin="4,8" Spacing="4">
+                <TextBlock Text="{Binding Name}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                <TextBlock Text="{Binding IdText}" Classes="muted small" />
+              </StackPanel>
+            </DataTemplate>
+          </ListBox.ItemTemplate>
+        </ListBox>
+      </Grid>
     </Border>
 
-    <TextBlock Grid.Row="2"
-               Margin="0,16,0,0"
-               Classes="muted"
-               Text="Loading projects…"
-               IsVisible="{Binding IsLoading}" />
+    <Grid Grid.Column="1">
+      <Border Classes="empty-workspace" IsVisible="{Binding ShowWorkspaceEmptyState}">
+        <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="8" MaxWidth="380">
+          <TextBlock Text="Select a project" Classes="heading" HorizontalAlignment="Center" />
+          <TextBlock Text="Choose an authorized project to inspect its persisted sessions."
+                     Classes="muted" TextAlignment="Center" />
+        </StackPanel>
+      </Border>
 
-    <Border Grid.Row="2" Classes="card" Padding="20" Margin="0,16,0,0"
-            IsVisible="{Binding ShowEmptyState}">
-      <StackPanel Spacing="6">
-        <TextBlock Text="No projects are authorized for this account." Classes="title" />
-        <TextBlock Classes="muted"
-                   Text="Ask a Forgehand administrator to grant this account access to a project, then refresh." />
-      </StackPanel>
-    </Border>
+      <Grid IsVisible="{Binding ShowWorkspace}" RowDefinitions="Auto,*">
+        <Border Classes="workspace-header">
+          <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
+            <TextBlock Text="{Binding SelectedProject.Name}" Classes="heading" />
+            <TextBlock Grid.Column="1" Text="{Binding SelectedProject.IdText}" Classes="muted" />
+            <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Margin="0,5,0,0"
+                       Text="Repository / root path" Classes="label" />
+            <TextBlock x:Name="ProjectRootPath" Grid.Row="2" Grid.ColumnSpan="2" Margin="0,3,0,0"
+                       Text="{Binding SelectedProject.RootPath}" Classes="mono"
+                       IsVisible="{Binding SelectedProject.HasRootPath}" TextTrimming="CharacterEllipsis" />
+            <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Margin="0,3,0,0"
+                       Text="Not provided by the daemon" Classes="muted small"
+                       IsVisible="{Binding !SelectedProject.HasRootPath}" />
+          </Grid>
+        </Border>
 
-    <ScrollViewer Grid.Row="3" Margin="0,16,0,0" IsVisible="{Binding ShowProjects}">
-      <ItemsControl ItemsSource="{Binding Projects}">
-        <ItemsControl.ItemTemplate>
-          <DataTemplate x:DataType="vm:ProjectItem">
-            <Border Classes="card" Padding="16,14" Margin="0,0,0,10">
-              <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
-                <TextBlock Grid.Row="0" Grid.Column="0"
-                           Text="{Binding Name}"
-                           FontWeight="SemiBold"
-                           FontSize="15"
-                           Foreground="{DynamicResource TextBrush}" />
-                <TextBlock Grid.Row="0" Grid.Column="1"
-                           Text="{Binding IdText}"
-                           Classes="muted small" />
-                <TextBlock Grid.Row="1" Grid.Column="0" Grid.ColumnSpan="2"
-                           Margin="0,6,0,0"
-                           Text="{Binding RootPath}"
-                           Classes="mono"
-                           IsVisible="{Binding HasRootPath}" />
+        <Grid Grid.Row="1" ColumnDefinitions="340,*">
+          <Border Grid.Column="0" Classes="session-list-panel">
+            <Grid RowDefinitions="Auto,Auto,Auto,*">
+              <Grid ColumnDefinitions="*,Auto">
+                <StackPanel Spacing="2">
+                  <TextBlock Text="Sessions" Classes="title" />
+                  <TextBlock Text="Persisted for this project" Classes="muted small" />
+                </StackPanel>
+                <Button Grid.Column="1" Content="Refresh" Command="{Binding RefreshSessionsCommand}" />
               </Grid>
+
+              <Border Grid.Row="1" Classes="error" Margin="0,12,0,0" IsVisible="{Binding HasSessionError}">
+                <TextBlock Text="{Binding SessionErrorMessage}" Foreground="{DynamicResource DangerBrush}"
+                           TextWrapping="Wrap" />
+              </Border>
+
+              <TextBlock Grid.Row="2" Margin="0,12,0,0" Text="Loading sessions…"
+                         Classes="muted" IsVisible="{Binding IsLoadingSessions}" />
+
+              <Border Grid.Row="3" Classes="card" Padding="14" Margin="0,12,0,0"
+                      VerticalAlignment="Top" IsVisible="{Binding ShowSessionEmptyState}">
+                <StackPanel Spacing="5">
+                  <TextBlock Text="No sessions" FontWeight="SemiBold" />
+                  <TextBlock Text="This project has no persisted sessions." Classes="muted small" />
+                </StackPanel>
+              </Border>
+
+              <ListBox Grid.Row="3" Margin="0,12,0,0"
+                       ItemsSource="{Binding Sessions}"
+                       SelectedItem="{Binding SelectedSession, Mode=TwoWay}"
+                       IsVisible="{Binding ShowSessions}">
+                <ListBox.ItemTemplate>
+                  <DataTemplate x:DataType="vm:SessionItem">
+                    <Grid Margin="4,8" ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
+                      <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+                      <Border Grid.Column="1" Classes="state-pill">
+                        <TextBlock Text="{Binding State}" Classes="small" />
+                      </Border>
+                      <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Margin="0,4,0,0"
+                                 Text="{Binding Task}" Classes="muted small"
+                                 IsVisible="{Binding HasTask}" TextTrimming="CharacterEllipsis" />
+                      <TextBlock Grid.Row="2" Grid.ColumnSpan="2" Margin="0,4,0,0"
+                                 Text="{Binding IdText}" Classes="muted small" />
+                    </Grid>
+                  </DataTemplate>
+                </ListBox.ItemTemplate>
+              </ListBox>
+            </Grid>
+          </Border>
+
+          <Grid Grid.Column="1">
+            <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Spacing="6"
+                        IsVisible="{Binding ShowSessionSelectionState}">
+              <TextBlock Text="Select a session" Classes="title" HorizontalAlignment="Center" />
+              <TextBlock Text="Its persisted details will appear here." Classes="muted" />
+            </StackPanel>
+
+            <TextBlock Text="Loading session details…" Classes="muted"
+                       HorizontalAlignment="Center" VerticalAlignment="Center"
+                       IsVisible="{Binding IsLoadingSessionDetails}" />
+
+            <Border Classes="error" Margin="24" VerticalAlignment="Top"
+                    IsVisible="{Binding HasSessionDetailError}">
+              <TextBlock Text="{Binding SessionDetailErrorMessage}" Foreground="{DynamicResource DangerBrush}"
+                         TextWrapping="Wrap" />
             </Border>
-          </DataTemplate>
-        </ItemsControl.ItemTemplate>
-      </ItemsControl>
-    </ScrollViewer>
+
+            <ScrollViewer IsVisible="{Binding HasSessionDetails}">
+              <Border Padding="24" DataContext="{Binding SessionDetails}">
+                <StackPanel x:DataType="vm:SessionItem" Spacing="20">
+                  <StackPanel Spacing="6">
+                    <TextBlock Text="Session details" Classes="muted small" />
+                    <TextBlock x:Name="SessionDetailTitle" Text="{Binding Title}" Classes="heading" TextWrapping="Wrap" />
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                      <Border Classes="state-pill"><TextBlock Text="{Binding State}" Classes="small" /></Border>
+                      <TextBlock Text="{Binding IdText}" Classes="muted small" VerticalAlignment="Center" />
+                    </StackPanel>
+                  </StackPanel>
+
+                  <StackPanel Spacing="6" IsVisible="{Binding HasTask}">
+                    <TextBlock Text="Task" Classes="label" />
+                    <TextBlock Text="{Binding Task}" TextWrapping="Wrap" />
+                  </StackPanel>
+
+                  <Grid ColumnDefinitions="*,*" ColumnSpacing="24">
+                    <StackPanel Spacing="6">
+                      <TextBlock Text="Provider" Classes="label" />
+                      <TextBlock Text="{Binding Provider}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="6">
+                      <TextBlock Text="Model" Classes="label" />
+                      <TextBlock Text="{Binding Model}" />
+                    </StackPanel>
+                  </Grid>
+
+                  <Grid ColumnDefinitions="*,*" ColumnSpacing="24">
+                    <StackPanel Spacing="6" IsVisible="{Binding HasKind}">
+                      <TextBlock Text="Kind" Classes="label" />
+                      <TextBlock Text="{Binding Kind}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="6">
+                      <TextBlock Text="Project ID" Classes="label" />
+                      <TextBlock Text="{Binding ProjectId}" Classes="mono" />
+                    </StackPanel>
+                  </Grid>
+
+                  <Border Classes="card" Padding="14">
+                    <Grid RowDefinitions="Auto,Auto" ColumnDefinitions="Auto,*" RowSpacing="10" ColumnSpacing="16">
+                      <TextBlock Text="Created" Classes="label" />
+                      <TextBlock Grid.Column="1" Text="{Binding CreatedAt}" Classes="mono" TextWrapping="Wrap" />
+                      <TextBlock Grid.Row="1" Text="Updated" Classes="label" />
+                      <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding UpdatedAt}" Classes="mono" TextWrapping="Wrap" />
+                    </Grid>
+                  </Border>
+                </StackPanel>
+              </Border>
+            </ScrollViewer>
+          </Grid>
+        </Grid>
+      </Grid>
+    </Grid>
   </Grid>
 </UserControl>

@@ -40,6 +40,43 @@
     <Setter Property="CornerRadius" Value="8" />
   </Style>
 
+  <Style Selector="Border.sidebar">
+    <Setter Property="Background" Value="{DynamicResource SurfaceBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource PanelBorderBrush}" />
+    <Setter Property="BorderThickness" Value="0,0,1,0" />
+    <Setter Property="Padding" Value="18" />
+  </Style>
+
+  <Style Selector="Border.workspace-header">
+    <Setter Property="Background" Value="{DynamicResource SurfaceAltBrush}" />
+    <Setter Property="BorderBrush" Value="{DynamicResource PanelBorderBrush}" />
+    <Setter Property="BorderThickness" Value="0,0,0,1" />
+    <Setter Property="Padding" Value="22,18" />
+  </Style>
+
+  <Style Selector="Border.session-list-panel">
+    <Setter Property="BorderBrush" Value="{DynamicResource PanelBorderBrush}" />
+    <Setter Property="BorderThickness" Value="0,0,1,0" />
+    <Setter Property="Padding" Value="18" />
+  </Style>
+
+  <Style Selector="Border.empty-workspace">
+    <Setter Property="Padding" Value="24" />
+  </Style>
+
+  <Style Selector="Border.state-pill">
+    <Setter Property="Background" Value="#253145" />
+    <Setter Property="BorderBrush" Value="#3A4D6B" />
+    <Setter Property="BorderThickness" Value="1" />
+    <Setter Property="CornerRadius" Value="10" />
+    <Setter Property="Padding" Value="8,2" />
+  </Style>
+
+  <Style Selector="ListBox">
+    <Setter Property="Background" Value="Transparent" />
+    <Setter Property="BorderThickness" Value="0" />
+  </Style>
+
   <Style Selector="Border.error">
     <Setter Property="Background" Value="{DynamicResource DangerBackgroundBrush}" />
     <Setter Property="BorderBrush" Value="{DynamicResource DangerBorderBrush}" />

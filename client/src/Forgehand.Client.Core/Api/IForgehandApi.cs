@@ -10,4 +10,9 @@ public interface IForgehandApi : IDisposable
     Task LogoutAsync(string token, CancellationToken cancellationToken);
 
     Task<IReadOnlyList<ProjectResponse>> GetProjectsAsync(string token, CancellationToken cancellationToken);
+
+    Task<IReadOnlyList<SessionSummaryResponse>> GetProjectSessionsAsync(
+        string token, long projectId, CancellationToken cancellationToken);
+
+    Task<SessionSummaryResponse> GetSessionAsync(string token, long sessionId, CancellationToken cancellationToken);
 }

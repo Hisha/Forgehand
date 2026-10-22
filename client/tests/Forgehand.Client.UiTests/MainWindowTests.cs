@@ -1,4 +1,5 @@
 using Avalonia.Headless.XUnit;
+using Avalonia.Controls;
 using Avalonia.VisualTree;
 using Forgehand.Client.Core.Api;
 using Forgehand.Client.Core.Configuration;
@@ -70,9 +71,40 @@ public sealed class MainWindowTests
         window.Close();
     }
 
+    [AvaloniaFact]
+    public async Task WorkspaceSelectionDisplaysSessionDetails()
+    {
+        var api = new StubApi
+        {
+            Projects = [new ProjectResponse(1, "Alpha", "/srv/alpha")],
+            Sessions =
+            [
+                new SessionSummaryResponse(
+                    11, "Investigate failure", "RUNNING", 1, "Find the cause", "task", "openai", "gpt-test",
+                    "2026-10-22T12:00:00Z", "2026-10-22T12:05:00Z"),
+            ],
+        };
+        var (window, shell, service) = CreateWindow(api);
+        await service.SignInAsync("alice", "pw", "123456", CancellationToken.None);
+        await shell.Projects.LoadAsync();
+
+        await shell.Projects.SelectProjectAsync(shell.Projects.Projects[0]);
+        await shell.Projects.SelectSessionAsync(shell.Projects.Sessions[0]);
+        window.UpdateLayout();
+
+        Assert.Equal("Investigate failure", shell.Projects.SessionDetails!.Title);
+        var projects = window.GetVisualDescendants().OfType<ProjectsView>().Single();
+        Assert.Equal("Investigate failure", projects.FindControl<TextBlock>("SessionDetailTitle")!.Text);
+        Assert.Equal("/srv/alpha", projects.FindControl<TextBlock>("ProjectRootPath")!.Text);
+
+        window.Close();
+    }
+
     private sealed class StubApi : IForgehandApi
     {
         public IReadOnlyList<ProjectResponse> Projects { get; set; } = [];
+
+        public IReadOnlyList<SessionSummaryResponse> Sessions { get; set; } = [];
 
         public Task<HealthResponse> GetHealthAsync(CancellationToken cancellationToken) =>
             Task.FromResult(new HealthResponse("ok", "test", "test", "v1", "2026-10-22T12:00:00Z"));
@@ -87,6 +119,14 @@ public sealed class MainWindowTests
 
         public Task<IReadOnlyList<ProjectResponse>> GetProjectsAsync(string token, CancellationToken cancellationToken) =>
             Task.FromResult(Projects);
+
+        public Task<IReadOnlyList<SessionSummaryResponse>> GetProjectSessionsAsync(
+            string token, long projectId, CancellationToken cancellationToken) =>
+            Task.FromResult(Sessions);
+
+        public Task<SessionSummaryResponse> GetSessionAsync(
+            string token, long sessionId, CancellationToken cancellationToken) =>
+            Task.FromResult(Sessions.Single(session => session.Id == sessionId));
 
         public void Dispose()
         {

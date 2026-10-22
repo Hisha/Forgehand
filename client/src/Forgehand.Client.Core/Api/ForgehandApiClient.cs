@@ -67,6 +67,28 @@ public sealed class ForgehandApiClient : IForgehandApi
         return projects;
     }
 
+    public async Task<IReadOnlyList<SessionSummaryResponse>> GetProjectSessionsAsync(
+        string token,
+        long projectId,
+        CancellationToken cancellationToken)
+    {
+        var sessions = await SendAsync<List<SessionSummaryResponse>>(
+            HttpMethod.Get, $"api/v1/projects/{projectId}/sessions", token, body: null, cancellationToken);
+        if (sessions.Any(session => session is null || session.ProjectId != projectId))
+        {
+            throw ForgehandApiException.For(ApiFailure.UnexpectedResponse, _endpoint);
+        }
+
+        return sessions;
+    }
+
+    public Task<SessionSummaryResponse> GetSessionAsync(
+        string token,
+        long sessionId,
+        CancellationToken cancellationToken) =>
+        SendAsync<SessionSummaryResponse>(
+            HttpMethod.Get, $"api/v1/sessions/{sessionId}", token, body: null, cancellationToken);
+
     public void Dispose()
     {
         _httpClient.Dispose();
@@ -177,6 +199,7 @@ public sealed class ForgehandApiClient : IForgehandApi
             (HttpStatusCode.Forbidden, "enrollment_required") => ApiFailure.EnrollmentRequired,
             (HttpStatusCode.Forbidden, "account_disabled") => ApiFailure.AccountDisabled,
             (HttpStatusCode.Forbidden, "forbidden") => ApiFailure.Forbidden,
+            (HttpStatusCode.NotFound, _) => ApiFailure.NotFound,
             (HttpStatusCode.TooManyRequests, "account_locked") => ApiFailure.AccountLocked,
             (HttpStatusCode.TooManyRequests, "throttled") => ApiFailure.Throttled,
             (HttpStatusCode.BadRequest, "invalid_request") => ApiFailure.InvalidRequest,

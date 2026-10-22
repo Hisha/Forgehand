@@ -43,6 +43,18 @@ public sealed record ProjectResponse(
     [property: JsonPropertyName("name")] string Name,
     [property: JsonPropertyName("root_path")] string? RootPath);
 
+public sealed record SessionSummaryResponse(
+    [property: JsonPropertyName("id")] long Id,
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("state")] string State,
+    [property: JsonPropertyName("project_id")] long ProjectId,
+    [property: JsonPropertyName("task")] string? Task,
+    [property: JsonPropertyName("kind")] string? Kind,
+    [property: JsonPropertyName("provider")] string? Provider,
+    [property: JsonPropertyName("model")] string? Model,
+    [property: JsonPropertyName("created_at")] string CreatedAt,
+    [property: JsonPropertyName("updated_at")] string UpdatedAt);
+
 internal sealed record ErrorEnvelope([property: JsonPropertyName("error")] ErrorDetail? Error);
 
 internal sealed record ErrorDetail([property: JsonPropertyName("code")] string? Code);
