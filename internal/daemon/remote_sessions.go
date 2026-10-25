@@ -57,6 +57,28 @@ func (o *remoteSessionOperations) QueueSessionExecution(
 	return state.SessionExecution{}, err
 }
 
+func (o *remoteSessionOperations) ListSessionExecutionRecords(
+	ctx context.Context,
+	sessionID int64,
+	limit int,
+) ([]state.SessionExecutionRecord, bool, error) {
+	if o == nil || o.db == nil {
+		return nil, false, remoteapi.ErrExecutionUnavailable
+	}
+	return o.db.ListSessionExecutionRecords(ctx, sessionID, limit)
+}
+
+func (o *remoteSessionOperations) GetSessionExecutionRecord(
+	ctx context.Context,
+	sessionID, executionID int64,
+	contentOffset, contentLimit int,
+) (state.SessionExecutionRecord, error) {
+	if o == nil || o.db == nil {
+		return state.SessionExecutionRecord{}, remoteapi.ErrExecutionUnavailable
+	}
+	return o.db.GetSessionExecutionRecord(ctx, sessionID, executionID, contentOffset, contentLimit)
+}
+
 func queueSessionForExecution(
 	ctx context.Context,
 	db *state.Database,

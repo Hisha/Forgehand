@@ -58,15 +58,97 @@ public sealed class SessionItem
     private static string? EmptyToNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 }
 
+public sealed class ExecutionItem
+{
+    public ExecutionItem(ExecutionDetailResponse execution)
+    {
+        Response = execution;
+        Id = execution.Id;
+        SessionId = execution.SessionId;
+        Status = execution.Status ?? string.Empty;
+        StartedAt = execution.StartedAt ?? string.Empty;
+        CompletedAt = EmptyToNull(execution.CompletedAt);
+        CanceledAt = EmptyToNull(execution.CanceledAt);
+        CancelReason = EmptyToNull(execution.CancelReason);
+        FailureKind = EmptyToNull(execution.FailureKind);
+        FailureReason = EmptyToNull(execution.FailureReason);
+        Kind = EmptyToNull(execution.Kind);
+        Provider = EmptyToNull(execution.Provider);
+        Model = EmptyToNull(execution.Model);
+        ResultCreatedAt = EmptyToNull(execution.ResultCreatedAt);
+    }
+
+    public ExecutionDetailResponse Response { get; }
+    public long Id { get; }
+    public long SessionId { get; }
+    public string Status { get; }
+    public string StartedAt { get; }
+    public string? CompletedAt { get; }
+    public string? CanceledAt { get; }
+    public string? CancelReason { get; }
+    public string? FailureKind { get; }
+    public string? FailureReason { get; }
+    public string? Kind { get; }
+    public string? Provider { get; }
+    public string? Model { get; }
+    public string? ResultCreatedAt { get; }
+    public bool ResultAvailable => Response.ResultAvailable;
+    public bool HasFailure => FailureKind is not null || FailureReason is not null;
+    public bool HasCancellation => CanceledAt is not null || CancelReason is not null;
+    public bool HasProvider => Provider is not null;
+    public bool HasModel => Model is not null;
+    public bool HasTokens => Response.TotalTokens > 0;
+    public bool HasLatency => Response.LatencyMs > 0;
+    public string IdText => $"Execution {Id}";
+    public string ProgressText => Response.TotalSteps > 0
+        ? $"Step {Response.CurrentStep} of {Response.TotalSteps}"
+        : string.Empty;
+    public string TokenText => $"{Response.TotalTokens:N0} total ({Response.PromptTokens:N0} prompt, {Response.CompletionTokens:N0} completion)";
+    public string LatencyText => $"{Response.LatencyMs:N0} ms";
+    public string DurationText
+    {
+        get
+        {
+            if (!DateTimeOffset.TryParse(StartedAt, out var start)) return string.Empty;
+            var terminal = CompletedAt ?? CanceledAt ?? ResultCreatedAt;
+            if (!DateTimeOffset.TryParse(terminal, out var end) || end < start) return string.Empty;
+            return (end - start).TotalSeconds < 1
+                ? $"{(end - start).TotalMilliseconds:N0} ms"
+                : $"{(end - start).TotalSeconds:N1} s";
+        }
+    }
+    public bool HasDuration => DurationText.Length > 0;
+
+    private static string? EmptyToNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
+}
+
+public sealed class ExecutionResultItem
+{
+    public ExecutionResultItem(ExecutionRecordResponse record)
+    {
+        Execution = new ExecutionItem(record.Execution);
+        Result = record.Result;
+    }
+
+    public ExecutionItem Execution { get; }
+    public ModelResultResponse? Result { get; }
+    public bool HasResult => Result is not null;
+    public bool HasNoResult => Result is null;
+    public string Content => Result?.Content ?? string.Empty;
+}
+
 public sealed partial class ProjectsViewModel : ObservableObject
 {
     private readonly ForgehandService _service;
     private CancellationTokenSource? _projectsCancellation;
     private CancellationTokenSource? _sessionsCancellation;
     private CancellationTokenSource? _detailCancellation;
+    private CancellationTokenSource? _executionsCancellation;
+    private CancellationTokenSource? _executionResultCancellation;
     private CancellationTokenSource? _writeCancellation;
     private ProjectItem? _selectedProject;
     private SessionItem? _selectedSession;
+    private ExecutionItem? _selectedExecution;
 
     public ProjectsViewModel(ForgehandService service)
     {
@@ -74,10 +156,12 @@ public sealed partial class ProjectsViewModel : ObservableObject
         _service.CompatibilityChanged += OnCompatibilityChanged;
         Projects.CollectionChanged += (_, _) => RaiseProjectState();
         Sessions.CollectionChanged += (_, _) => RaiseSessionState();
+        Executions.CollectionChanged += (_, _) => RaiseExecutionState();
     }
 
     public ObservableCollection<ProjectItem> Projects { get; } = [];
     public ObservableCollection<SessionItem> Sessions { get; } = [];
+    public ObservableCollection<ExecutionItem> Executions { get; } = [];
 
     public ProjectItem? SelectedProject
     {
@@ -89,6 +173,12 @@ public sealed partial class ProjectsViewModel : ObservableObject
     {
         get => _selectedSession;
         set => _ = SelectSessionAsync(value);
+    }
+
+    public ExecutionItem? SelectedExecution
+    {
+        get => _selectedExecution;
+        set => _ = SelectExecutionAsync(value);
     }
 
     [ObservableProperty]
@@ -129,6 +219,34 @@ public sealed partial class ProjectsViewModel : ObservableObject
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(HasSessionDetails))]
     private SessionItem? _sessionDetails;
+
+    [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(RefreshExecutionsCommand))]
+    [NotifyPropertyChangedFor(nameof(ShowExecutionEmptyState))]
+    private bool _isLoadingExecutions;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(ShowExecutionEmptyState))]
+    private bool _hasLoadedExecutions;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasExecutionError))]
+    [NotifyPropertyChangedFor(nameof(ShowExecutionEmptyState))]
+    private string? _executionErrorMessage;
+
+    [ObservableProperty]
+    private bool _isExecutionHistoryTruncated;
+
+    [ObservableProperty]
+    private bool _isLoadingExecutionResult;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasExecutionResultError))]
+    private string? _executionResultErrorMessage;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasSelectedExecutionResult))]
+    private ExecutionResultItem? _selectedExecutionResult;
 
     [ObservableProperty]
     private bool _isNewSessionFormOpen;
@@ -177,6 +295,13 @@ public sealed partial class ProjectsViewModel : ObservableObject
     public bool HasNewSessionError => NewSessionErrorMessage is not null;
     public bool HasRunError => RunErrorMessage is not null;
     public bool HasRunStatus => RunStatusMessage is not null;
+    public bool HasExecutionError => ExecutionErrorMessage is not null;
+    public bool HasExecutionResultError => ExecutionResultErrorMessage is not null;
+    public bool ShowExecutions => Executions.Count > 0;
+    public bool ShowExecutionEmptyState => HasLoadedExecutions && !IsLoadingExecutions && !HasExecutionError && Executions.Count == 0;
+    public bool HasSelectedExecutionResult => SelectedExecutionResult is not null;
+    public bool HasSelectedExecution => SelectedExecution is not null;
+    public bool CanCopyResult => SelectedExecutionResult?.HasResult == true;
     public bool CanModifySessions => _service.IsApiCompatible;
     public bool HasCompatibilityWarning => !CanModifySessions;
     public string CompatibilityMessage => _service.CompatibilityExplanation;
@@ -189,6 +314,9 @@ public sealed partial class ProjectsViewModel : ObservableObject
 
     [RelayCommand(CanExecute = nameof(CanRefreshSessions))]
     private Task RefreshSessionsAsync() => LoadSessionsAsync();
+
+    [RelayCommand(CanExecute = nameof(CanRefreshExecutions))]
+    private Task RefreshExecutionsAsync() => LoadExecutionsAsync(preserveSelection: true);
 
     [RelayCommand(CanExecute = nameof(CanOpenNewSession))]
     private void OpenNewSession()
@@ -311,6 +439,7 @@ public sealed partial class ProjectsViewModel : ObservableObject
 
     private bool CanRefresh() => !IsLoading;
     private bool CanRefreshSessions() => SelectedProject is not null && !IsLoadingSessions;
+    private bool CanRefreshExecutions() => SelectedSession is not null && !IsLoadingExecutions;
     private bool CanOpenNewSession() =>
         CanModifySessions && SelectedProject is not null && !IsCreatingSession && !IsSubmittingRun;
     private bool CanCreateSession() =>
@@ -324,6 +453,8 @@ public sealed partial class ProjectsViewModel : ObservableObject
     partial void OnIsRunConfirmationOpenChanged(bool value) => ConfirmRunCommand.NotifyCanExecuteChanged();
     partial void OnSessionDetailsChanged(SessionItem? value) => NotifyRunCommands();
     partial void OnIsLoadingSessionDetailsChanged(bool value) => NotifyRunCommands();
+    partial void OnSelectedExecutionResultChanged(ExecutionResultItem? value) =>
+        OnPropertyChanged(nameof(CanCopyResult));
 
     public async Task LoadAsync()
     {
@@ -375,6 +506,7 @@ public sealed partial class ProjectsViewModel : ObservableObject
 
         CancelAndDispose(ref _sessionsCancellation);
         CancelAndDispose(ref _detailCancellation);
+        ClearExecutionState();
         CancelAndDispose(ref _writeCancellation);
         SetProperty(ref _selectedProject, project, nameof(SelectedProject));
         Sessions.Clear();
@@ -399,6 +531,7 @@ public sealed partial class ProjectsViewModel : ObservableObject
 
         CancelAndDispose(ref _sessionsCancellation);
         CancelAndDispose(ref _detailCancellation);
+        ClearExecutionState();
         CancelAndDispose(ref _writeCancellation);
         var cancellation = new CancellationTokenSource();
         _sessionsCancellation = cancellation;
@@ -448,6 +581,7 @@ public sealed partial class ProjectsViewModel : ObservableObject
         if (ReferenceEquals(session, _selectedSession)) return;
 
         CancelAndDispose(ref _detailCancellation);
+        ClearExecutionState();
         CancelAndDispose(ref _writeCancellation);
         SetSelectedSession(session);
         SessionDetails = null;
@@ -474,6 +608,7 @@ public sealed partial class ProjectsViewModel : ObservableObject
                 throw ForgehandApiException.For(ApiFailure.UnexpectedResponse);
 
             SessionDetails = new SessionItem(details);
+            await LoadExecutionsAsync(preserveSelection: false);
         }
         catch (ForgehandApiException exception)
         {
@@ -492,17 +627,111 @@ public sealed partial class ProjectsViewModel : ObservableObject
         }
     }
 
+    public async Task LoadExecutionsAsync(bool preserveSelection = true)
+    {
+        var session = SelectedSession;
+        if (session is null) return;
+
+        CancelAndDispose(ref _executionsCancellation);
+        CancelAndDispose(ref _executionResultCancellation);
+        var cancellation = new CancellationTokenSource();
+        _executionsCancellation = cancellation;
+        var selectedId = preserveSelection ? SelectedExecution?.Id : null;
+        IsLoadingExecutions = true;
+        ExecutionErrorMessage = null;
+        ExecutionResultErrorMessage = null;
+        SelectedExecutionResult = null;
+        try
+        {
+            var history = await _service.GetSessionExecutionsAsync(session.Id, cancellation.Token);
+            if (!ReferenceEquals(cancellation, _executionsCancellation) || !ReferenceEquals(session, SelectedSession)) return;
+            if (history.Executions.Any(item => item.SessionId != session.Id))
+                throw ForgehandApiException.For(ApiFailure.UnexpectedResponse);
+
+            Executions.Clear();
+            foreach (var execution in history.Executions) Executions.Add(new ExecutionItem(execution));
+            HasLoadedExecutions = true;
+            IsExecutionHistoryTruncated = history.Truncated;
+            var selection = selectedId is null
+                ? Executions.FirstOrDefault()
+                : Executions.FirstOrDefault(item => item.Id == selectedId) ?? Executions.FirstOrDefault();
+            await SelectExecutionAsync(selection);
+        }
+        catch (ForgehandApiException exception)
+        {
+            if (!ReferenceEquals(cancellation, _executionsCancellation) || !ReferenceEquals(session, SelectedSession)) return;
+            Executions.Clear();
+            SetSelectedExecution(null);
+            HasLoadedExecutions = false;
+            ExecutionErrorMessage = exception.Failure is ApiFailure.Forbidden or ApiFailure.NotFound
+                ? "Execution history is no longer available for this session."
+                : exception.Message;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(cancellation, _executionsCancellation)) IsLoadingExecutions = false;
+        }
+    }
+
+    public async Task SelectExecutionAsync(ExecutionItem? execution)
+    {
+        if (ReferenceEquals(execution, _selectedExecution)) return;
+        CancelAndDispose(ref _executionResultCancellation);
+        SetSelectedExecution(execution);
+        SelectedExecutionResult = null;
+        ExecutionResultErrorMessage = null;
+        if (execution is null)
+        {
+            IsLoadingExecutionResult = false;
+            return;
+        }
+
+        var session = SelectedSession;
+        var cancellation = new CancellationTokenSource();
+        _executionResultCancellation = cancellation;
+        IsLoadingExecutionResult = true;
+        try
+        {
+            var record = await _service.GetSessionExecutionAsync(execution.SessionId, execution.Id, cancellation.Token);
+            if (!ReferenceEquals(cancellation, _executionResultCancellation) ||
+                !ReferenceEquals(execution, SelectedExecution) || !ReferenceEquals(session, SelectedSession)) return;
+            if (record.Execution.Id != execution.Id || record.Execution.SessionId != execution.SessionId)
+                throw ForgehandApiException.For(ApiFailure.UnexpectedResponse);
+            SelectedExecutionResult = new ExecutionResultItem(record);
+        }
+        catch (ForgehandApiException exception)
+        {
+            if (!ReferenceEquals(cancellation, _executionResultCancellation) || !ReferenceEquals(execution, SelectedExecution)) return;
+            ExecutionResultErrorMessage = exception.Message;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(cancellation, _executionResultCancellation)) IsLoadingExecutionResult = false;
+        }
+    }
+
     public void Clear()
     {
         CancelAndDispose(ref _projectsCancellation);
         CancelAndDispose(ref _sessionsCancellation);
         CancelAndDispose(ref _detailCancellation);
+        CancelAndDispose(ref _executionsCancellation);
+        CancelAndDispose(ref _executionResultCancellation);
         CancelAndDispose(ref _writeCancellation);
         Projects.Clear();
         Sessions.Clear();
         SetProperty(ref _selectedProject, null, nameof(SelectedProject));
         SetSelectedSession(null);
         SessionDetails = null;
+        Executions.Clear();
+        SetSelectedExecution(null);
+        SelectedExecutionResult = null;
         IsLoading = false;
         IsLoadingSessions = false;
         IsLoadingSessionDetails = false;
@@ -511,6 +740,12 @@ public sealed partial class ProjectsViewModel : ObservableObject
         ErrorMessage = null;
         SessionErrorMessage = null;
         SessionDetailErrorMessage = null;
+        ExecutionErrorMessage = null;
+        ExecutionResultErrorMessage = null;
+        HasLoadedExecutions = false;
+        IsLoadingExecutions = false;
+        IsLoadingExecutionResult = false;
+        IsExecutionHistoryTruncated = false;
         ResetWriteUI(clearDraft: true);
         RaiseWorkspaceState();
         RefreshSessionsCommand.NotifyCanExecuteChanged();
@@ -522,6 +757,29 @@ public sealed partial class ProjectsViewModel : ObservableObject
         SetProperty(ref _selectedSession, session, nameof(SelectedSession));
         OnPropertyChanged(nameof(ShowSessionSelectionState));
         NotifyRunCommands();
+    }
+
+    private void SetSelectedExecution(ExecutionItem? execution)
+    {
+        SetProperty(ref _selectedExecution, execution, nameof(SelectedExecution));
+        OnPropertyChanged(nameof(HasSelectedExecution));
+        OnPropertyChanged(nameof(CanCopyResult));
+    }
+
+    private void ClearExecutionState()
+    {
+        CancelAndDispose(ref _executionsCancellation);
+        CancelAndDispose(ref _executionResultCancellation);
+        Executions.Clear();
+        SetSelectedExecution(null);
+        SelectedExecutionResult = null;
+        ExecutionErrorMessage = null;
+        ExecutionResultErrorMessage = null;
+        HasLoadedExecutions = false;
+        IsLoadingExecutions = false;
+        IsLoadingExecutionResult = false;
+        IsExecutionHistoryTruncated = false;
+        RefreshExecutionsCommand.NotifyCanExecuteChanged();
     }
 
     private void ResetWriteUI(bool clearDraft)
@@ -596,5 +854,11 @@ public sealed partial class ProjectsViewModel : ObservableObject
         OnPropertyChanged(nameof(ShowWorkspaceEmptyState));
         OnPropertyChanged(nameof(ShowSessionEmptyState));
         OnPropertyChanged(nameof(ShowSessionSelectionState));
+    }
+
+    private void RaiseExecutionState()
+    {
+        OnPropertyChanged(nameof(ShowExecutions));
+        OnPropertyChanged(nameof(ShowExecutionEmptyState));
     }
 }

@@ -69,6 +69,52 @@ public sealed record RunSessionResponse(
     [property: JsonPropertyName("session")] SessionSummaryResponse Session,
     [property: JsonPropertyName("execution")] ExecutionResponse Execution);
 
+public sealed record ExecutionDetailResponse(
+    [property: JsonPropertyName("id")] long Id,
+    [property: JsonPropertyName("session_id")] long SessionId,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("current_step")] int CurrentStep,
+    [property: JsonPropertyName("total_steps")] int TotalSteps,
+    [property: JsonPropertyName("started_at")] string StartedAt,
+    [property: JsonPropertyName("completed_at")] string? CompletedAt,
+    [property: JsonPropertyName("canceled_at")] string? CanceledAt,
+    [property: JsonPropertyName("cancel_reason")] string? CancelReason,
+    [property: JsonPropertyName("failure_kind")] string? FailureKind,
+    [property: JsonPropertyName("failure_reason")] string? FailureReason,
+    [property: JsonPropertyName("kind")] string? Kind,
+    [property: JsonPropertyName("result_available")] bool ResultAvailable,
+    [property: JsonPropertyName("provider")] string? Provider,
+    [property: JsonPropertyName("model")] string? Model,
+    [property: JsonPropertyName("result_created_at")] string? ResultCreatedAt,
+    [property: JsonPropertyName("prompt_tokens")] int PromptTokens,
+    [property: JsonPropertyName("completion_tokens")] int CompletionTokens,
+    [property: JsonPropertyName("total_tokens")] int TotalTokens,
+    [property: JsonPropertyName("latency_ms")] long LatencyMs);
+
+public sealed record ExecutionHistoryResponse(
+    [property: JsonPropertyName("executions")] IReadOnlyList<ExecutionDetailResponse> Executions,
+    [property: JsonPropertyName("truncated")] bool Truncated);
+
+public sealed record ModelResultResponse(
+    [property: JsonPropertyName("id")] long Id,
+    [property: JsonPropertyName("execution_id")] long ExecutionId,
+    [property: JsonPropertyName("provider")] string Provider,
+    [property: JsonPropertyName("model")] string Model,
+    [property: JsonPropertyName("content")] string Content,
+    [property: JsonPropertyName("created_at")] string CreatedAt,
+    [property: JsonPropertyName("prompt_tokens")] int PromptTokens,
+    [property: JsonPropertyName("completion_tokens")] int CompletionTokens,
+    [property: JsonPropertyName("total_tokens")] int TotalTokens,
+    [property: JsonPropertyName("latency_ms")] long LatencyMs,
+    [property: JsonPropertyName("content_offset")] int ContentOffset,
+    [property: JsonPropertyName("next_offset")] int NextOffset,
+    [property: JsonPropertyName("total_characters")] int TotalCharacters,
+    [property: JsonPropertyName("complete")] bool Complete);
+
+public sealed record ExecutionRecordResponse(
+    [property: JsonPropertyName("execution")] ExecutionDetailResponse Execution,
+    [property: JsonPropertyName("result")] ModelResultResponse? Result);
+
 internal sealed record ErrorEnvelope([property: JsonPropertyName("error")] ErrorDetail? Error);
 
 internal sealed record ErrorDetail([property: JsonPropertyName("code")] string? Code);

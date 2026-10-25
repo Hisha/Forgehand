@@ -22,6 +22,12 @@ const MaxRequestBytes = 64 * 1024
 // path segment.
 const MaxIdentifierLength = 32
 
+const (
+	MaxExecutionHistory            = 200
+	DefaultResultContentCharacters = 64 * 1024
+	MaxResultContentCharacters     = 128 * 1024
+)
+
 // Creation limits keep user-authored content bounded before it reaches the
 // durable session engine. The overall request remains subject to
 // MaxRequestBytes as well.

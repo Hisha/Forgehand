@@ -71,6 +71,8 @@ func NewServer(options Options) (*Server, error) {
 	mux.HandleFunc("GET "+APIBasePath+"/projects/{projectID}/sessions", server.handleProjectSessions)
 	mux.HandleFunc("POST "+APIBasePath+"/projects/{projectID}/sessions", server.handleCreateProjectSession)
 	mux.HandleFunc("GET "+APIBasePath+"/sessions/{sessionID}", server.handleSession)
+	mux.HandleFunc("GET "+APIBasePath+"/sessions/{sessionID}/executions", server.handleSessionExecutions)
+	mux.HandleFunc("GET "+APIBasePath+"/sessions/{sessionID}/executions/{executionID}", server.handleSessionExecution)
 	mux.HandleFunc("POST "+APIBasePath+"/sessions/{sessionID}/run", server.handleRunSession)
 	mux.HandleFunc("/", server.handleNotFound)
 
@@ -367,6 +369,96 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, toSessionResponse(session))
 }
 
+// handleSessionExecutions lists persisted attempts for one authorized session.
+func (s *Server) handleSessionExecutions(w http.ResponseWriter, r *http.Request) {
+	principal, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	sessionID, ok := parseIdentifier(w, r.PathValue("sessionID"))
+	if !ok {
+		return
+	}
+	if _, err := s.service.GetSession(r.Context(), principal, sessionID); err != nil {
+		writeIdentityError(w, err)
+		return
+	}
+	if s.sessions == nil {
+		writeError(w, http.StatusServiceUnavailable, "execution_unavailable", "execution history is unavailable")
+		return
+	}
+	records, truncated, err := s.sessions.ListSessionExecutionRecords(r.Context(), sessionID, MaxExecutionHistory)
+	if err != nil {
+		writeOperationError(w, err)
+		return
+	}
+	items := make([]executionDetailResponse, 0, len(records))
+	for _, record := range records {
+		items = append(items, toExecutionDetailResponse(record))
+	}
+	writeJSON(w, http.StatusOK, executionHistoryResponse{Executions: items, Truncated: truncated})
+}
+
+// handleSessionExecution returns metadata and a bounded page of result text.
+func (s *Server) handleSessionExecution(w http.ResponseWriter, r *http.Request) {
+	principal, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	sessionID, ok := parseIdentifier(w, r.PathValue("sessionID"))
+	if !ok {
+		return
+	}
+	executionID, ok := parseIdentifier(w, r.PathValue("executionID"))
+	if !ok {
+		return
+	}
+	if _, err := s.service.GetSession(r.Context(), principal, sessionID); err != nil {
+		writeIdentityError(w, err)
+		return
+	}
+	if s.sessions == nil {
+		writeError(w, http.StatusServiceUnavailable, "execution_unavailable", "execution result is unavailable")
+		return
+	}
+	offset, ok := parseNonNegativeQuery(w, r, "offset", 0)
+	if !ok {
+		return
+	}
+	limit, ok := parsePositiveQuery(w, r, "limit", DefaultResultContentCharacters, MaxResultContentCharacters)
+	if !ok {
+		return
+	}
+	record, err := s.sessions.GetSessionExecutionRecord(r.Context(), sessionID, executionID, offset, limit)
+	if errors.Is(err, state.ErrSessionExecutionNotFound) {
+		writeError(w, http.StatusNotFound, "not_found", "the requested resource does not exist")
+		return
+	}
+	if err != nil {
+		writeOperationError(w, err)
+		return
+	}
+	response := executionRecordResponse{Execution: toExecutionDetailResponse(record)}
+	if record.Result != nil {
+		if offset > record.ResultTotalCharacters {
+			writeError(w, http.StatusBadRequest, "invalid_request", "result offset exceeds the content length")
+			return
+		}
+		contentCharacters := len([]rune(record.Result.Content))
+		end := offset + contentCharacters
+		result := toModelResultResponse(*record.Result)
+		result.Content = record.Result.Content
+		result.ContentOffset = offset
+		result.TotalCharacters = record.ResultTotalCharacters
+		result.Complete = end == record.ResultTotalCharacters
+		if !result.Complete {
+			result.NextOffset = end
+		}
+		response.Result = &result
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
 // handleRunSession atomically queues an eligible persisted session and wakes
 // the existing daemon dispatcher. It never waits for worker completion.
 func (s *Server) handleRunSession(w http.ResponseWriter, r *http.Request) {
@@ -522,6 +614,31 @@ func parseIdentifier(w http.ResponseWriter, raw string) (int64, bool) {
 	return value, true
 }
 
+func parseNonNegativeQuery(w http.ResponseWriter, r *http.Request, name string, fallback int) (int, bool) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
+	if raw == "" {
+		return fallback, true
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil || value < 0 {
+		writeError(w, http.StatusBadRequest, "invalid_request", name+" is not valid")
+		return 0, false
+	}
+	return value, true
+}
+
+func parsePositiveQuery(w http.ResponseWriter, r *http.Request, name string, fallback, maximum int) (int, bool) {
+	value, ok := parseNonNegativeQuery(w, r, name, fallback)
+	if !ok {
+		return 0, false
+	}
+	if value <= 0 || value > maximum {
+		writeError(w, http.StatusBadRequest, "invalid_request", name+" is not valid")
+		return 0, false
+	}
+	return value, true
+}
+
 // decodeJSON reads a bounded, strict JSON request body.
 func decodeJSON(w http.ResponseWriter, r *http.Request, target any) bool {
 	contentType := r.Header.Get("Content-Type")
@@ -636,4 +753,43 @@ func toSessionResponse(session state.Session) sessionSummaryResponse {
 		response.ProjectID = *session.ProjectID
 	}
 	return response
+}
+
+func toExecutionDetailResponse(record state.SessionExecutionRecord) executionDetailResponse {
+	execution := record.Execution
+	response := executionDetailResponse{
+		ID: execution.ID, SessionID: execution.SessionID, Status: execution.Status,
+		CurrentStep: execution.CurrentStep, TotalSteps: execution.TotalSteps,
+		StartedAt:   execution.StartedAt.UTC().Format(time.RFC3339Nano),
+		FailureKind: execution.FailureKind, FailureReason: execution.FailureReason,
+		Kind: execution.Kind, ResultAvailable: record.Result != nil,
+	}
+	if execution.CompletedAt != nil {
+		value := execution.CompletedAt.UTC().Format(time.RFC3339Nano)
+		response.CompletedAt = &value
+	}
+	if execution.CanceledAt != nil {
+		value := execution.CanceledAt.UTC().Format(time.RFC3339Nano)
+		response.CanceledAt = &value
+	}
+	response.CancelReason = execution.CancelReason
+	if record.Result != nil {
+		response.Provider = record.Result.Provider
+		response.Model = record.Result.Model
+		response.ResultCreatedAt = record.Result.CreatedAt.UTC().Format(time.RFC3339Nano)
+		response.PromptTokens = record.Result.PromptTokens
+		response.CompletionTokens = record.Result.CompletionTokens
+		response.TotalTokens = record.Result.TotalTokens
+		response.LatencyMS = record.Result.LatencyMS
+	}
+	return response
+}
+
+func toModelResultResponse(result state.ModelResult) modelResultResponse {
+	return modelResultResponse{
+		ID: result.ID, ExecutionID: result.ExecutionID, Provider: result.Provider,
+		Model: result.Model, CreatedAt: result.CreatedAt.UTC().Format(time.RFC3339Nano),
+		PromptTokens: result.PromptTokens, CompletionTokens: result.CompletionTokens,
+		TotalTokens: result.TotalTokens, LatencyMS: result.LatencyMS,
+	}
 }

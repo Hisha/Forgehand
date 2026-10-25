@@ -62,6 +62,22 @@ func (o *testSessionOperations) QueueSessionExecution(
 	return state.SessionExecution{}, err
 }
 
+func (o *testSessionOperations) ListSessionExecutionRecords(
+	ctx context.Context,
+	sessionID int64,
+	limit int,
+) ([]state.SessionExecutionRecord, bool, error) {
+	return o.db.ListSessionExecutionRecords(ctx, sessionID, limit)
+}
+
+func (o *testSessionOperations) GetSessionExecutionRecord(
+	ctx context.Context,
+	sessionID, executionID int64,
+	contentOffset, contentLimit int,
+) (state.SessionExecutionRecord, error) {
+	return o.db.GetSessionExecutionRecord(ctx, sessionID, executionID, contentOffset, contentLimit)
+}
+
 func newHarness(t *testing.T) *harness {
 	t.Helper()
 
@@ -576,6 +592,74 @@ func TestAuthorizedSessionCreationPersistsReadyCodingSession(t *testing.T) {
 	}
 	if !foundAudit {
 		t.Fatal("session creation audit event was not recorded")
+	}
+}
+
+func TestExecutionHistoryAndChunkedResultRequireSessionAuthorization(t *testing.T) {
+	harness := newHarness(t)
+	harness.enroll(t, "alice")
+	allowed, _ := harness.db.CreateProject(context.Background(), "allowed", t.TempDir())
+	forbidden, _ := harness.db.CreateProject(context.Background(), "forbidden", t.TempDir())
+	harness.authorizeProject(t, allowed.ID)
+	allowedSession, _ := harness.db.CreateCodingSession(context.Background(), "Allowed", allowed.ID, "task", "provider", "model")
+	forbiddenSession, _ := harness.db.CreateCodingSession(context.Background(), "Forbidden", forbidden.ID, "task", "provider", "model")
+	execution, err := harness.db.StartSessionExecution(context.Background(), allowedSession.ID, 1)
+	if err != nil {
+		t.Fatalf("start execution: %v", err)
+	}
+	content := "ab😀cd\nfinal"
+	if err := harness.db.CompleteModelExecutionWithMetrics(context.Background(), execution.ID, "actual-provider", "actual-model", content, state.ModelMetrics{PromptTokens: 3, CompletionTokens: 4, TotalTokens: 7, LatencyMS: 25}); err != nil {
+		t.Fatalf("complete execution: %v", err)
+	}
+	forbiddenExecution, err := harness.db.StartSessionExecution(context.Background(), forbiddenSession.ID, 1)
+	if err != nil {
+		t.Fatalf("start forbidden execution fixture: %v", err)
+	}
+	token := harness.login(t, "alice", testPassword, harness.code(harness.secret))
+
+	historyPath := fmt.Sprintf("%s/sessions/%d/executions", APIBasePath, allowedSession.ID)
+	status, payload := harness.do(t, http.MethodGet, historyPath, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("history status=%d body=%s", status, payload)
+	}
+	var history executionHistoryResponse
+	if err := json.Unmarshal(payload, &history); err != nil {
+		t.Fatalf("decode history: %v", err)
+	}
+	if history.Truncated || len(history.Executions) != 1 || !history.Executions[0].ResultAvailable || history.Executions[0].Provider != "actual-provider" {
+		t.Fatalf("history=%+v", history)
+	}
+	if strings.Contains(string(payload), content) {
+		t.Fatal("history response included sensitive result content")
+	}
+
+	detailPath := fmt.Sprintf("%s/sessions/%d/executions/%d?offset=0&limit=4", APIBasePath, allowedSession.ID, execution.ID)
+	status, payload = harness.do(t, http.MethodGet, detailPath, token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("detail status=%d body=%s", status, payload)
+	}
+	var detail executionRecordResponse
+	if err := json.Unmarshal(payload, &detail); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	if detail.Result == nil || detail.Result.Content != "ab😀c" || detail.Result.Complete || detail.Result.NextOffset != 4 || detail.Result.TotalCharacters != 11 {
+		t.Fatalf("first result page=%+v", detail.Result)
+	}
+	status, payload = harness.do(t, http.MethodGet, fmt.Sprintf("%s/sessions/%d/executions/%d?offset=4&limit=20", APIBasePath, allowedSession.ID, execution.ID), token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("second page status=%d body=%s", status, payload)
+	}
+	if err := json.Unmarshal(payload, &detail); err != nil || detail.Result == nil || detail.Result.Content != "d\nfinal" || !detail.Result.Complete {
+		t.Fatalf("second result page=%+v err=%v", detail.Result, err)
+	}
+
+	forbiddenPath := fmt.Sprintf("%s/sessions/%d/executions", APIBasePath, forbiddenSession.ID)
+	if status, _ := harness.do(t, http.MethodGet, forbiddenPath, token, nil); status != http.StatusNotFound {
+		t.Fatalf("unauthorized history status=%d, want 404", status)
+	}
+	crossPath := fmt.Sprintf("%s/sessions/%d/executions/%d", APIBasePath, allowedSession.ID, forbiddenExecution.ID)
+	if status, _ := harness.do(t, http.MethodGet, crossPath, token, nil); status != http.StatusNotFound {
+		t.Fatalf("missing execution status=%d, want 404", status)
 	}
 }
 

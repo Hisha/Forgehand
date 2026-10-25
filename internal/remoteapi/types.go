@@ -84,6 +84,56 @@ type runSessionResponse struct {
 	Execution executionResponse      `json:"execution"`
 }
 
+type executionDetailResponse struct {
+	ID               int64   `json:"id"`
+	SessionID        int64   `json:"session_id"`
+	Status           string  `json:"status"`
+	CurrentStep      int     `json:"current_step"`
+	TotalSteps       int     `json:"total_steps"`
+	StartedAt        string  `json:"started_at"`
+	CompletedAt      *string `json:"completed_at,omitempty"`
+	CanceledAt       *string `json:"canceled_at,omitempty"`
+	CancelReason     *string `json:"cancel_reason,omitempty"`
+	FailureKind      string  `json:"failure_kind,omitempty"`
+	FailureReason    string  `json:"failure_reason,omitempty"`
+	Kind             string  `json:"kind,omitempty"`
+	ResultAvailable  bool    `json:"result_available"`
+	Provider         string  `json:"provider,omitempty"`
+	Model            string  `json:"model,omitempty"`
+	ResultCreatedAt  string  `json:"result_created_at,omitempty"`
+	PromptTokens     int     `json:"prompt_tokens,omitempty"`
+	CompletionTokens int     `json:"completion_tokens,omitempty"`
+	TotalTokens      int     `json:"total_tokens,omitempty"`
+	LatencyMS        int64   `json:"latency_ms,omitempty"`
+}
+
+type executionHistoryResponse struct {
+	Executions []executionDetailResponse `json:"executions"`
+	Truncated  bool                      `json:"truncated"`
+}
+
+type modelResultResponse struct {
+	ID               int64  `json:"id"`
+	ExecutionID      int64  `json:"execution_id"`
+	Provider         string `json:"provider"`
+	Model            string `json:"model"`
+	Content          string `json:"content"`
+	CreatedAt        string `json:"created_at"`
+	PromptTokens     int    `json:"prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens"`
+	TotalTokens      int    `json:"total_tokens"`
+	LatencyMS        int64  `json:"latency_ms"`
+	ContentOffset    int    `json:"content_offset"`
+	NextOffset       int    `json:"next_offset,omitempty"`
+	TotalCharacters  int    `json:"total_characters"`
+	Complete         bool   `json:"complete"`
+}
+
+type executionRecordResponse struct {
+	Execution executionDetailResponse `json:"execution"`
+	Result    *modelResultResponse    `json:"result,omitempty"`
+}
+
 // errorResponse is the single error envelope used by every endpoint.
 type errorResponse struct {
 	Error errorDetail `json:"error"`

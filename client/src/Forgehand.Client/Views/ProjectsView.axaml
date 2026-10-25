@@ -2,6 +2,7 @@
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
              xmlns:vm="clr-namespace:Forgehand.Client.Core.ViewModels;assembly=Forgehand.Client.Core"
              x:Class="Forgehand.Client.Views.ProjectsView"
+             x:Name="Root"
              x:DataType="vm:ProjectsViewModel">
 
   <Grid ColumnDefinitions="240,*">
@@ -195,6 +196,114 @@
                       <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding UpdatedAt}" Classes="mono" TextWrapping="Wrap" />
                     </Grid>
                   </Border>
+
+                  <Border Classes="card" Padding="14">
+                    <StackPanel Spacing="12">
+                      <Grid ColumnDefinitions="*,Auto">
+                        <StackPanel Spacing="3">
+                          <TextBlock Text="Execution history" Classes="title" />
+                          <TextBlock Text="Most recent attempt first" Classes="muted small" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Content="Refresh"
+                                Command="{Binding #Root.DataContext.RefreshExecutionsCommand}" />
+                      </Grid>
+
+                      <TextBlock Text="Loading execution history…" Classes="muted"
+                                 IsVisible="{Binding #Root.DataContext.IsLoadingExecutions}" />
+                      <Border Classes="error" IsVisible="{Binding #Root.DataContext.HasExecutionError}">
+                        <TextBlock Text="{Binding #Root.DataContext.ExecutionErrorMessage}"
+                                   Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+                      </Border>
+                      <TextBlock Text="This session has no recorded executions." Classes="muted"
+                                 IsVisible="{Binding #Root.DataContext.ShowExecutionEmptyState}" />
+                      <TextBlock Text="Older executions are not shown in this bounded history response."
+                                 Classes="muted small"
+                                 IsVisible="{Binding #Root.DataContext.IsExecutionHistoryTruncated}" />
+
+                      <ListBox x:Name="ExecutionHistoryList"
+                               ItemsSource="{Binding #Root.DataContext.Executions}"
+                               SelectedItem="{Binding #Root.DataContext.SelectedExecution, Mode=TwoWay}"
+                               IsVisible="{Binding #Root.DataContext.ShowExecutions}"
+                               MaxHeight="220">
+                        <ListBox.ItemTemplate>
+                          <DataTemplate x:DataType="vm:ExecutionItem">
+                            <Grid Margin="4,7" ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto">
+                              <TextBlock Text="{Binding IdText}" FontWeight="SemiBold" />
+                              <Border Grid.Column="1" Classes="state-pill">
+                                <TextBlock Text="{Binding Status}" Classes="small" />
+                              </Border>
+                              <StackPanel Grid.Row="1" Grid.ColumnSpan="2" Orientation="Horizontal" Spacing="12">
+                                <TextBlock Text="{Binding StartedAt}" Classes="muted small mono" />
+                                <TextBlock Text="{Binding DurationText}" Classes="muted small"
+                                           IsVisible="{Binding HasDuration}" />
+                              </StackPanel>
+                            </Grid>
+                          </DataTemplate>
+                        </ListBox.ItemTemplate>
+                      </ListBox>
+                    </StackPanel>
+                  </Border>
+
+                  <StackPanel Spacing="12" IsVisible="{Binding #Root.DataContext.HasSelectedExecution}">
+                    <Grid ColumnDefinitions="*,Auto">
+                      <StackPanel Spacing="3">
+                        <TextBlock Text="{Binding #Root.DataContext.SelectedExecution.IdText}" Classes="title" />
+                        <TextBlock Text="{Binding #Root.DataContext.SelectedExecution.Status}" Classes="muted" />
+                      </StackPanel>
+                      <Button x:Name="CopyResultButton" Grid.Column="1" Content="Copy result"
+                              IsEnabled="{Binding #Root.DataContext.CanCopyResult}"
+                              Click="CopyResultClicked" />
+                    </Grid>
+
+                    <Grid ColumnDefinitions="*,*" ColumnSpacing="24">
+                      <StackPanel Spacing="5">
+                        <TextBlock Text="Provider" Classes="label" />
+                        <TextBlock Text="{Binding #Root.DataContext.SelectedExecution.Provider}" />
+                        <TextBlock Text="Started" Classes="label" Margin="0,6,0,0" />
+                        <TextBlock Text="{Binding #Root.DataContext.SelectedExecution.StartedAt}" Classes="mono small" TextWrapping="Wrap" />
+                        <TextBlock Text="Duration" Classes="label" Margin="0,6,0,0" />
+                        <TextBlock Text="{Binding #Root.DataContext.SelectedExecution.DurationText}" />
+                      </StackPanel>
+                      <StackPanel Grid.Column="1" Spacing="5">
+                        <TextBlock Text="Model" Classes="label" />
+                        <TextBlock Text="{Binding #Root.DataContext.SelectedExecution.Model}" />
+                        <TextBlock Text="Tokens" Classes="label" Margin="0,6,0,0" />
+                        <TextBlock Text="{Binding #Root.DataContext.SelectedExecution.TokenText}"
+                                   IsVisible="{Binding #Root.DataContext.SelectedExecution.HasTokens}" />
+                        <TextBlock Text="Latency" Classes="label" Margin="0,6,0,0" />
+                        <TextBlock Text="{Binding #Root.DataContext.SelectedExecution.LatencyText}"
+                                   IsVisible="{Binding #Root.DataContext.SelectedExecution.HasLatency}" />
+                      </StackPanel>
+                    </Grid>
+
+                    <Border Classes="error" IsVisible="{Binding #Root.DataContext.SelectedExecution.HasFailure}">
+                      <StackPanel Spacing="4">
+                        <TextBlock Text="Execution failed" FontWeight="SemiBold" />
+                        <TextBlock Text="{Binding #Root.DataContext.SelectedExecution.FailureKind}" Classes="mono" />
+                        <TextBlock Text="{Binding #Root.DataContext.SelectedExecution.FailureReason}" TextWrapping="Wrap" />
+                      </StackPanel>
+                    </Border>
+                    <Border Classes="notice" IsVisible="{Binding #Root.DataContext.SelectedExecution.HasCancellation}">
+                      <TextBlock Text="{Binding #Root.DataContext.SelectedExecution.CancelReason}" TextWrapping="Wrap" />
+                    </Border>
+
+                    <TextBlock Text="Loading result…" Classes="muted"
+                               IsVisible="{Binding #Root.DataContext.IsLoadingExecutionResult}" />
+                    <Border Classes="error" IsVisible="{Binding #Root.DataContext.HasExecutionResultError}">
+                      <TextBlock Text="{Binding #Root.DataContext.ExecutionResultErrorMessage}"
+                                 Foreground="{DynamicResource DangerBrush}" TextWrapping="Wrap" />
+                    </Border>
+                    <TextBlock Text="This execution has no persisted model result."
+                               Classes="muted"
+                               IsVisible="{Binding #Root.DataContext.SelectedExecutionResult.HasNoResult}" />
+                    <TextBox x:Name="ExecutionResultText"
+                             Text="{Binding #Root.DataContext.SelectedExecutionResult.Content, Mode=OneWay}"
+                             IsReadOnly="True" AcceptsReturn="True" TextWrapping="Wrap"
+                             FontFamily="Monospace" MinHeight="240" MaxHeight="520"
+                             ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                             ScrollViewer.VerticalScrollBarVisibility="Auto"
+                             IsVisible="{Binding #Root.DataContext.SelectedExecutionResult.HasResult}" />
+                  </StackPanel>
                 </StackPanel>
               </Border>
             </ScrollViewer>

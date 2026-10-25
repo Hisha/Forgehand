@@ -201,6 +201,45 @@ public sealed class ForgehandApiClientTests
         Assert.Equal(2, result.Execution.QueuePosition);
     }
 
+    [Fact]
+    public async Task ExecutionResultPagesAreReassembledWithoutChangingText()
+    {
+        var calls = 0;
+        var handler = new ScriptedHttpHandler(request =>
+        {
+            calls++;
+            var content = calls == 1 ? "first\n😀" : "\nlast";
+            var offset = calls == 1 ? 0 : 7;
+            var next = calls == 1 ? 7 : 0;
+            var complete = calls != 1;
+            var payload = new
+            {
+                execution = new
+                {
+                    id = 9, session_id = 42, status = "COMPLETED", current_step = 1, total_steps = 1,
+                    started_at = "2026-10-22T12:00:00Z", result_available = true,
+                },
+                result = new
+                {
+                    id = 1, execution_id = 9, provider = "p", model = "m", content,
+                    created_at = "2026-10-22T12:00:01Z", prompt_tokens = 1, completion_tokens = 2,
+                    total_tokens = 3, latency_ms = 4, content_offset = offset, next_offset = next,
+                    total_characters = 12, complete,
+                },
+            };
+            return ScriptedHttpHandler.Json(HttpStatusCode.OK, JsonSerializer.Serialize(payload));
+        });
+        using var client = CreateClient(handler);
+
+        var record = await client.GetSessionExecutionAsync("tok-123", 42, 9, CancellationToken.None);
+
+        Assert.Equal("first\n😀\nlast", record.Result!.Content);
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Contains("offset=0", handler.Requests[0].Path);
+        Assert.Contains("offset=7", handler.Requests[1].Path);
+        Assert.All(handler.Requests, request => Assert.Equal("Bearer tok-123", request.Authorization));
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.Conflict, "session_conflict", ApiFailure.SessionConflict)]
     [InlineData(HttpStatusCode.ServiceUnavailable, "execution_unavailable", ApiFailure.ExecutionUnavailable)]

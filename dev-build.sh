@@ -26,3 +26,9 @@ echo
 echo "==> Build complete"
 ./forgehand version
 echo "If a user service is running a different build, open the TUI to inspect and safely resolve the mismatch."
+
+echo
+echo "==>restart daemon"
+systemctl --user restart forgehand.service
+
+systemctl --user status forgehand.service --no-pager

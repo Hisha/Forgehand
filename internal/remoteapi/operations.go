@@ -22,4 +22,6 @@ var ErrExecutionUnavailable = errors.New("coding worker is unavailable")
 type SessionOperations interface {
 	CreateCodingSession(ctx context.Context, projectID int64, title, task string) (state.Session, error)
 	QueueSessionExecution(ctx context.Context, sessionID int64) (state.SessionExecution, error)
+	ListSessionExecutionRecords(ctx context.Context, sessionID int64, limit int) ([]state.SessionExecutionRecord, bool, error)
+	GetSessionExecutionRecord(ctx context.Context, sessionID, executionID int64, contentOffset, contentLimit int) (state.SessionExecutionRecord, error)
 }

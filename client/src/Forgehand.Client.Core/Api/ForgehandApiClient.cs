@@ -16,6 +16,8 @@ public sealed class ForgehandApiClient : IForgehandApi
 
     /// <summary>Upper bound on a response body. The API returns small JSON documents.</summary>
     public const int MaxResponseBytes = 1024 * 1024;
+    public const int ResultPageCharacters = 64 * 1024;
+    public const int MaxResultCharacters = 4 * 1024 * 1024;
 
     public static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
 
@@ -104,6 +106,71 @@ public sealed class ForgehandApiClient : IForgehandApi
         CancellationToken cancellationToken) =>
         SendAsync<RunSessionResponse>(
             HttpMethod.Post, $"api/v1/sessions/{sessionId}/run", token, body: null, cancellationToken);
+
+    public async Task<ExecutionHistoryResponse> GetSessionExecutionsAsync(
+        string token,
+        long sessionId,
+        CancellationToken cancellationToken)
+    {
+        var history = await SendAsync<ExecutionHistoryResponse>(
+            HttpMethod.Get, $"api/v1/sessions/{sessionId}/executions", token, body: null, cancellationToken);
+        if (history.Executions is null || history.Executions.Any(item => item is null || item.SessionId != sessionId))
+            throw ForgehandApiException.For(ApiFailure.UnexpectedResponse, _endpoint);
+        return history;
+    }
+
+    public async Task<ExecutionRecordResponse> GetSessionExecutionAsync(
+        string token,
+        long sessionId,
+        long executionId,
+        CancellationToken cancellationToken)
+    {
+        var offset = 0;
+        ExecutionDetailResponse? execution = null;
+        ModelResultResponse? firstResult = null;
+        var content = new StringBuilder();
+        var receivedCharacters = 0;
+        while (true)
+        {
+            var page = await SendAsync<ExecutionRecordResponse>(
+                HttpMethod.Get,
+                $"api/v1/sessions/{sessionId}/executions/{executionId}?offset={offset}&limit={ResultPageCharacters}",
+                token,
+                body: null,
+                cancellationToken);
+            if (page.Execution is null || page.Execution.Id != executionId || page.Execution.SessionId != sessionId)
+                throw ForgehandApiException.For(ApiFailure.UnexpectedResponse, _endpoint);
+            execution ??= page.Execution;
+            if (page.Result is null)
+                return new ExecutionRecordResponse(execution, null);
+            if (page.Result.ExecutionId != executionId || page.Result.ContentOffset != offset ||
+                page.Result.TotalCharacters < 0 || page.Result.TotalCharacters > MaxResultCharacters)
+                throw page.Result.TotalCharacters > MaxResultCharacters
+                    ? ForgehandApiException.For(ApiFailure.ResultTooLarge, _endpoint)
+                    : ForgehandApiException.For(ApiFailure.UnexpectedResponse, _endpoint);
+
+            firstResult ??= page.Result;
+            content.Append(page.Result.Content);
+            receivedCharacters += page.Result.Content.EnumerateRunes().Count();
+            if (receivedCharacters > MaxResultCharacters)
+                throw ForgehandApiException.For(ApiFailure.ResultTooLarge, _endpoint);
+            if (page.Result.Complete)
+            {
+                if (receivedCharacters != page.Result.TotalCharacters)
+                    throw ForgehandApiException.For(ApiFailure.UnexpectedResponse, _endpoint);
+                return new ExecutionRecordResponse(execution, firstResult with
+                {
+                    Content = content.ToString(),
+                    ContentOffset = 0,
+                    NextOffset = 0,
+                    Complete = true,
+                });
+            }
+            if (page.Result.NextOffset <= offset || page.Result.NextOffset != receivedCharacters)
+                throw ForgehandApiException.For(ApiFailure.UnexpectedResponse, _endpoint);
+            offset = page.Result.NextOffset;
+        }
+    }
 
     public void Dispose()
     {

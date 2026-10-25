@@ -1,4 +1,4 @@
-# Forgehand Desktop Client (Avalonia, Phase 3)
+# Forgehand Desktop Client (Avalonia, Phase 4)
 
 The desktop client is a native Avalonia application for Linux and Windows. It
 connects to the Forgehand daemon's authenticated remote API
@@ -24,6 +24,8 @@ The completed client provides:
 - Session creation with the daemon-supported title and task fields.
 - Explicit, confirmed execution submission through the daemon scheduler.
 - Manual refresh of authoritative session state.
+- Per-session execution history, execution diagnostics, and persisted model results.
+- Explicit copy-to-clipboard for a selected result.
 
 ## Layout
 
@@ -150,6 +152,10 @@ from being sent to a different server than the one that issued it.
   location. System proxies are not used. TLS certificates are validated by the
   operating system. Validation is not disabled.
 - **Limits.** Requests time out after 15 seconds. Responses are capped at 1 MiB.
+  Execution history is capped at 200 newest-first records and reports when older
+  records were omitted. Result text is retrieved in bounded 64-Kcharacter pages;
+  the desktop assembles up to 4 Mi characters and reports larger results
+  explicitly instead of silently truncating them.
 - **Write isolation.** Creation and execution use only the authenticated HTTP
   API. The client never opens the repository, SQLite database, Unix socket, or
   a local worker process. Failed creation keeps the user's draft; navigation,
@@ -210,6 +216,30 @@ Progress observation is manual in this phase. **Refresh** reads existing session
 endpoints; there is no terminal streaming, interactive input, WebSocket, or
 client-side worker control.
 
+## Execution history and results
+
+Selecting a session reads `GET /api/v1/sessions/{id}/executions`. Each history
+entry is an existing `session_executions` row; provider/model/token/latency
+metadata appears only when that execution has a matching persisted
+`model_results` row. Queued, running, waiting, interrupted, failed, and canceled
+attempts remain visible without a fabricated result.
+
+Selecting an execution reads
+`GET /api/v1/sessions/{sessionID}/executions/{executionID}`. Long result content
+uses the endpoint's `offset` and `limit` query parameters; responses state the
+next offset, total character count, and whether the content is complete. The
+client preserves whitespace in a read-only selectable text view. **Copy result**
+places the complete displayed result on the operating-system clipboard only
+after an explicit click.
+
+Every history and detail request first applies the same project authorization as
+the session detail endpoint. Missing and unauthorized sessions both return 404,
+and an execution is looked up under the session ID in its URL. Result content is
+treated as untrusted display text, never interpreted as markup or executed.
+Manual **Refresh** reloads history and preserves the selected execution when it
+still exists. Logout, expiration, revocation navigation, and session changes
+cancel pending reads and clear result content from client state.
+
 ## Known limitations
 
 - **Plain HTTP is for development only.** The daemon serves no TLS. The client
@@ -232,9 +262,12 @@ client-side worker control.
   launched on Windows. An interactive sign-in with a real account and TOTP code was
   not performed by the author. Doing so requires that account's credentials.
 
-## Phase 3 limitations
+## Phase 4 limitations
 
 - Progress is refreshed manually; there is no streaming or automatic polling.
+- Only the newest 200 execution records are shown, with an explicit notice when
+  older history exists. Results over the desktop's four-million-character assembly limit
+  remain available through the paged API and local CLI.
 - Creation uses the daemon's configured provider and default model. The client
   does not expose or invent provider/model catalogs.
 - Revocation blocks future remote operations and visibility but does not cancel

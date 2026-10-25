@@ -93,6 +93,17 @@ internal sealed class FakeForgehandApi : IForgehandApi
             TestData.SessionSummary(id, 1) with { State = "QUEUED" },
             new ExecutionResponse(100, id, "QUEUED", 1)));
 
+    public Func<string, long, CancellationToken, Task<ExecutionHistoryResponse>> SessionExecutions { get; set; } =
+        (_, _, _) => Task.FromResult(new ExecutionHistoryResponse(Array.Empty<ExecutionDetailResponse>(), false));
+
+    public Func<string, long, long, CancellationToken, Task<ExecutionRecordResponse>> SessionExecution { get; set; } =
+        (_, sessionId, executionId, _) => Task.FromResult(new ExecutionRecordResponse(
+            new ExecutionDetailResponse(executionId, sessionId, "COMPLETED", 1, 1,
+                "2026-10-22T12:00:00Z", "2026-10-22T12:00:01Z", null, null, null, null,
+                "coding", true, "openai", "gpt-test", "2026-10-22T12:00:01Z", 1, 2, 3, 1000),
+            new ModelResultResponse(1, executionId, "openai", "gpt-test", "done",
+                "2026-10-22T12:00:01Z", 1, 2, 3, 1000, 0, 0, 4, true)));
+
     public int LoginCalls { get; private set; }
 
     public int ProjectCalls { get; private set; }
@@ -148,6 +159,14 @@ internal sealed class FakeForgehandApi : IForgehandApi
         RunSessionCalls++;
         return RunSession(token, sessionId, cancellationToken);
     }
+
+    public Task<ExecutionHistoryResponse> GetSessionExecutionsAsync(
+        string token, long sessionId, CancellationToken cancellationToken) =>
+        SessionExecutions(token, sessionId, cancellationToken);
+
+    public Task<ExecutionRecordResponse> GetSessionExecutionAsync(
+        string token, long sessionId, long executionId, CancellationToken cancellationToken) =>
+        SessionExecution(token, sessionId, executionId, cancellationToken);
 
     public void Dispose()
     {

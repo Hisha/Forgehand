@@ -2,8 +2,11 @@ using Avalonia;
 using Avalonia.Headless.XUnit;
 using Avalonia.Headless;
 using Avalonia.Controls;
+using Avalonia.Controls.Primitives;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Interactivity;
+using Avalonia.Media;
 using Avalonia.VisualTree;
 using Forgehand.Client.Core.Api;
 using Forgehand.Client.Core.Configuration;
@@ -106,6 +109,82 @@ public sealed class MainWindowTests
         var projects = window.GetVisualDescendants().OfType<ProjectsView>().Single();
         Assert.Equal("Investigate failure", projects.FindControl<TextBlock>("SessionDetailTitle")!.Text);
         Assert.Equal("/srv/alpha", projects.FindControl<TextBlock>("ProjectRootPath")!.Text);
+
+        window.Close();
+    }
+
+    [AvaloniaFact]
+    public async Task CompletedExecutionWrapsSelectsAndCopiesOriginalResultAcrossResize()
+    {
+        var paragraph = string.Join(' ', Enumerable.Repeat(
+            "Forgehand preserves the persisted response while the viewer wraps it to the available width.", 12));
+        var unbroken = new string('X', 320);
+        var responseText = $"Execution result\n\n    indented detail\n{paragraph}\n{unbroken}\n\nDone.";
+        var execution = new ExecutionDetailResponse(21, 11, "COMPLETED", 1, 1,
+            "2026-10-22T12:00:00Z", "2026-10-22T12:00:01Z", null, null, null, null,
+            "coding", true, "provider", "model", "2026-10-22T12:00:01Z", 4, 5, 9, 1000);
+        var api = new StubApi
+        {
+            Projects = [new ProjectResponse(1, "Alpha", "/srv/alpha")],
+            Sessions =
+            [
+                new SessionSummaryResponse(
+                    11, "Completed work", "COMPLETED", 1, "Do it", "coding", "provider", "model",
+                    "2026-10-22T12:00:00Z", "2026-10-22T12:00:01Z"),
+            ],
+            ExecutionHistory = new ExecutionHistoryResponse([execution], false),
+            ExecutionRecord = new ExecutionRecordResponse(execution,
+                new ModelResultResponse(1, 21, "provider", "model", responseText,
+                    "2026-10-22T12:00:01Z", 4, 5, 9, 1000, 0, 0, responseText.Length, true)),
+        };
+        var (window, shell, service) = CreateWindow(api, width: 1180);
+        await service.SignInAsync("alice", "pw", "123456", CancellationToken.None);
+        await shell.Projects.LoadAsync();
+        await shell.Projects.SelectProjectAsync(shell.Projects.Projects[0]);
+        await shell.Projects.SelectSessionAsync(shell.Projects.Sessions[0]);
+        window.UpdateLayout();
+
+        var view = window.GetVisualDescendants().OfType<ProjectsView>().Single();
+        var result = view.FindControl<TextBox>("ExecutionResultText")!;
+        Assert.True(result.IsEffectivelyVisible);
+        Assert.True(result.IsReadOnly);
+        Assert.Equal(TextWrapping.Wrap, result.TextWrapping);
+        Assert.Equal(
+            ScrollBarVisibility.Disabled,
+            result.GetValue(ScrollViewer.HorizontalScrollBarVisibilityProperty));
+        Assert.Equal(
+            ScrollBarVisibility.Auto,
+            result.GetValue(ScrollViewer.VerticalScrollBarVisibilityProperty));
+        Assert.Equal(responseText, result.Text);
+        Assert.True(view.FindControl<Button>("CopyResultButton")!.IsEnabled);
+        Assert.Equal(21, shell.Projects.SelectedExecution!.Id);
+
+        var resultScroller = result.GetVisualDescendants().OfType<ScrollViewer>().Single();
+        var wideWidth = result.Bounds.Width;
+        var wideExtentHeight = resultScroller.Extent.Height;
+        Assert.True(resultScroller.Extent.Width <= resultScroller.Viewport.Width + 1);
+
+        window.Hide();
+        window.Width = 820;
+        window.Show();
+        window.UpdateLayout();
+
+        Assert.True(
+            result.Bounds.Width < wideWidth,
+            $"Expected result width to shrink from {wideWidth}, but it was {result.Bounds.Width}; client={window.ClientSize}.");
+        Assert.True(resultScroller.Extent.Height > wideExtentHeight);
+        Assert.True(resultScroller.Extent.Width <= resultScroller.Viewport.Width + 1);
+        Assert.Equal(responseText, result.Text);
+
+        var selectionStart = responseText.IndexOf("indented detail", StringComparison.Ordinal);
+        result.SelectionStart = selectionStart;
+        result.SelectionEnd = selectionStart + "indented detail".Length;
+        Assert.Equal("indented detail", result.SelectedText);
+
+        view.FindControl<Button>("CopyResultButton")!.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+        await Task.Yield();
+        var clipboardData = await window.Clipboard!.TryGetDataAsync();
+        Assert.Equal(responseText, await clipboardData!.TryGetTextAsync());
 
         window.Close();
     }
@@ -259,6 +338,11 @@ public sealed class MainWindowTests
 
         public IReadOnlyList<SessionSummaryResponse> Sessions { get; set; } = [];
 
+        public ExecutionHistoryResponse ExecutionHistory { get; set; } =
+            new(Array.Empty<ExecutionDetailResponse>(), false);
+
+        public ExecutionRecordResponse? ExecutionRecord { get; set; }
+
         public Task<HealthResponse> GetHealthAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Health);
 
@@ -292,6 +376,19 @@ public sealed class MainWindowTests
             Task.FromResult(new RunSessionResponse(
                 Sessions.Single(session => session.Id == sessionId) with { State = "QUEUED" },
                 new ExecutionResponse(1, sessionId, "QUEUED", 1)));
+
+        public Task<ExecutionHistoryResponse> GetSessionExecutionsAsync(
+            string token, long sessionId, CancellationToken cancellationToken) =>
+            Task.FromResult(ExecutionHistory);
+
+        public Task<ExecutionRecordResponse> GetSessionExecutionAsync(
+            string token, long sessionId, long executionId, CancellationToken cancellationToken) =>
+            Task.FromResult(ExecutionRecord ?? new ExecutionRecordResponse(
+                new ExecutionDetailResponse(executionId, sessionId, "COMPLETED", 1, 1,
+                    "2026-10-22T12:00:00Z", "2026-10-22T12:00:01Z", null, null, null, null,
+                    "coding", true, "test", "test", "2026-10-22T12:00:01Z", 1, 2, 3, 1000),
+                new ModelResultResponse(1, executionId, "test", "test", "done",
+                    "2026-10-22T12:00:01Z", 1, 2, 3, 1000, 0, 0, 4, true)));
 
         public void Dispose()
         {

@@ -452,6 +452,41 @@ public sealed class WorkspaceViewModelTests
     }
 
     [Fact]
+    public async Task ExecutionHistoryLoadsResultAndRefreshPreservesSelection()
+    {
+        var first = new ExecutionDetailResponse(12, 11, "COMPLETED", 1, 1,
+            "2026-10-22T12:02:00Z", "2026-10-22T12:02:01Z", null, null, null, null,
+            "coding", true, "provider", "model", "2026-10-22T12:02:01Z", 2, 3, 5, 1000);
+        var older = first with { Id = 10, StartedAt = "2026-10-22T12:00:00Z" };
+        var history = new ExecutionHistoryResponse([first, older], false);
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        api.ProjectSessions = (_, _, _) => Task.FromResult<IReadOnlyList<SessionSummaryResponse>>(
+            [TestData.SessionSummary(11, 1)]);
+        api.SessionExecutions = (_, _, _) => Task.FromResult(history);
+        api.SessionExecution = (_, sessionId, executionId, _) => Task.FromResult(new ExecutionRecordResponse(
+            (executionId == first.Id ? first : older),
+            new ModelResultResponse(1, executionId, "provider", "model", "line one\nline two",
+                "2026-10-22T12:02:01Z", 2, 3, 5, 1000, 0, 0, 17, true)));
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+        await workspace.SelectSessionAsync(workspace.Sessions[0]);
+
+        Assert.Equal(12, workspace.SelectedExecution!.Id);
+        Assert.Equal("line one\nline two", workspace.SelectedExecutionResult!.Content);
+        await workspace.SelectExecutionAsync(workspace.Executions[1]);
+        Assert.Equal(10, workspace.SelectedExecution!.Id);
+
+        history = new ExecutionHistoryResponse([first with { Id = 13 }, first, older], false);
+        await workspace.LoadExecutionsAsync(preserveSelection: true);
+
+        Assert.Equal(10, workspace.SelectedExecution!.Id);
+        Assert.Equal("line one\nline two", workspace.SelectedExecutionResult!.Content);
+        workspace.Clear();
+        Assert.Empty(workspace.Executions);
+        Assert.Null(workspace.SelectedExecutionResult);
+    }
+
+    [Fact]
     public async Task ConflictingRunKeepsConfirmationAndShowsRefreshMessage()
     {
         var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));

@@ -184,6 +184,25 @@ public sealed class ForgehandService : IDisposable
             cancellationToken);
     }
 
+    public async Task<ExecutionHistoryResponse> GetSessionExecutionsAsync(
+        long sessionId,
+        CancellationToken cancellationToken)
+    {
+        return await WithSessionAsync(
+            (api, token, cancellation) => api.GetSessionExecutionsAsync(token, sessionId, cancellation),
+            cancellationToken);
+    }
+
+    public async Task<ExecutionRecordResponse> GetSessionExecutionAsync(
+        long sessionId,
+        long executionId,
+        CancellationToken cancellationToken)
+    {
+        return await WithSessionAsync(
+            (api, token, cancellation) => api.GetSessionExecutionAsync(token, sessionId, executionId, cancellation),
+            cancellationToken);
+    }
+
     private async Task<T> WithSessionAsync<T>(
         Func<IForgehandApi, string, CancellationToken, Task<T>> request,
         CancellationToken cancellationToken)
