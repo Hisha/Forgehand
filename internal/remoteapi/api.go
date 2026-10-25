@@ -5,6 +5,11 @@ package remoteapi
 // local Unix socket IPC protocol version.
 const APIVersion = "v1"
 
+// CompatibilityHeader carries the client's HTTP API compatibility claim.
+// Every state-changing request must present the exact API version implemented
+// by this server. Build identities are intentionally not part of this contract.
+const CompatibilityHeader = "Forgehand-API-Version"
+
 // APIBasePath is the root path of the versioned remote API.
 const APIBasePath = "/api/" + APIVersion
 
@@ -16,3 +21,11 @@ const MaxRequestBytes = 64 * 1024
 // MaxIdentifierLength bounds the length of an identifier accepted in a URL
 // path segment.
 const MaxIdentifierLength = 32
+
+// Creation limits keep user-authored content bounded before it reaches the
+// durable session engine. The overall request remains subject to
+// MaxRequestBytes as well.
+const (
+	MaxSessionTitleLength = 200
+	MaxSessionTaskLength  = 32 * 1024
+)

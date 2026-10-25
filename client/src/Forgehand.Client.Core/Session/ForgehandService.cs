@@ -11,6 +11,13 @@ public enum SessionChange
     Expired,
 }
 
+public enum ApiCompatibilityState
+{
+    Unknown,
+    Compatible,
+    Incompatible,
+}
+
 /// <summary>
 /// Owns the daemon connection and the in-memory session. View models call this
 /// service and never handle tokens or HTTP directly.
@@ -30,6 +37,8 @@ public sealed class ForgehandService : IDisposable
 
     public event Action<SessionChange>? SessionChanged;
 
+    public event Action? CompatibilityChanged;
+
     public ServerEndpoint Endpoint { get; private set; }
 
     public bool IsSignedIn => _session is not null;
@@ -37,6 +46,26 @@ public sealed class ForgehandService : IDisposable
     public AccountResponse? Account => _session?.Account;
 
     public DateTimeOffset? SessionExpiresAt => _session?.ExpiresAt;
+
+    public ApiCompatibilityState ApiCompatibility { get; private set; }
+
+    public HealthResponse? DaemonHealth { get; private set; }
+
+    public bool IsApiCompatible => ApiCompatibility == ApiCompatibilityState.Compatible;
+
+    public string CompatibilityExplanation => ApiCompatibility switch
+    {
+        ApiCompatibilityState.Incompatible when DaemonHealth is not null && string.IsNullOrWhiteSpace(DaemonHealth.ApiVersion) =>
+            $"Session changes are disabled because the daemon did not report HTTP API compatibility metadata. " +
+            $"This client requires {ForgehandApiClient.SupportedApiVersion}.",
+        ApiCompatibilityState.Incompatible when DaemonHealth is not null =>
+            $"Session changes are disabled because daemon HTTP API {DaemonHealth!.ApiVersion} is not compatible " +
+            $"with client API {ForgehandApiClient.SupportedApiVersion}.",
+        ApiCompatibilityState.Incompatible =>
+            $"Session changes are disabled because the daemon rejected client HTTP API " +
+            $"{ForgehandApiClient.SupportedApiVersion} as incompatible.",
+        _ => "Session changes are disabled until HTTP API compatibility has been confirmed.",
+    };
 
     /// <summary>
     /// Switches to another daemon. It is refused while signed in so that a bearer
@@ -52,16 +81,30 @@ public sealed class ForgehandService : IDisposable
         _api.Dispose();
         Endpoint = endpoint;
         _api = _apiFactory(endpoint);
+        SetCompatibility(ApiCompatibilityState.Unknown, health: null);
     }
 
     public async Task<HealthResponse> CheckConnectionAsync(CancellationToken cancellationToken)
     {
-        var health = await _api.GetHealthAsync(cancellationToken);
-        if (health.ApiVersion != ForgehandApiClient.SupportedApiVersion)
+        HealthResponse health;
+        try
         {
+            health = await _api.GetHealthAsync(cancellationToken);
+        }
+        catch
+        {
+            SetCompatibility(ApiCompatibilityState.Unknown, health: null);
+            throw;
+        }
+
+        if (string.IsNullOrWhiteSpace(health.ApiVersion)
+            || !string.Equals(health.ApiVersion, ForgehandApiClient.SupportedApiVersion, StringComparison.Ordinal))
+        {
+            SetCompatibility(ApiCompatibilityState.Incompatible, health);
             throw ForgehandApiException.For(ApiFailure.IncompatibleApi, Endpoint);
         }
 
+        SetCompatibility(ApiCompatibilityState.Compatible, health);
         return health;
     }
 
@@ -77,6 +120,8 @@ public sealed class ForgehandService : IDisposable
         {
             throw new ForgehandApiException(ApiFailure.InvalidRequest, validation);
         }
+
+        await CheckConnectionAsync(cancellationToken);
 
         var response = await _api.LoginAsync(
             new LoginRequest(username.Trim(), password, totpCode.Trim()),
@@ -118,6 +163,27 @@ public sealed class ForgehandService : IDisposable
             cancellationToken);
     }
 
+    public async Task<SessionSummaryResponse> CreateSessionAsync(
+        long projectId,
+        string title,
+        string task,
+        CancellationToken cancellationToken)
+    {
+        EnsureCompatible();
+        return await WithSessionAsync(
+            (api, token, cancellation) => api.CreateSessionAsync(
+                token, projectId, new CreateSessionRequest(title, task), cancellation),
+            cancellationToken);
+    }
+
+    public async Task<RunSessionResponse> RunSessionAsync(long sessionId, CancellationToken cancellationToken)
+    {
+        EnsureCompatible();
+        return await WithSessionAsync(
+            (api, token, cancellation) => api.RunSessionAsync(token, sessionId, cancellation),
+            cancellationToken);
+    }
+
     private async Task<T> WithSessionAsync<T>(
         Func<IForgehandApi, string, CancellationToken, Task<T>> request,
         CancellationToken cancellationToken)
@@ -136,6 +202,11 @@ public sealed class ForgehandService : IDisposable
         catch (ForgehandApiException exception) when (exception.Failure == ApiFailure.SessionExpired)
         {
             EndSession(SessionChange.Expired, session);
+            throw;
+        }
+        catch (ForgehandApiException exception) when (exception.Failure == ApiFailure.IncompatibleApi)
+        {
+            SetCompatibility(ApiCompatibilityState.Incompatible, health: null);
             throw;
         }
     }
@@ -183,5 +254,25 @@ public sealed class ForgehandService : IDisposable
 
         _session = null;
         SessionChanged?.Invoke(change);
+    }
+
+    private void EnsureCompatible()
+    {
+        if (!IsApiCompatible)
+        {
+            throw ForgehandApiException.For(ApiFailure.IncompatibleApi, Endpoint);
+        }
+    }
+
+    private void SetCompatibility(ApiCompatibilityState state, HealthResponse? health)
+    {
+        if (ApiCompatibility == state && Equals(DaemonHealth, health))
+        {
+            return;
+        }
+
+        ApiCompatibility = state;
+        DaemonHealth = health;
+        CompatibilityChanged?.Invoke();
     }
 }

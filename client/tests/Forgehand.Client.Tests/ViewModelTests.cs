@@ -339,6 +339,193 @@ public sealed class WorkspaceViewModelTests
         Assert.Equal(12, workspace.SelectedSession!.Id);
         Assert.Equal("Current", workspace.SessionDetails!.Title);
     }
+
+    [Fact]
+    public async Task NewSessionFormValidatesRequiredFieldsWithoutCallingApi()
+    {
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+        workspace.OpenNewSessionCommand.Execute(null);
+        workspace.NewSessionTitle = "A title";
+
+        await workspace.CreateSessionCommand.ExecuteAsync(null);
+
+        Assert.True(workspace.IsNewSessionFormOpen);
+        Assert.True(workspace.HasNewSessionError);
+        Assert.Equal(0, api.CreateSessionCalls);
+    }
+
+    [Fact]
+    public async Task FailedCreationPreservesDraft()
+    {
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        api.CreateSession = (_, _, _, _) => Task.FromException<SessionSummaryResponse>(
+            ForgehandApiException.For(ApiFailure.ServerError));
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+        workspace.OpenNewSessionCommand.Execute(null);
+        workspace.NewSessionTitle = "Keep this title";
+        workspace.NewSessionTask = "Keep this task";
+
+        await workspace.CreateSessionCommand.ExecuteAsync(null);
+
+        Assert.Equal("Keep this title", workspace.NewSessionTitle);
+        Assert.Equal("Keep this task", workspace.NewSessionTask);
+        Assert.True(workspace.IsNewSessionFormOpen);
+        Assert.True(workspace.HasNewSessionError);
+    }
+
+    [Fact]
+    public async Task SuccessfulCreationRefreshesAndSelectsNewSession()
+    {
+        IReadOnlyList<SessionSummaryResponse> sessions = [];
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        api.ProjectSessions = (_, _, _) => Task.FromResult(sessions);
+        api.CreateSession = (_, projectId, request, _) =>
+        {
+            var created = TestData.SessionSummary(99, projectId, request.Title) with
+            {
+                Task = request.Task,
+                State = "READY",
+            };
+            sessions = [created];
+            return Task.FromResult(created);
+        };
+        api.SessionDetails = (_, _, _) => Task.FromResult(sessions[0]);
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+        workspace.OpenNewSessionCommand.Execute(null);
+        workspace.NewSessionTitle = "New work";
+        workspace.NewSessionTask = "Implement it";
+
+        await workspace.CreateSessionCommand.ExecuteAsync(null);
+
+        Assert.False(workspace.IsNewSessionFormOpen);
+        Assert.Equal(99, workspace.SelectedSession!.Id);
+        Assert.Equal("New work", workspace.SessionDetails!.Title);
+        Assert.Equal(string.Empty, workspace.NewSessionTitle);
+    }
+
+    [Fact]
+    public async Task RunRequiresExplicitConfirmation()
+    {
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        api.ProjectSessions = (_, _, _) => Task.FromResult<IReadOnlyList<SessionSummaryResponse>>(
+            [TestData.SessionSummary(11, 1) with { State = "READY" }]);
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+        await workspace.SelectSessionAsync(workspace.Sessions[0]);
+
+        workspace.RequestRunCommand.Execute(null);
+
+        Assert.True(workspace.IsRunConfirmationOpen);
+        Assert.Equal(0, api.RunSessionCalls);
+        Assert.Equal("Inspect the failure", workspace.SelectedSession!.Task);
+    }
+
+    [Fact]
+    public async Task ConfirmedRunRefreshesAuthoritativeQueuedState()
+    {
+        SessionSummaryResponse current = TestData.SessionSummary(11, 1) with { State = "READY" };
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        api.ProjectSessions = (_, _, _) => Task.FromResult<IReadOnlyList<SessionSummaryResponse>>([current]);
+        api.SessionDetails = (_, _, _) => Task.FromResult(current);
+        api.RunSession = (_, id, _) =>
+        {
+            current = current with { State = "QUEUED" };
+            return Task.FromResult(new RunSessionResponse(
+                current, new ExecutionResponse(55, id, "QUEUED", 1)));
+        };
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+        await workspace.SelectSessionAsync(workspace.Sessions[0]);
+        workspace.RequestRunCommand.Execute(null);
+
+        await workspace.ConfirmRunCommand.ExecuteAsync(null);
+
+        Assert.Equal(1, api.RunSessionCalls);
+        Assert.Equal("QUEUED", workspace.SessionDetails!.State);
+        Assert.Contains("Daemon accepted execution 55: QUEUED", workspace.RunStatusMessage);
+        Assert.False(workspace.IsRunConfirmationOpen);
+        Assert.False(workspace.CanRunSelectedSession);
+    }
+
+    [Fact]
+    public async Task ConflictingRunKeepsConfirmationAndShowsRefreshMessage()
+    {
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        api.ProjectSessions = (_, _, _) => Task.FromResult<IReadOnlyList<SessionSummaryResponse>>(
+            [TestData.SessionSummary(11, 1) with { State = "READY" }]);
+        api.RunSession = (_, _, _) => Task.FromException<RunSessionResponse>(
+            ForgehandApiException.For(ApiFailure.SessionConflict));
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+        await workspace.SelectSessionAsync(workspace.Sessions[0]);
+        workspace.RequestRunCommand.Execute(null);
+
+        await workspace.ConfirmRunCommand.ExecuteAsync(null);
+
+        Assert.True(workspace.IsRunConfirmationOpen);
+        Assert.True(workspace.HasRunError);
+        Assert.Contains("Refresh", workspace.RunErrorMessage);
+    }
+
+    [Fact]
+    public async Task RevocationDuringPendingRunCannotRestoreSessionData()
+    {
+        IReadOnlyList<ProjectResponse> grants = [new ProjectResponse(1, "Alpha", null)];
+        var pending = new TaskCompletionSource<RunSessionResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var api = new FakeForgehandApi
+        {
+            Projects = _ => Task.FromResult(grants),
+            ProjectSessions = (_, _, _) => Task.FromResult<IReadOnlyList<SessionSummaryResponse>>(
+                [TestData.SessionSummary(11, 1) with { State = "READY" }]),
+            RunSession = (_, _, _) => pending.Task,
+        };
+        var (_, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+        await workspace.SelectSessionAsync(workspace.Sessions[0]);
+        workspace.RequestRunCommand.Execute(null);
+        var run = workspace.ConfirmRunCommand.ExecuteAsync(null);
+
+        grants = [];
+        await workspace.LoadAsync();
+        pending.SetResult(new RunSessionResponse(
+            TestData.SessionSummary(11, 1) with { State = "QUEUED" },
+            new ExecutionResponse(2, 11, "QUEUED", 1)));
+        await run;
+
+        Assert.Null(workspace.SelectedProject);
+        Assert.Empty(workspace.Sessions);
+        Assert.Null(workspace.SessionDetails);
+        Assert.Null(workspace.RunStatusMessage);
+    }
+
+    [Fact]
+    public async Task LogoutDuringPendingCreationClearsDraftAndIgnoresLateResponse()
+    {
+        var pending = new TaskCompletionSource<SessionSummaryResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var api = ApiWithProjects(new ProjectResponse(1, "Alpha", null));
+        api.CreateSession = (_, _, _, _) => pending.Task;
+        var (service, workspace) = await CreateAsync(api);
+        await workspace.SelectProjectAsync(workspace.Projects[0]);
+        workspace.OpenNewSessionCommand.Execute(null);
+        workspace.NewSessionTitle = "Sensitive draft";
+        workspace.NewSessionTask = "Project-scoped task";
+        var create = workspace.CreateSessionCommand.ExecuteAsync(null);
+
+        await service.SignOutAsync();
+        workspace.Clear();
+        pending.SetResult(TestData.SessionSummary(99, 1, "Late"));
+        await create;
+
+        Assert.Empty(workspace.Projects);
+        Assert.Empty(workspace.Sessions);
+        Assert.Equal(string.Empty, workspace.NewSessionTitle);
+        Assert.Equal(string.Empty, workspace.NewSessionTask);
+        Assert.Null(workspace.SelectedSession);
+    }
 }
 
 public sealed class ShellViewModelTests : IDisposable
@@ -389,6 +576,44 @@ public sealed class ShellViewModelTests : IDisposable
 
         Assert.Equal("saved setting ignored", shell.Notice);
         Assert.True(shell.HasNotice);
+        Assert.False(shell.IsSignedIn);
+    }
+
+    [Theory]
+    [InlineData(ApiFailure.Unreachable, ConnectionState.Disconnected)]
+    [InlineData(ApiFailure.Timeout, ConnectionState.Disconnected)]
+    [InlineData(ApiFailure.ServerError, ConnectionState.ServerError)]
+    public async Task ConnectionCheckDistinguishesTransportAndServerFailures(
+        ApiFailure failure,
+        ConnectionState expected)
+    {
+        var api = new FakeForgehandApi
+        {
+            Health = _ => Task.FromException<HealthResponse>(ForgehandApiException.For(failure)),
+        };
+        var service = new ForgehandService(ServerEndpoint.Default, _ => api);
+        var shell = new ShellViewModel(service, new ClientSettingsStore(_settingsPath), notice: null);
+
+        await shell.CheckConnectionCommand.ExecuteAsync(null);
+
+        Assert.Equal(expected, shell.Connection);
+        Assert.False(shell.IsConnected);
+    }
+
+    [Fact]
+    public async Task ExpiredAuthenticationHasDedicatedConnectionStatus()
+    {
+        var api = new FakeForgehandApi();
+        var service = new ForgehandService(ServerEndpoint.Default, _ => api);
+        var shell = new ShellViewModel(service, new ClientSettingsStore(_settingsPath), notice: null);
+        await service.SignInAsync("alice", "pw", "123456", CancellationToken.None);
+        api.Projects = _ => Task.FromException<IReadOnlyList<ProjectResponse>>(
+            ForgehandApiException.For(ApiFailure.SessionExpired));
+
+        await Assert.ThrowsAsync<ForgehandApiException>(() => service.GetProjectsAsync(CancellationToken.None));
+
+        Assert.Equal(ConnectionState.AuthenticationExpired, shell.Connection);
+        Assert.Contains("Authentication expired", shell.ConnectionText);
         Assert.False(shell.IsSignedIn);
     }
 }

@@ -448,7 +448,7 @@ func runConfigured(settings Config) error {
 
 	go dispatcher.run(ctx)
 
-	apiServer, err := startRemoteAPI(ctx, accounts)
+	apiServer, err := startRemoteAPI(ctx, accounts, &remoteSessionOperations{db: stateDB, dispatcher: dispatcher})
 	if err != nil {
 		return err
 	}
@@ -1087,24 +1087,11 @@ func handleConnection(
 		})
 
 	case "session-run":
-		totalSteps := fakeWorkerSteps
-		if session, getErr := stateDB.GetSession(context.Background(), request.SessionID); getErr == nil && session.Kind == "investigation" {
-			totalSteps = 1
-		} else if getErr == nil && session.Kind == "work-plan" {
-			plan, planErr := stateDB.GetWorkPlanBySession(context.Background(), request.SessionID)
-			if planErr != nil || plan == nil {
-				if planErr == nil {
-					planErr = fmt.Errorf("session %d has no work plan", request.SessionID)
-				}
-				_ = encoder.Encode(ipc.Response{OK: false, Message: planErr.Error()})
-				return
-			}
-			totalSteps = len(plan.Tasks)
-		}
-		execution, err := stateDB.QueueSessionExecution(
+		execution, err := queueSessionForExecution(
 			context.Background(),
+			stateDB,
+			disp,
 			request.SessionID,
-			totalSteps,
 			request.Resources...,
 		)
 		if err != nil {
@@ -1113,10 +1100,6 @@ func handleConnection(
 				Message: err.Error(),
 			})
 			return
-		}
-
-		if disp != nil {
-			disp.notify()
 		}
 
 		encoded := executionToIPC(execution)

@@ -15,4 +15,9 @@ public interface IForgehandApi : IDisposable
         string token, long projectId, CancellationToken cancellationToken);
 
     Task<SessionSummaryResponse> GetSessionAsync(string token, long sessionId, CancellationToken cancellationToken);
+
+    Task<SessionSummaryResponse> CreateSessionAsync(
+        string token, long projectId, CreateSessionRequest request, CancellationToken cancellationToken);
+
+    Task<RunSessionResponse> RunSessionAsync(string token, long sessionId, CancellationToken cancellationToken);
 }

@@ -664,6 +664,28 @@ func (s *Service) GetSession(
 	return session, nil
 }
 
+// RecordSessionOperation appends an attributable, non-content-bearing audit
+// event for a remote session write. Task text, credentials, and tokens are
+// deliberately excluded from the record.
+func (s *Service) RecordSessionOperation(
+	ctx context.Context,
+	principal Principal,
+	eventType string,
+	outcome string,
+	detail string,
+	remoteAddress string,
+) error {
+	accountID := principal.Account.ID
+	return s.recordEvent(ctx, state.AuthEvent{
+		EventType:     eventType,
+		AccountID:     &accountID,
+		Username:      principal.Account.Username,
+		RemoteAddress: remoteAddress,
+		Outcome:       outcome,
+		Detail:        detail,
+	})
+}
+
 // GrantProject authorizes an account to access a project.
 func (s *Service) GrantProject(ctx context.Context, accountID, projectID int64) error {
 	if _, err := s.db.GetAccount(ctx, accountID); err != nil {

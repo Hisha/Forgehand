@@ -48,6 +48,8 @@ const (
 	AuthEventSessionRevoked      = "auth.session.revoked"
 	AuthEventProjectGranted      = "auth.project.granted"
 	AuthEventProjectRevoked      = "auth.project.revoked"
+	AuthEventSessionCreated      = "remote.session.created"
+	AuthEventSessionRunSubmitted = "remote.session.run_submitted"
 )
 
 // Account is a remote-access identity. It carries no secret material: the

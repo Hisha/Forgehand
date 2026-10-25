@@ -28,6 +28,7 @@ public sealed class ForgehandApiClientTests
         Assert.Equal(HttpMethod.Post, request.Method);
         Assert.Equal("/api/v1/auth/login", request.Path);
         Assert.Null(request.Authorization);
+        Assert.Equal(ForgehandApiClient.SupportedApiVersion, request.ApiVersion);
         Assert.StartsWith("application/json", request.ContentType);
 
         using var body = JsonDocument.Parse(request.Body!);
@@ -67,6 +68,7 @@ public sealed class ForgehandApiClientTests
     [InlineData(HttpStatusCode.Forbidden, "account_disabled", ApiFailure.AccountDisabled)]
     [InlineData(HttpStatusCode.BadRequest, "invalid_request", ApiFailure.InvalidRequest)]
     [InlineData(HttpStatusCode.InternalServerError, "internal_error", ApiFailure.ServerError)]
+    [InlineData(HttpStatusCode.UpgradeRequired, "incompatible_api", ApiFailure.IncompatibleApi)]
     [InlineData(HttpStatusCode.Redirect, "", ApiFailure.UnexpectedResponse)]
     public async Task LoginMapsErrorCodesToFailures(HttpStatusCode status, string code, ApiFailure expected)
     {
@@ -158,6 +160,60 @@ public sealed class ForgehandApiClientTests
 
         Assert.Equal("/api/v1/sessions/41", Assert.Single(handler.Requests).Path);
         Assert.Equal("COMPLETED", session.State);
+    }
+
+    [Fact]
+    public async Task CreateSessionPostsOnlySupportedFields()
+    {
+        var handler = new ScriptedHttpHandler(_ => ScriptedHttpHandler.Json(
+            HttpStatusCode.Created,
+            """{"id":42,"title":"Fix race","state":"READY","project_id":7,"task":"Repair it","kind":"coding","provider":"openai","model":"configured","created_at":"2026-10-22T12:00:00Z","updated_at":"2026-10-22T12:00:00Z"}"""));
+        using var client = CreateClient(handler);
+
+        var session = await client.CreateSessionAsync(
+            "tok-123", 7, new CreateSessionRequest("Fix race", "Repair it"), CancellationToken.None);
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal("/api/v1/projects/7/sessions", request.Path);
+        Assert.Equal("Bearer tok-123", request.Authorization);
+        using var body = JsonDocument.Parse(request.Body!);
+        Assert.Equal(2, body.RootElement.EnumerateObject().Count());
+        Assert.Equal("Fix race", body.RootElement.GetProperty("title").GetString());
+        Assert.Equal("Repair it", body.RootElement.GetProperty("task").GetString());
+        Assert.Equal(42, session.Id);
+    }
+
+    [Fact]
+    public async Task RunSessionPostsNoOptionsAndParsesAcceptedState()
+    {
+        var handler = new ScriptedHttpHandler(_ => ScriptedHttpHandler.Json(
+            HttpStatusCode.Accepted,
+            """{"session":{"id":42,"title":"Fix race","state":"QUEUED","project_id":7,"task":"Repair it","kind":"coding","created_at":"2026-10-22T12:00:00Z","updated_at":"2026-10-22T12:01:00Z"},"execution":{"id":9,"session_id":42,"status":"QUEUED","queue_position":2}}"""));
+        using var client = CreateClient(handler);
+
+        var result = await client.RunSessionAsync("tok-123", 42, CancellationToken.None);
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal("/api/v1/sessions/42/run", request.Path);
+        Assert.Null(request.Body);
+        Assert.Equal("QUEUED", result.Session.State);
+        Assert.Equal(2, result.Execution.QueuePosition);
+    }
+
+    [Theory]
+    [InlineData(HttpStatusCode.Conflict, "session_conflict", ApiFailure.SessionConflict)]
+    [InlineData(HttpStatusCode.ServiceUnavailable, "execution_unavailable", ApiFailure.ExecutionUnavailable)]
+    public async Task SessionWriteFailuresMapToSafeClientErrors(HttpStatusCode status, string code, ApiFailure expected)
+    {
+        var handler = new ScriptedHttpHandler(_ => ScriptedHttpHandler.Json(
+            status, $"{{\"error\":{{\"code\":\"{code}\",\"message\":\"internal sensitive detail\"}}}}"));
+        using var client = CreateClient(handler);
+
+        var exception = await ExpectFailureAsync(() => client.RunSessionAsync("tok-123", 42, CancellationToken.None));
+
+        Assert.Equal(expected, exception.Failure);
+        Assert.DoesNotContain("sensitive", exception.Message);
     }
 
     [Fact]

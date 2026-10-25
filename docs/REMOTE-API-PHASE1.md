@@ -126,6 +126,8 @@ transport from the Unix socket and shares no command dispatch with it.
 | `GET` | `/api/v1/projects` | session | The projects the account is authorized to access |
 | `GET` | `/api/v1/projects/{id}/sessions` | session **and** project grant | The sessions of an authorized project |
 | `GET` | `/api/v1/sessions/{id}` | session **and** project grant | The persisted details of one authorized session |
+| `POST` | `/api/v1/projects/{id}/sessions` | session **and** project grant | Creates a persisted `READY` coding session |
+| `POST` | `/api/v1/sessions/{id}/run` | session **and** project grant | Queues an eligible session through the daemon scheduler |
 
 Every project and session value comes from the existing `state` package and
 the existing session and project records. Nothing is synthesized.
@@ -167,6 +169,34 @@ the existing session and project records. Nothing is synthesized.
   address; that is the safe default.
 * **Credentials are never in a URL.** The session credential is only accepted
   in the `Authorization: Bearer` header.
+
+### 2.4 Compatibility contract
+
+Forgehand treats four identities separately:
+
+* the application version is a user-facing release identifier;
+* the Git/build identity identifies an exact executable and is diagnostic;
+* the integer Unix-socket protocol version governs local CLI/TUI IPC;
+* the HTTP API version governs native network clients.
+
+The CLI intentionally keeps its stricter build-identity policy for ordinary
+Unix-socket commands. The remote API does not equate a different Git revision
+with incompatibility: two builds are HTTP-compatible when both implement the
+same explicit API version.
+
+Every state-changing HTTP request must send
+`Forgehand-API-Version: v1`. The daemon is authoritative: a missing, unknown,
+or different value is rejected with HTTP `426` and the documented error code
+`incompatible_api` before authentication, persistence, scheduling, or worker
+dispatch is reached. Safe `GET` and `HEAD` diagnostics remain available,
+including `/api/v1/health`, which reports the daemon application version,
+build identity, and HTTP API version. The daemon also returns its API version
+in the `Forgehand-API-Version` response header.
+
+This closes a Phase 3 gap: Unix-socket requests carried IPC/build metadata,
+but HTTP mutations carried no client compatibility claim. The CLI could
+therefore reject a stale daemon build while the authenticated desktop client
+continued creating and running sessions against it.
 
 ## 3. Authentication foundations
 
@@ -292,7 +322,7 @@ code).
 
 ## 5. Minimal authenticated API
 
-Phase 1 exposes five read-only capabilities:
+Phase 1 introduced five read-only capabilities:
 
 * server health and version,
 * the authenticated account identity,
@@ -300,9 +330,10 @@ Phase 1 exposes five read-only capabilities:
 * the session list of an authorized project,
 * the persisted details of one authorized session.
 
-Remote worker execution, approvals, arbitrary shell commands, and repository
-modification are deliberately **not** implemented. The internal IPC commands
-that perform them have no network route; a request to them returns `404`.
+Phase 3 adds only the narrowly scoped session creation and execution routes
+documented in section 9. Approvals, arbitrary shell commands, and the internal
+IPC command namespace remain unavailable over HTTP; requests to those paths
+return `404`.
 
 Authorization is enforced by the daemon for every project and session read.
 A session whose project is not granted to the account returns `404` rather
@@ -354,9 +385,11 @@ but that deployment has not been designed, reviewed, or tested here.
   authenticator replacement, and no authenticator removal path. The security
   principles require these to be audited and to require a fresh
   multi-factor challenge; they are not built.
-* **Sensitive-operation reauthentication is not implemented.** Phase 1 has no
-  sensitive remote operation, so there is nothing to reauthenticate. The
-  mechanism must be built before any write operation is exposed.
+* **Sensitive account-change reauthentication is not implemented.** Phase 3
+  session submission uses the existing time-limited MFA-established bearer
+  session and an explicit client confirmation. Password, authenticator,
+  recovery, grant, and administrative changes remain local-only and require a
+  separately reviewed fresh-MFA design before remote exposure.
 * **Account creation beyond the first administrator is not implemented.** The
   local administrative channel can grant and revoke project access and can
   disable accounts, but it cannot create a second account. There is therefore
@@ -406,3 +439,52 @@ FORGEHAND_API_ADDRESS=127.0.0.1:8787 forgehand service start
 
 The listener is off unless `FORGEHAND_API_ADDRESS` is set. The systemd unit
 does not set it, so a default installation has no network interface.
+
+## 9. Phase 3 session writes
+
+Phase 3 adds two authenticated routes. They use the same durable session store,
+atomic queue transition, dispatcher, concurrency limits, worker runtime, and
+restart recovery as the Unix-socket CLI.
+
+### Create a coding session
+
+`POST /api/v1/projects/{project_id}/sessions`
+
+```json
+{"title":"Fix queue race","task":"Find and repair the duplicate scheduling race."}
+```
+
+Only `title` and `task` are accepted; both are required. The title is limited
+to 200 bytes and the task to 32 KiB, with the overall 64 KiB request limit still
+applying. Unknown fields, provider/model overrides, executable paths, resources,
+and working directories are rejected. The daemon records its configured
+provider and default model. A successful response is `201` with the persisted
+session in `READY` state. Creation never starts execution.
+
+The account must have an explicit grant for the path project. Administrator
+role alone is insufficient. A missing grant returns `403`.
+
+### Submit a session for execution
+
+`POST /api/v1/sessions/{session_id}/run`
+
+The request has no body or options. The daemon resolves the session's owning
+project from persistence and requires the caller's explicit grant. Unauthorized
+sessions return `404` to avoid disclosing their existence.
+
+The route uses the existing atomic `READY` to `QUEUED` transition. Success is
+`202` and returns the updated session plus the durable execution identifier,
+status, and queue position. The request returns after queue acceptance; it does
+not wait for the worker. A repeated or concurrent submission after the winning
+transition returns `409 session_conflict`, so it cannot launch a duplicate
+worker. Missing model configuration returns `503 execution_unavailable` during
+creation.
+
+Revoking a project grant blocks subsequent reads, creates, and run submissions.
+It does not cancel work the daemon already accepted: queued or running work
+continues under the existing daemon lifecycle and recovery rules, while the
+revoked account loses remote visibility. Creation and run attempts are audited
+without recording task content, credentials, or bearer tokens.
+
+The HTTP listener remains disabled by default and loopback-only when enabled.
+These routes are not a general-purpose command or shell execution API.

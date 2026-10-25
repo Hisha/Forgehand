@@ -36,6 +36,7 @@ const (
 func startRemoteAPI(
 	ctx context.Context,
 	accounts *accountManager,
+	operationOptions ...remoteapi.SessionOperations,
 ) (*http.Server, error) {
 	apiConfig, enabled, err := config.API()
 	if err != nil {
@@ -50,10 +51,15 @@ func startRemoteAPI(
 		return nil, fmt.Errorf("prepare remote API authentication: %w", err)
 	}
 
+	var operations remoteapi.SessionOperations
+	if len(operationOptions) > 0 {
+		operations = operationOptions[0]
+	}
 	api, err := remoteapi.NewServer(remoteapi.Options{
 		Service:       service,
 		Version:       version.Version,
 		BuildIdentity: version.BuildIdentity(),
+		Sessions:      operations,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create remote API server: %w", err)

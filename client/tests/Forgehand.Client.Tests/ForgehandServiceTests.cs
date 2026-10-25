@@ -150,6 +150,26 @@ public sealed class ForgehandServiceTests
     }
 
     [Fact]
+    public async Task ExpiredSessionDuringCreationEndsSession()
+    {
+        var api = new FakeForgehandApi
+        {
+            CreateSession = (_, _, _, _) => Task.FromException<SessionSummaryResponse>(
+                Failure(ApiFailure.SessionExpired)),
+        };
+        var (service, _) = CreateService(api);
+        await service.SignInAsync("alice", "pw", "123456", CancellationToken.None);
+        var changes = new List<SessionChange>();
+        service.SessionChanged += changes.Add;
+
+        await Assert.ThrowsAsync<ForgehandApiException>(() =>
+            service.CreateSessionAsync(1, "Title", "Task", CancellationToken.None));
+
+        Assert.False(service.IsSignedIn);
+        Assert.Equal(SessionChange.Expired, Assert.Single(changes));
+    }
+
+    [Fact]
     public async Task SignOutClearsSessionBeforeContactingServer()
     {
         var (service, api) = CreateService();
@@ -256,5 +276,76 @@ public sealed class ForgehandServiceTests
             service.CheckConnectionAsync(CancellationToken.None));
 
         Assert.Equal(ApiFailure.IncompatibleApi, exception.Failure);
+        Assert.Equal(ApiCompatibilityState.Incompatible, service.ApiCompatibility);
+        Assert.Equal("9.9.9", service.DaemonHealth!.Version);
+    }
+
+    [Fact]
+    public async Task MatchingApiAcceptsDifferentBuildIdentity()
+    {
+        var api = new FakeForgehandApi
+        {
+            Health = _ => Task.FromResult(new HealthResponse("ok", "2.0.0", "daemon-build-other", "v1", "t")),
+        };
+        var (service, _) = CreateService(api);
+
+        var health = await service.CheckConnectionAsync(CancellationToken.None);
+
+        Assert.Equal(ApiCompatibilityState.Compatible, service.ApiCompatibility);
+        Assert.True(service.IsApiCompatible);
+        Assert.Equal("daemon-build-other", health.BuildIdentity);
+    }
+
+    [Fact]
+    public async Task MissingCompatibilityMetadataFailsClosedBeforeLogin()
+    {
+        var api = new FakeForgehandApi
+        {
+            Health = _ => Task.FromResult(new HealthResponse("ok", "2.0.0", "build", null!, "t")),
+        };
+        var (service, _) = CreateService(api);
+
+        var exception = await Assert.ThrowsAsync<ForgehandApiException>(() =>
+            service.SignInAsync("alice", "pw", "123456", CancellationToken.None));
+
+        Assert.Equal(ApiFailure.IncompatibleApi, exception.Failure);
+        Assert.Equal(ApiCompatibilityState.Incompatible, service.ApiCompatibility);
+        Assert.Equal(0, api.LoginCalls);
+        Assert.Contains("did not report", service.CompatibilityExplanation);
+    }
+
+    [Fact]
+    public async Task IncompatibleHealthDisablesSessionWritesWithoutCallingApi()
+    {
+        var health = new HealthResponse("ok", "1.0.0", "old", "v1", "t");
+        var api = new FakeForgehandApi { Health = _ => Task.FromResult(health) };
+        var (service, _) = CreateService(api);
+        await service.SignInAsync("alice", "pw", "123456", CancellationToken.None);
+
+        health = health with { ApiVersion = "v2" };
+        await Assert.ThrowsAsync<ForgehandApiException>(() => service.CheckConnectionAsync(CancellationToken.None));
+        await Assert.ThrowsAsync<ForgehandApiException>(() =>
+            service.CreateSessionAsync(1, "Title", "Task", CancellationToken.None));
+        await Assert.ThrowsAsync<ForgehandApiException>(() => service.RunSessionAsync(11, CancellationToken.None));
+
+        Assert.Equal(0, api.CreateSessionCalls);
+        Assert.Equal(0, api.RunSessionCalls);
+    }
+
+    [Fact]
+    public async Task CompatibilityRecoversAfterDaemonUpgrade()
+    {
+        var health = new HealthResponse("ok", "1.0.0", "old", "v2", "t");
+        var api = new FakeForgehandApi { Health = _ => Task.FromResult(health) };
+        var (service, _) = CreateService(api);
+
+        await Assert.ThrowsAsync<ForgehandApiException>(() => service.CheckConnectionAsync(CancellationToken.None));
+        Assert.False(service.IsApiCompatible);
+
+        health = health with { Version = "1.1.0", BuildIdentity = "new", ApiVersion = "v1" };
+        await service.CheckConnectionAsync(CancellationToken.None);
+
+        Assert.True(service.IsApiCompatible);
+        Assert.Equal("new", service.DaemonHealth!.BuildIdentity);
     }
 }

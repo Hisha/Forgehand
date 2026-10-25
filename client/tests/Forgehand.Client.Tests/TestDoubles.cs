@@ -8,6 +8,7 @@ internal sealed record CapturedRequest(
     HttpMethod Method,
     string Path,
     string? Authorization,
+    string? ApiVersion,
     string? ContentType,
     string? Body);
 
@@ -32,6 +33,9 @@ internal sealed class ScriptedHttpHandler : HttpMessageHandler
             request.Method,
             request.RequestUri!.PathAndQuery,
             request.Headers.Authorization?.ToString(),
+            request.Headers.TryGetValues(ForgehandApiClient.CompatibilityHeader, out var versions)
+                ? versions.SingleOrDefault()
+                : null,
             request.Content?.Headers.ContentType?.ToString(),
             body);
         Requests.Add(captured);
@@ -81,6 +85,14 @@ internal sealed class FakeForgehandApi : IForgehandApi
     public Func<string, long, CancellationToken, Task<SessionSummaryResponse>> SessionDetails { get; set; } =
         (_, id, _) => Task.FromResult(TestData.SessionSummary(id, 1));
 
+    public Func<string, long, CreateSessionRequest, CancellationToken, Task<SessionSummaryResponse>> CreateSession { get; set; } =
+        (_, projectId, request, _) => Task.FromResult(TestData.SessionSummary(99, projectId, request.Title) with { Task = request.Task });
+
+    public Func<string, long, CancellationToken, Task<RunSessionResponse>> RunSession { get; set; } =
+        (_, id, _) => Task.FromResult(new RunSessionResponse(
+            TestData.SessionSummary(id, 1) with { State = "QUEUED" },
+            new ExecutionResponse(100, id, "QUEUED", 1)));
+
     public int LoginCalls { get; private set; }
 
     public int ProjectCalls { get; private set; }
@@ -88,6 +100,10 @@ internal sealed class FakeForgehandApi : IForgehandApi
     public int ProjectSessionCalls { get; private set; }
 
     public int SessionCalls { get; private set; }
+
+    public int CreateSessionCalls { get; private set; }
+
+    public int RunSessionCalls { get; private set; }
 
     public Task<HealthResponse> GetHealthAsync(CancellationToken cancellationToken) => Health(cancellationToken);
 
@@ -117,6 +133,20 @@ internal sealed class FakeForgehandApi : IForgehandApi
     {
         SessionCalls++;
         return SessionDetails(token, sessionId, cancellationToken);
+    }
+
+    public Task<SessionSummaryResponse> CreateSessionAsync(
+        string token, long projectId, CreateSessionRequest request, CancellationToken cancellationToken)
+    {
+        CreateSessionCalls++;
+        return CreateSession(token, projectId, request, cancellationToken);
+    }
+
+    public Task<RunSessionResponse> RunSessionAsync(
+        string token, long sessionId, CancellationToken cancellationToken)
+    {
+        RunSessionCalls++;
+        return RunSession(token, sessionId, cancellationToken);
     }
 
     public void Dispose()

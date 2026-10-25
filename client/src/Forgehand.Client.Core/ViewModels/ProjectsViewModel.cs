@@ -53,6 +53,7 @@ public sealed class SessionItem
     public bool HasKind => Kind is not null;
     public bool HasProvider => Provider is not null;
     public bool HasModel => Model is not null;
+    public bool CanRun => string.Equals(State, "READY", StringComparison.Ordinal);
 
     private static string? EmptyToNull(string? value) => string.IsNullOrWhiteSpace(value) ? null : value;
 }
@@ -63,12 +64,14 @@ public sealed partial class ProjectsViewModel : ObservableObject
     private CancellationTokenSource? _projectsCancellation;
     private CancellationTokenSource? _sessionsCancellation;
     private CancellationTokenSource? _detailCancellation;
+    private CancellationTokenSource? _writeCancellation;
     private ProjectItem? _selectedProject;
     private SessionItem? _selectedSession;
 
     public ProjectsViewModel(ForgehandService service)
     {
         _service = service;
+        _service.CompatibilityChanged += OnCompatibilityChanged;
         Projects.CollectionChanged += (_, _) => RaiseProjectState();
         Sessions.CollectionChanged += (_, _) => RaiseSessionState();
     }
@@ -127,6 +130,36 @@ public sealed partial class ProjectsViewModel : ObservableObject
     [NotifyPropertyChangedFor(nameof(HasSessionDetails))]
     private SessionItem? _sessionDetails;
 
+    [ObservableProperty]
+    private bool _isNewSessionFormOpen;
+
+    [ObservableProperty]
+    private string _newSessionTitle = string.Empty;
+
+    [ObservableProperty]
+    private string _newSessionTask = string.Empty;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasNewSessionError))]
+    private string? _newSessionErrorMessage;
+
+    [ObservableProperty]
+    private bool _isCreatingSession;
+
+    [ObservableProperty]
+    private bool _isRunConfirmationOpen;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasRunError))]
+    private string? _runErrorMessage;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasRunStatus))]
+    private string? _runStatusMessage;
+
+    [ObservableProperty]
+    private bool _isSubmittingRun;
+
     public bool HasError => ErrorMessage is not null;
     public bool HasSessionError => SessionErrorMessage is not null;
     public bool HasSessionDetailError => SessionDetailErrorMessage is not null;
@@ -141,6 +174,15 @@ public sealed partial class ProjectsViewModel : ObservableObject
     public bool ShowSessionSelectionState =>
         SelectedProject is not null && Sessions.Count > 0 && SelectedSession is null && !IsLoadingSessionDetails;
     public bool HasSessionDetails => SessionDetails is not null;
+    public bool HasNewSessionError => NewSessionErrorMessage is not null;
+    public bool HasRunError => RunErrorMessage is not null;
+    public bool HasRunStatus => RunStatusMessage is not null;
+    public bool CanModifySessions => _service.IsApiCompatible;
+    public bool HasCompatibilityWarning => !CanModifySessions;
+    public string CompatibilityMessage => _service.CompatibilityExplanation;
+    public bool ShowRunSelectedSession => (SessionDetails ?? SelectedSession) is { CanRun: true };
+    public bool CanRunSelectedSession =>
+        ShowRunSelectedSession && CanModifySessions && !IsSubmittingRun && !IsLoadingSessionDetails;
 
     [RelayCommand(CanExecute = nameof(CanRefresh))]
     private Task RefreshAsync() => LoadAsync();
@@ -148,8 +190,140 @@ public sealed partial class ProjectsViewModel : ObservableObject
     [RelayCommand(CanExecute = nameof(CanRefreshSessions))]
     private Task RefreshSessionsAsync() => LoadSessionsAsync();
 
+    [RelayCommand(CanExecute = nameof(CanOpenNewSession))]
+    private void OpenNewSession()
+    {
+        NewSessionErrorMessage = null;
+        IsNewSessionFormOpen = true;
+    }
+
+    [RelayCommand]
+    private void CloseNewSession() => IsNewSessionFormOpen = false;
+
+    [RelayCommand(CanExecute = nameof(CanCreateSession))]
+    private async Task CreateSessionAsync()
+    {
+        var project = SelectedProject;
+        if (project is null) return;
+
+        var title = NewSessionTitle.Trim();
+        var task = NewSessionTask.Trim();
+        if (title.Length == 0 || task.Length == 0)
+        {
+            NewSessionErrorMessage = "Enter both a session title and a task description.";
+            return;
+        }
+        if (title.Length > 200 || task.Length > 32 * 1024)
+        {
+            NewSessionErrorMessage = "The title or task is longer than Forgehand supports.";
+            return;
+        }
+
+        CancelAndDispose(ref _writeCancellation);
+        var cancellation = new CancellationTokenSource();
+        _writeCancellation = cancellation;
+        IsCreatingSession = true;
+        NewSessionErrorMessage = null;
+        try
+        {
+            var created = await _service.CreateSessionAsync(project.Id, title, task, cancellation.Token);
+            if (!ReferenceEquals(cancellation, _writeCancellation) || !ReferenceEquals(project, SelectedProject)) return;
+
+            IsNewSessionFormOpen = false;
+            NewSessionTitle = string.Empty;
+            NewSessionTask = string.Empty;
+            await LoadSessionsAsync();
+            if (!ReferenceEquals(project, SelectedProject) || HasSessionError) return;
+            var item = Sessions.FirstOrDefault(candidate => candidate.Id == created.Id);
+            if (item is null)
+            {
+                item = new SessionItem(created);
+                Sessions.Add(item);
+            }
+            if (item is not null) await SelectSessionAsync(item);
+        }
+        catch (ForgehandApiException exception)
+        {
+            if (ReferenceEquals(cancellation, _writeCancellation)) NewSessionErrorMessage = exception.Message;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(cancellation, _writeCancellation)) IsCreatingSession = false;
+        }
+    }
+
+    [RelayCommand(CanExecute = nameof(CanRequestRun))]
+    private void RequestRun()
+    {
+        RunErrorMessage = null;
+        RunStatusMessage = null;
+        IsRunConfirmationOpen = true;
+    }
+
+    [RelayCommand]
+    private void CancelRun() => IsRunConfirmationOpen = false;
+
+    [RelayCommand(CanExecute = nameof(CanConfirmRun))]
+    private async Task ConfirmRunAsync()
+    {
+        var project = SelectedProject;
+        var session = SelectedSession;
+        if (project is null || session is null) return;
+
+        CancelAndDispose(ref _writeCancellation);
+        var cancellation = new CancellationTokenSource();
+        _writeCancellation = cancellation;
+        IsSubmittingRun = true;
+        RunErrorMessage = null;
+        RunStatusMessage = null;
+        try
+        {
+            var result = await _service.RunSessionAsync(session.Id, cancellation.Token);
+            if (!ReferenceEquals(cancellation, _writeCancellation) ||
+                !ReferenceEquals(project, SelectedProject) ||
+                !ReferenceEquals(session, SelectedSession)) return;
+
+            IsRunConfirmationOpen = false;
+            await LoadSessionsAsync();
+            if (!ReferenceEquals(project, SelectedProject) || HasSessionError) return;
+            var refreshed = Sessions.FirstOrDefault(candidate => candidate.Id == session.Id);
+            if (refreshed is not null) await SelectSessionAsync(refreshed);
+            RunStatusMessage = $"Daemon accepted execution {result.Execution.Id}: {result.Execution.Status}.";
+        }
+        catch (ForgehandApiException exception)
+        {
+            if (!ReferenceEquals(cancellation, _writeCancellation)) return;
+            RunErrorMessage = exception.Message;
+            if (exception.Failure is ApiFailure.Forbidden or ApiFailure.NotFound)
+                await LoadAsync();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            if (ReferenceEquals(cancellation, _writeCancellation)) IsSubmittingRun = false;
+        }
+    }
+
     private bool CanRefresh() => !IsLoading;
     private bool CanRefreshSessions() => SelectedProject is not null && !IsLoadingSessions;
+    private bool CanOpenNewSession() =>
+        CanModifySessions && SelectedProject is not null && !IsCreatingSession && !IsSubmittingRun;
+    private bool CanCreateSession() =>
+        CanModifySessions && IsNewSessionFormOpen && !IsCreatingSession && SelectedProject is not null;
+    private bool CanRequestRun() => CanRunSelectedSession;
+    private bool CanConfirmRun() => IsRunConfirmationOpen && CanRunSelectedSession;
+
+    partial void OnIsCreatingSessionChanged(bool value) => NotifyWriteCommands();
+    partial void OnIsSubmittingRunChanged(bool value) => NotifyWriteCommands();
+    partial void OnIsNewSessionFormOpenChanged(bool value) => CreateSessionCommand.NotifyCanExecuteChanged();
+    partial void OnIsRunConfirmationOpenChanged(bool value) => ConfirmRunCommand.NotifyCanExecuteChanged();
+    partial void OnSessionDetailsChanged(SessionItem? value) => NotifyRunCommands();
+    partial void OnIsLoadingSessionDetailsChanged(bool value) => NotifyRunCommands();
 
     public async Task LoadAsync()
     {
@@ -201,6 +375,7 @@ public sealed partial class ProjectsViewModel : ObservableObject
 
         CancelAndDispose(ref _sessionsCancellation);
         CancelAndDispose(ref _detailCancellation);
+        CancelAndDispose(ref _writeCancellation);
         SetProperty(ref _selectedProject, project, nameof(SelectedProject));
         Sessions.Clear();
         HasLoadedSessions = false;
@@ -211,6 +386,8 @@ public sealed partial class ProjectsViewModel : ObservableObject
         IsLoadingSessionDetails = false;
         RaiseWorkspaceState();
         RefreshSessionsCommand.NotifyCanExecuteChanged();
+        ResetWriteUI(clearDraft: true);
+        NotifyWriteCommands();
 
         if (project is not null) await LoadSessionsAsync();
     }
@@ -222,6 +399,7 @@ public sealed partial class ProjectsViewModel : ObservableObject
 
         CancelAndDispose(ref _sessionsCancellation);
         CancelAndDispose(ref _detailCancellation);
+        CancelAndDispose(ref _writeCancellation);
         var cancellation = new CancellationTokenSource();
         _sessionsCancellation = cancellation;
         Sessions.Clear();
@@ -230,6 +408,10 @@ public sealed partial class ProjectsViewModel : ObservableObject
         SetSelectedSession(null);
         SessionDetails = null;
         SessionDetailErrorMessage = null;
+        ResetWriteUI(clearDraft: true);
+        RunErrorMessage = null;
+        RunStatusMessage = null;
+        IsRunConfirmationOpen = false;
         IsLoadingSessionDetails = false;
         IsLoadingSessions = true;
         RaiseWorkspaceState();
@@ -249,6 +431,8 @@ public sealed partial class ProjectsViewModel : ObservableObject
             SessionErrorMessage = exception.Failure is ApiFailure.Forbidden or ApiFailure.NotFound
                 ? "Sessions for this project are no longer available. Refresh the project list to update access."
                 : exception.Message;
+            if (exception.Failure is ApiFailure.Forbidden or ApiFailure.NotFound)
+                await LoadAsync();
         }
         catch (OperationCanceledException)
         {
@@ -264,9 +448,11 @@ public sealed partial class ProjectsViewModel : ObservableObject
         if (ReferenceEquals(session, _selectedSession)) return;
 
         CancelAndDispose(ref _detailCancellation);
+        CancelAndDispose(ref _writeCancellation);
         SetSelectedSession(session);
         SessionDetails = null;
         SessionDetailErrorMessage = null;
+        ResetWriteUI(clearDraft: true);
         if (session is null)
         {
             IsLoadingSessionDetails = false;
@@ -311,6 +497,7 @@ public sealed partial class ProjectsViewModel : ObservableObject
         CancelAndDispose(ref _projectsCancellation);
         CancelAndDispose(ref _sessionsCancellation);
         CancelAndDispose(ref _detailCancellation);
+        CancelAndDispose(ref _writeCancellation);
         Projects.Clear();
         Sessions.Clear();
         SetProperty(ref _selectedProject, null, nameof(SelectedProject));
@@ -324,14 +511,61 @@ public sealed partial class ProjectsViewModel : ObservableObject
         ErrorMessage = null;
         SessionErrorMessage = null;
         SessionDetailErrorMessage = null;
+        ResetWriteUI(clearDraft: true);
         RaiseWorkspaceState();
         RefreshSessionsCommand.NotifyCanExecuteChanged();
+        NotifyWriteCommands();
     }
 
     private void SetSelectedSession(SessionItem? session)
     {
         SetProperty(ref _selectedSession, session, nameof(SelectedSession));
         OnPropertyChanged(nameof(ShowSessionSelectionState));
+        NotifyRunCommands();
+    }
+
+    private void ResetWriteUI(bool clearDraft)
+    {
+        IsNewSessionFormOpen = false;
+        IsRunConfirmationOpen = false;
+        IsCreatingSession = false;
+        IsSubmittingRun = false;
+        NewSessionErrorMessage = null;
+        RunErrorMessage = null;
+        RunStatusMessage = null;
+        if (clearDraft)
+        {
+            NewSessionTitle = string.Empty;
+            NewSessionTask = string.Empty;
+        }
+    }
+
+    private void NotifyWriteCommands()
+    {
+        OpenNewSessionCommand.NotifyCanExecuteChanged();
+        CreateSessionCommand.NotifyCanExecuteChanged();
+        NotifyRunCommands();
+    }
+
+    private void NotifyRunCommands()
+    {
+        OnPropertyChanged(nameof(ShowRunSelectedSession));
+        OnPropertyChanged(nameof(CanRunSelectedSession));
+        RequestRunCommand.NotifyCanExecuteChanged();
+        ConfirmRunCommand.NotifyCanExecuteChanged();
+    }
+
+    private void OnCompatibilityChanged()
+    {
+        OnPropertyChanged(nameof(CanModifySessions));
+        OnPropertyChanged(nameof(HasCompatibilityWarning));
+        OnPropertyChanged(nameof(CompatibilityMessage));
+        if (!CanModifySessions)
+        {
+            IsNewSessionFormOpen = false;
+            IsRunConfirmationOpen = false;
+        }
+        NotifyWriteCommands();
     }
 
     private static void CancelAndDispose(ref CancellationTokenSource? source)

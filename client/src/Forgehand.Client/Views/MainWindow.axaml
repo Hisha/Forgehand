@@ -62,8 +62,10 @@
 
     <Border Grid.Row="4" Classes="statusbar">
       <StackPanel Orientation="Horizontal" Spacing="8">
-        <Ellipse Classes="status-dot" Classes.connected="{Binding IsConnected}" VerticalAlignment="Center" />
-        <TextBlock Text="{Binding ConnectionText}" Classes="muted small" VerticalAlignment="Center" />
+        <Ellipse Classes="status-dot" Classes.connected="{Binding IsConnected}"
+                 Classes.incompatible="{Binding IsIncompatible}" VerticalAlignment="Center" />
+        <TextBlock x:Name="ConnectionStatusText" Text="{Binding ConnectionText}" Classes="muted small"
+                   VerticalAlignment="Center" />
       </StackPanel>
     </Border>
   </Grid>

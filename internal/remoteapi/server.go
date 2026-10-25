@@ -2,8 +2,8 @@
 // the Forgehand daemon.
 //
 // The API is a separate transport from the local Unix socket. It exposes a
-// small, read-only set of operations and never exposes the internal IPC
-// command set. Every operation that touches project or session data requires
+// small, explicitly defined set of operations and never exposes the internal
+// IPC command set. Every operation that touches project or session data requires
 // a session that was established with a password and a one-time password, and
 // every project is checked against the account's explicit authorization
 // before any data is returned.
@@ -12,6 +12,7 @@ package remoteapi
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -33,6 +34,9 @@ type Options struct {
 	// BuildIdentity is the Forgehand build identity reported by the health
 	// endpoint.
 	BuildIdentity string
+	// Sessions invokes the daemon's existing persistence and scheduling path.
+	// It may be nil in read-only embeddings; write routes then fail closed.
+	Sessions SessionOperations
 }
 
 // Server serves the remote API.
@@ -40,6 +44,7 @@ type Server struct {
 	service       *identity.Service
 	version       string
 	buildIdentity string
+	sessions      SessionOperations
 	handler       http.Handler
 }
 
@@ -53,6 +58,7 @@ func NewServer(options Options) (*Server, error) {
 		service:       options.Service,
 		version:       options.Version,
 		buildIdentity: options.BuildIdentity,
+		sessions:      options.Sessions,
 	}
 
 	mux := http.NewServeMux()
@@ -63,11 +69,30 @@ func NewServer(options Options) (*Server, error) {
 	mux.HandleFunc("GET "+APIBasePath+"/auth/me", server.handleMe)
 	mux.HandleFunc("GET "+APIBasePath+"/projects", server.handleProjects)
 	mux.HandleFunc("GET "+APIBasePath+"/projects/{projectID}/sessions", server.handleProjectSessions)
+	mux.HandleFunc("POST "+APIBasePath+"/projects/{projectID}/sessions", server.handleCreateProjectSession)
 	mux.HandleFunc("GET "+APIBasePath+"/sessions/{sessionID}", server.handleSession)
+	mux.HandleFunc("POST "+APIBasePath+"/sessions/{sessionID}/run", server.handleRunSession)
 	mux.HandleFunc("/", server.handleNotFound)
 
-	server.handler = server.securityHeaders(mux)
+	server.handler = server.securityHeaders(server.enforceCompatibility(mux))
 	return server, nil
+}
+
+// enforceCompatibility rejects state-changing requests whose client does not
+// identify a supported HTTP API contract. Safe reads, including health, remain
+// available so an incompatible client can diagnose and recover.
+func (s *Server) enforceCompatibility(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set(CompatibilityHeader, APIVersion)
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			clientVersion := strings.TrimSpace(r.Header.Get(CompatibilityHeader))
+			if clientVersion == "" || clientVersion != APIVersion {
+				writeError(w, http.StatusUpgradeRequired, "incompatible_api", "a compatible Forgehand HTTP API client is required")
+				return
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // Handler returns the HTTP handler of the API.
@@ -266,6 +291,62 @@ func (s *Server) handleProjectSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
+// handleCreateProjectSession creates a READY coding session through the
+// daemon-owned session engine. Creation never queues or starts work.
+func (s *Server) handleCreateProjectSession(w http.ResponseWriter, r *http.Request) {
+	principal, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+
+	projectID, ok := parseIdentifier(w, r.PathValue("projectID"))
+	if !ok {
+		return
+	}
+
+	var request createSessionRequest
+	if !decodeJSON(w, r, &request) {
+		s.auditSessionOperation(r, principal, state.AuthEventSessionCreated, "invalid", fmt.Sprintf("project %d", projectID))
+		return
+	}
+	request.Title = strings.TrimSpace(request.Title)
+	request.Task = strings.TrimSpace(request.Task)
+	if request.Title == "" || request.Task == "" {
+		s.auditSessionOperation(r, principal, state.AuthEventSessionCreated, "invalid", fmt.Sprintf("project %d", projectID))
+		writeError(w, http.StatusBadRequest, "invalid_request", "title and task are required")
+		return
+	}
+	if len(request.Title) > MaxSessionTitleLength || len(request.Task) > MaxSessionTaskLength {
+		s.auditSessionOperation(r, principal, state.AuthEventSessionCreated, "invalid", fmt.Sprintf("project %d", projectID))
+		writeError(w, http.StatusBadRequest, "invalid_request", "title or task exceeds the supported length")
+		return
+	}
+
+	authorized, err := s.service.CanAccessProject(r.Context(), principal, projectID)
+	if err != nil {
+		writeIdentityError(w, err)
+		return
+	}
+	if !authorized {
+		s.auditSessionOperation(r, principal, state.AuthEventSessionCreated, "forbidden", fmt.Sprintf("project %d", projectID))
+		writeIdentityError(w, identity.ErrForbidden)
+		return
+	}
+	if s.sessions == nil {
+		writeError(w, http.StatusServiceUnavailable, "execution_unavailable", "session creation is unavailable")
+		return
+	}
+
+	session, err := s.sessions.CreateCodingSession(r.Context(), projectID, request.Title, request.Task)
+	if err != nil {
+		s.auditSessionOperation(r, principal, state.AuthEventSessionCreated, "failed", fmt.Sprintf("project %d", projectID))
+		writeOperationError(w, err)
+		return
+	}
+	s.auditSessionOperation(r, principal, state.AuthEventSessionCreated, "created", fmt.Sprintf("project %d session %d", projectID, session.ID))
+	writeJSON(w, http.StatusCreated, toSessionResponse(session))
+}
+
 // handleSession returns the persisted details of one authorized session.
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	principal, ok := s.principal(w, r)
@@ -284,6 +365,95 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, toSessionResponse(session))
+}
+
+// handleRunSession atomically queues an eligible persisted session and wakes
+// the existing daemon dispatcher. It never waits for worker completion.
+func (s *Server) handleRunSession(w http.ResponseWriter, r *http.Request) {
+	principal, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+
+	sessionID, ok := parseIdentifier(w, r.PathValue("sessionID"))
+	if !ok {
+		return
+	}
+	if !requireEmptyBody(w, r) {
+		return
+	}
+
+	session, err := s.service.GetSession(r.Context(), principal, sessionID)
+	if err != nil {
+		s.auditSessionOperation(r, principal, state.AuthEventSessionRunSubmitted, "denied", fmt.Sprintf("session %d", sessionID))
+		writeIdentityError(w, err)
+		return
+	}
+	if s.sessions == nil {
+		writeError(w, http.StatusServiceUnavailable, "execution_unavailable", "session execution is unavailable")
+		return
+	}
+
+	execution, err := s.sessions.QueueSessionExecution(r.Context(), sessionID)
+	if err != nil {
+		s.auditSessionOperation(r, principal, state.AuthEventSessionRunSubmitted, "failed", fmt.Sprintf("project %d session %d", *session.ProjectID, sessionID))
+		writeOperationError(w, err)
+		return
+	}
+
+	updated, err := s.service.GetSession(r.Context(), principal, sessionID)
+	if err != nil {
+		writeIdentityError(w, err)
+		return
+	}
+	s.auditSessionOperation(r, principal, state.AuthEventSessionRunSubmitted, "queued", fmt.Sprintf("project %d session %d execution %d", *session.ProjectID, sessionID, execution.ID))
+	writeJSON(w, http.StatusAccepted, runSessionResponse{
+		Session: toSessionResponse(updated),
+		Execution: executionResponse{
+			ID:            execution.ID,
+			SessionID:     execution.SessionID,
+			Status:        execution.Status,
+			QueuePosition: execution.QueuePosition,
+		},
+	})
+}
+
+func requireEmptyBody(w http.ResponseWriter, r *http.Request) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, MaxRequestBytes)
+	payload, err := io.ReadAll(r.Body)
+	if err != nil {
+		var maxBytesError *http.MaxBytesError
+		if errors.As(err, &maxBytesError) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request_too_large", "the request body is too large")
+			return false
+		}
+		writeError(w, http.StatusBadRequest, "invalid_request", "the request body could not be read")
+		return false
+	}
+	if strings.TrimSpace(string(payload)) != "" {
+		writeError(w, http.StatusBadRequest, "invalid_request", "this operation does not accept request options")
+		return false
+	}
+	return true
+}
+
+func (s *Server) auditSessionOperation(
+	r *http.Request,
+	principal identity.Principal,
+	eventType, outcome, detail string,
+) {
+	_ = s.service.RecordSessionOperation(r.Context(), principal, eventType, outcome, detail, remoteAddress(r))
+}
+
+func writeOperationError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrSessionConflict):
+		writeError(w, http.StatusConflict, "session_conflict", "the session is not eligible for execution")
+	case errors.Is(err, ErrExecutionUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "execution_unavailable", "the coding worker is unavailable")
+	default:
+		writeError(w, http.StatusInternalServerError, "internal_error", "the daemon could not complete the request")
+	}
 }
 
 // principal resolves the bearer token of a request into an authenticated

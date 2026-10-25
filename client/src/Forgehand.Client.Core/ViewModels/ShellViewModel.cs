@@ -11,8 +11,11 @@ public enum ConnectionState
 {
     Unknown,
     Checking,
-    Connected,
-    Unavailable,
+    Disconnected,
+    ConnectedCompatible,
+    ConnectedIncompatible,
+    AuthenticationExpired,
+    ServerError,
 }
 
 /// <summary>
@@ -33,6 +36,7 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
         Projects = new ProjectsViewModel(service);
         Login.PropertyChanged += OnLoginPropertyChanged;
         _service.SessionChanged += OnSessionChanged;
+        _service.CompatibilityChanged += OnCompatibilityChanged;
 
         _endpointText = service.Endpoint.DisplayText;
         _notice = notice;
@@ -50,10 +54,10 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ApplyEndpointCommand))]
-    [NotifyCanExecuteChangedFor(nameof(CheckConnectionCommand))]
     private bool _isEndpointLocked;
 
     [ObservableProperty]
+    [NotifyCanExecuteChangedFor(nameof(CheckConnectionCommand))]
     private bool _isChecking;
 
     [ObservableProperty]
@@ -69,6 +73,7 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
 
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(IsConnected))]
+    [NotifyPropertyChangedFor(nameof(IsIncompatible))]
     private ConnectionState _connection = ConnectionState.Unknown;
 
     [ObservableProperty]
@@ -83,7 +88,9 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
 
     public bool HasNotice => Notice is not null;
 
-    public bool IsConnected => Connection == ConnectionState.Connected;
+    public bool IsConnected => Connection == ConnectionState.ConnectedCompatible;
+
+    public bool IsIncompatible => Connection == ConnectionState.ConnectedIncompatible;
 
     public Task InitializeAsync() => CheckConnectionAsync();
 
@@ -116,7 +123,7 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
         await CheckConnectionAsync();
     }
 
-    [RelayCommand(CanExecute = nameof(CanChangeEndpoint))]
+    [RelayCommand(CanExecute = nameof(CanCheckConnection))]
     private async Task CheckConnectionAsync()
     {
         IsChecking = true;
@@ -125,13 +132,22 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
         try
         {
             var health = await _service.CheckConnectionAsync(_lifetime.Token);
-            Connection = ConnectionState.Connected;
-            ConnectionText = $"Connected to Forgehand {health.Version} · API {health.ApiVersion}";
+            ShowCompatibleStatus(health);
         }
         catch (ForgehandApiException exception)
         {
-            Connection = ConnectionState.Unavailable;
+            Connection = exception.Failure switch
+            {
+                ApiFailure.IncompatibleApi => ConnectionState.ConnectedIncompatible,
+                ApiFailure.Unreachable or ApiFailure.Timeout => ConnectionState.Disconnected,
+                ApiFailure.SessionExpired => ConnectionState.AuthenticationExpired,
+                _ => ConnectionState.ServerError,
+            };
             ConnectionText = exception.Message;
+            if (exception.Failure == ApiFailure.IncompatibleApi)
+            {
+                ConnectionText = DescribeIncompatibleConnection();
+            }
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested)
         {
@@ -155,6 +171,8 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
 
     private bool CanChangeEndpoint() => !IsEndpointLocked;
 
+    private bool CanCheckConnection() => !IsChecking && !Login.IsBusy;
+
     private void UpdateEndpointLock()
     {
         IsEndpointLocked = IsSignedIn || IsChecking || Login.IsBusy;
@@ -176,6 +194,7 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
             case SessionChange.SignedIn:
                 Notice = null;
                 SessionText = DescribeSession();
+                if (_service.DaemonHealth is { } health) ShowCompatibleStatus(health);
                 _ = Projects.LoadAsync();
                 break;
             case SessionChange.SignedOut:
@@ -186,6 +205,8 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
                 Projects.Clear();
                 SessionText = string.Empty;
                 Notice = "Your session has expired. Sign in again to continue.";
+                Connection = ConnectionState.AuthenticationExpired;
+                ConnectionText = "Authentication expired · sign in again to continue";
                 break;
         }
     }
@@ -201,8 +222,40 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
     public void Dispose()
     {
         _service.SessionChanged -= OnSessionChanged;
+        _service.CompatibilityChanged -= OnCompatibilityChanged;
         Login.PropertyChanged -= OnLoginPropertyChanged;
         _lifetime.Cancel();
         _service.Dispose();
+    }
+
+    private void OnCompatibilityChanged()
+    {
+        if (_service.ApiCompatibility == ApiCompatibilityState.Compatible && _service.DaemonHealth is { } health)
+        {
+            ShowCompatibleStatus(health);
+        }
+        else if (_service.ApiCompatibility == ApiCompatibilityState.Incompatible)
+        {
+            Connection = ConnectionState.ConnectedIncompatible;
+            ConnectionText = DescribeIncompatibleConnection();
+        }
+    }
+
+    private void ShowCompatibleStatus(HealthResponse health)
+    {
+        Connection = ConnectionState.ConnectedCompatible;
+        var version = string.IsNullOrWhiteSpace(health.Version) ? "unknown" : health.Version;
+        var build = string.IsNullOrWhiteSpace(health.BuildIdentity) ? "unavailable" : health.BuildIdentity;
+        ConnectionText = $"Connected and compatible · Daemon {version} · Build {build} · HTTP API {health.ApiVersion}";
+    }
+
+    private string DescribeIncompatibleConnection()
+    {
+        var health = _service.DaemonHealth;
+        var version = string.IsNullOrWhiteSpace(health?.Version) ? "unknown" : health.Version;
+        var build = string.IsNullOrWhiteSpace(health?.BuildIdentity) ? "unavailable" : health.BuildIdentity;
+        var api = string.IsNullOrWhiteSpace(health?.ApiVersion) ? "missing/unknown" : health.ApiVersion;
+        return $"Connected but incompatible · Daemon {version} · Build {build} · HTTP API {api} " +
+               $"(client requires {ForgehandApiClient.SupportedApiVersion}). Update or restart the daemon, then check again.";
     }
 }

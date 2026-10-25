@@ -56,11 +56,15 @@
         </StackPanel>
       </Border>
 
-      <Grid IsVisible="{Binding ShowWorkspace}" RowDefinitions="Auto,*">
+      <Grid IsVisible="{Binding ShowWorkspace}" RowDefinitions="Auto,Auto,*">
         <Border Classes="workspace-header">
           <Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,Auto">
             <TextBlock Text="{Binding SelectedProject.Name}" Classes="heading" />
-            <TextBlock Grid.Column="1" Text="{Binding SelectedProject.IdText}" Classes="muted" />
+            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12">
+              <TextBlock Text="{Binding SelectedProject.IdText}" Classes="muted" VerticalAlignment="Center" />
+              <Button x:Name="NewSessionButton" Content="New Session" Classes="primary" Command="{Binding OpenNewSessionCommand}"
+                      IsEnabled="{Binding CanModifySessions}" />
+            </StackPanel>
             <TextBlock Grid.Row="1" Grid.ColumnSpan="2" Margin="0,5,0,0"
                        Text="Repository / root path" Classes="label" />
             <TextBlock x:Name="ProjectRootPath" Grid.Row="2" Grid.ColumnSpan="2" Margin="0,3,0,0"
@@ -72,7 +76,12 @@
           </Grid>
         </Border>
 
-        <Grid Grid.Row="1" ColumnDefinitions="340,*">
+        <Border x:Name="CompatibilityWarning" Grid.Row="1" Classes="notice" IsVisible="{Binding HasCompatibilityWarning}">
+          <TextBlock Text="{Binding CompatibilityMessage}" Foreground="{DynamicResource WarningTextBrush}"
+                     TextWrapping="Wrap" />
+        </Border>
+
+        <Grid Grid.Row="2" ColumnDefinitions="340,*">
           <Border Grid.Column="0" Classes="session-list-panel">
             <Grid RowDefinitions="Auto,Auto,Auto,*">
               <Grid ColumnDefinitions="*,Auto">
@@ -189,8 +198,78 @@
                 </StackPanel>
               </Border>
             </ScrollViewer>
+
+            <StackPanel Margin="24" HorizontalAlignment="Right" VerticalAlignment="Top" Spacing="8">
+              <Button x:Name="RunSessionButton" Content="Run Session" Classes="primary"
+                      Command="{Binding RequestRunCommand}"
+                      IsVisible="{Binding ShowRunSelectedSession}"
+                      IsEnabled="{Binding CanRunSelectedSession}" />
+              <Border Classes="notice" IsVisible="{Binding HasRunStatus}">
+                <TextBlock Text="{Binding RunStatusMessage}" Foreground="{DynamicResource WarningTextBrush}"
+                           TextWrapping="Wrap" MaxWidth="360" />
+              </Border>
+            </StackPanel>
+
+            <Border x:Name="RunConfirmationPanel" Classes="modal-card" Margin="36" VerticalAlignment="Top"
+                    IsVisible="{Binding IsRunConfirmationOpen}">
+              <StackPanel Spacing="14">
+                <StackPanel Spacing="4">
+                  <TextBlock Text="Run this session?" Classes="heading" />
+                  <TextBlock Text="This starts a coding worker on the Forgehand host."
+                             Classes="muted" />
+                </StackPanel>
+                <Grid ColumnDefinitions="Auto,*" RowDefinitions="Auto,Auto,Auto" ColumnSpacing="14" RowSpacing="8">
+                  <TextBlock Text="Project" Classes="label" />
+                  <TextBlock Grid.Column="1" Text="{Binding SelectedProject.Name}" />
+                  <TextBlock Grid.Row="1" Text="Session" Classes="label" />
+                  <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedSession.Title}" />
+                  <TextBlock Grid.Row="2" Text="Task" Classes="label" />
+                  <TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding SelectedSession.Task}"
+                             TextWrapping="Wrap" MaxHeight="120" />
+                </Grid>
+                <Border Classes="error" IsVisible="{Binding HasRunError}">
+                  <TextBlock Text="{Binding RunErrorMessage}" Foreground="{DynamicResource DangerBrush}"
+                             TextWrapping="Wrap" />
+                </Border>
+                <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+                  <Button x:Name="CancelRunButton" Content="Cancel" Command="{Binding CancelRunCommand}" />
+                  <Button Content="Run Session" Classes="primary" Command="{Binding ConfirmRunCommand}" />
+                </StackPanel>
+              </StackPanel>
+            </Border>
           </Grid>
         </Grid>
+
+        <Border x:Name="NewSessionPanel" Grid.Row="2" Classes="modal-card" Margin="44" VerticalAlignment="Top"
+                HorizontalAlignment="Center" MaxWidth="620"
+                IsVisible="{Binding IsNewSessionFormOpen}">
+          <StackPanel Spacing="14">
+            <StackPanel Spacing="4">
+              <TextBlock Text="New Session" Classes="heading" />
+              <TextBlock Text="Create a persisted session. It will not run until you explicitly submit it."
+                         Classes="muted" />
+            </StackPanel>
+            <StackPanel Spacing="6">
+              <TextBlock Text="Title" Classes="label" />
+              <TextBox Text="{Binding NewSessionTitle}" MaxLength="200"
+                       IsEnabled="{Binding !IsCreatingSession}" />
+            </StackPanel>
+            <StackPanel Spacing="6">
+              <TextBlock Text="Task description" Classes="label" />
+              <TextBox Text="{Binding NewSessionTask}" AcceptsReturn="True" TextWrapping="Wrap"
+                       MinHeight="150" MaxHeight="260" ScrollViewer.VerticalScrollBarVisibility="Auto"
+                       IsEnabled="{Binding !IsCreatingSession}" />
+            </StackPanel>
+            <Border Classes="error" IsVisible="{Binding HasNewSessionError}">
+              <TextBlock Text="{Binding NewSessionErrorMessage}" Foreground="{DynamicResource DangerBrush}"
+                         TextWrapping="Wrap" />
+            </Border>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right" Spacing="8">
+              <Button Content="Cancel" Command="{Binding CloseNewSessionCommand}" />
+              <Button Content="Create Session" Classes="primary" Command="{Binding CreateSessionCommand}" />
+            </StackPanel>
+          </StackPanel>
+        </Border>
       </Grid>
     </Grid>
   </Grid>

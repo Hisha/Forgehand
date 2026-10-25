@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,12 +22,44 @@ import (
 const testPassword = "correct horse battery staple"
 
 type harness struct {
-	server  *httptest.Server
-	client  *http.Client
-	db      *state.Database
-	service *identity.Service
-	now     time.Time
-	secret  []byte
+	server     *httptest.Server
+	client     *http.Client
+	db         *state.Database
+	service    *identity.Service
+	operations *testSessionOperations
+	now        *time.Time
+	secret     []byte
+}
+
+type testSessionOperations struct {
+	db          *state.Database
+	queueCalls  atomic.Int64
+	createCalls atomic.Int64
+}
+
+func (o *testSessionOperations) CreateCodingSession(
+	ctx context.Context,
+	projectID int64,
+	title, task string,
+) (state.Session, error) {
+	o.createCalls.Add(1)
+	return o.db.CreateCodingSession(ctx, title, projectID, task, "test-provider", "test-model")
+}
+
+func (o *testSessionOperations) QueueSessionExecution(
+	ctx context.Context,
+	sessionID int64,
+) (state.SessionExecution, error) {
+	o.queueCalls.Add(1)
+	execution, err := o.db.QueueSessionExecution(ctx, sessionID, 5)
+	if err == nil {
+		return execution, nil
+	}
+	session, readErr := o.db.GetSession(ctx, sessionID)
+	if readErr == nil && session.State != state.SessionStateReady {
+		return state.SessionExecution{}, fmt.Errorf("%w: %s", ErrSessionConflict, session.State)
+	}
+	return state.SessionExecution{}, err
 }
 
 func newHarness(t *testing.T) *harness {
@@ -64,10 +98,12 @@ func newHarness(t *testing.T) *harness {
 		t.Fatalf("NewService() returned error: %v", err)
 	}
 
+	operations := &testSessionOperations{db: db}
 	api, err := NewServer(Options{
 		Service:       service,
 		Version:       "test-version",
 		BuildIdentity: "test-build",
+		Sessions:      operations,
 	})
 	if err != nil {
 		t.Fatalf("NewServer() returned error: %v", err)
@@ -77,11 +113,23 @@ func newHarness(t *testing.T) *harness {
 	t.Cleanup(server.Close)
 
 	return &harness{
-		server:  server,
-		client:  server.Client(),
-		db:      db,
-		service: service,
-		now:     now,
+		server:     server,
+		client:     server.Client(),
+		db:         db,
+		service:    service,
+		operations: operations,
+		now:        &now,
+	}
+}
+
+func (h *harness) authorizeProject(t *testing.T, projectID int64) {
+	t.Helper()
+	accounts, err := h.db.ListAccounts(context.Background())
+	if err != nil || len(accounts) != 1 {
+		t.Fatalf("load enrolled account: accounts=%d err=%v", len(accounts), err)
+	}
+	if err := h.db.GrantAccountProject(context.Background(), accounts[0].ID, projectID); err != nil {
+		t.Fatalf("grant project: %v", err)
 	}
 }
 
@@ -104,17 +152,21 @@ func (h *harness) enroll(t *testing.T, username string) []byte {
 		t.Fatalf("activate account: %v", err)
 	}
 
-	h.now = h.now.Add(auth.DefaultTOTPPeriod)
+	*h.now = h.now.Add(auth.DefaultTOTPPeriod)
 	h.secret = secret
 	return secret
 }
 
 func (h *harness) code(secret []byte) string {
-	return auth.GenerateTOTP(secret, auth.TOTPAlgorithmSHA1, auth.DefaultTOTPDigits, auth.TOTPCounter(h.now, auth.DefaultTOTPPeriod))
+	return auth.GenerateTOTP(secret, auth.TOTPAlgorithmSHA1, auth.DefaultTOTPDigits, auth.TOTPCounter(*h.now, auth.DefaultTOTPPeriod))
 }
 
 // do performs an HTTP request against the API.
 func (h *harness) do(t *testing.T, method, path, token string, body any) (int, []byte) {
+	return h.doWithCompatibility(t, method, path, token, body, APIVersion)
+}
+
+func (h *harness) doWithCompatibility(t *testing.T, method, path, token string, body any, apiVersion string) (int, []byte) {
 	t.Helper()
 
 	var reader io.Reader
@@ -135,6 +187,9 @@ func (h *harness) do(t *testing.T, method, path, token string, body any) (int, [
 	}
 	if token != "" {
 		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	if apiVersion != "" {
+		request.Header.Set(CompatibilityHeader, apiVersion)
 	}
 
 	response, err := h.client.Do(request)
@@ -193,6 +248,74 @@ func TestHealthIsAvailableWithoutAuthentication(t *testing.T) {
 	}
 	if response.Version != "test-version" {
 		t.Fatalf("version = %q, want %q", response.Version, "test-version")
+	}
+}
+
+func TestStateChangesRequireKnownCompatibleAPIVersion(t *testing.T) {
+	harness := newHarness(t)
+	harness.enroll(t, "alice")
+	project, err := harness.db.CreateProject(context.Background(), "allowed", t.TempDir())
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	harness.authorizeProject(t, project.ID)
+	session, err := harness.db.CreateCodingSession(context.Background(), "Ready", project.ID, "Task", "test", "test")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	token := harness.login(t, "alice", testPassword, harness.code(harness.secret))
+
+	for _, clientVersion := range []string{"", "v2", "unknown"} {
+		status, payload := harness.doWithCompatibility(
+			t, http.MethodPost, fmt.Sprintf("%s/projects/%d/sessions", APIBasePath, project.ID), token,
+			map[string]string{"title": "Rejected", "task": "Must not persist"}, clientVersion)
+		if status != http.StatusUpgradeRequired || !strings.Contains(string(payload), `"code":"incompatible_api"`) {
+			t.Fatalf("create with API %q returned %d, body %s", clientVersion, status, payload)
+		}
+
+		status, payload = harness.doWithCompatibility(
+			t, http.MethodPost, fmt.Sprintf("%s/sessions/%d/run", APIBasePath, session.ID), token, nil, clientVersion)
+		if status != http.StatusUpgradeRequired || !strings.Contains(string(payload), `"code":"incompatible_api"`) {
+			t.Fatalf("run with API %q returned %d, body %s", clientVersion, status, payload)
+		}
+	}
+
+	if harness.operations.createCalls.Load() != 0 || harness.operations.queueCalls.Load() != 0 {
+		t.Fatalf("incompatible requests reached operations: create=%d queue=%d", harness.operations.createCalls.Load(), harness.operations.queueCalls.Load())
+	}
+	persisted, err := harness.db.GetSession(context.Background(), session.ID)
+	if err != nil || persisted.State != state.SessionStateReady {
+		t.Fatalf("rejected run changed session: state=%q err=%v", persisted.State, err)
+	}
+}
+
+func TestDifferentBuildIdentitiesRemainCompatibleWhenAPIVersionMatches(t *testing.T) {
+	harness := newHarness(t)
+	harness.enroll(t, "alice")
+	project, err := harness.db.CreateProject(context.Background(), "allowed", t.TempDir())
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	harness.authorizeProject(t, project.ID)
+	token := harness.login(t, "alice", testPassword, harness.code(harness.secret))
+
+	status, payload := harness.do(t, http.MethodPost, fmt.Sprintf("%s/projects/%d/sessions", APIBasePath, project.ID), token, map[string]string{
+		"title": "Compatible client",
+		"task":  "The client build identity is deliberately absent from the HTTP contract.",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body %s)", status, payload)
+	}
+}
+
+func TestMissingCompatibilityMetadataRejectsAuthenticationMutation(t *testing.T) {
+	harness := newHarness(t)
+
+	status, payload := harness.doWithCompatibility(t, http.MethodPost, APIBasePath+"/auth/login", "", map[string]string{
+		"username": "alice", "password": testPassword, "totp_code": "000000",
+	}, "")
+	if status != http.StatusUpgradeRequired || !strings.Contains(string(payload), `"code":"incompatible_api"`) {
+		t.Fatalf("status = %d, body = %s", status, payload)
 	}
 }
 
@@ -407,6 +530,264 @@ func TestSessionsOfAnUnauthorizedProjectAreRefused(t *testing.T) {
 	}
 }
 
+func TestAuthorizedSessionCreationPersistsReadyCodingSession(t *testing.T) {
+	harness := newHarness(t)
+	harness.enroll(t, "alice")
+	project, err := harness.db.CreateProject(context.Background(), "allowed", t.TempDir())
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	harness.authorizeProject(t, project.ID)
+	token := harness.login(t, "alice", testPassword, harness.code(harness.secret))
+
+	status, payload := harness.do(t, http.MethodPost, fmt.Sprintf("%s/projects/%d/sessions", APIBasePath, project.ID), token, map[string]string{
+		"title": "Fix queue race",
+		"task":  "Find and repair the duplicate scheduling race.",
+	})
+	if status != http.StatusCreated {
+		t.Fatalf("status = %d, want 201 (body %s)", status, payload)
+	}
+	var response sessionSummaryResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	persisted, err := harness.db.GetSession(context.Background(), response.ID)
+	if err != nil {
+		t.Fatalf("read created session: %v", err)
+	}
+	if persisted.State != state.SessionStateReady || persisted.ProjectID == nil || *persisted.ProjectID != project.ID {
+		t.Fatalf("created session = %+v", persisted)
+	}
+	if persisted.Task != "Find and repair the duplicate scheduling race." || persisted.Kind != "coding" {
+		t.Fatalf("created session fields = %+v", persisted)
+	}
+	events, err := harness.db.ListAuthEvents(context.Background(), 20)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	foundAudit := false
+	for _, event := range events {
+		if event.EventType == state.AuthEventSessionCreated && event.Outcome == "created" {
+			foundAudit = true
+			if strings.Contains(event.Detail, persisted.Task) {
+				t.Fatalf("audit event contains task content: %+v", event)
+			}
+		}
+	}
+	if !foundAudit {
+		t.Fatal("session creation audit event was not recorded")
+	}
+}
+
+func TestAuthorizedRunQueuesExistingSession(t *testing.T) {
+	harness := newHarness(t)
+	harness.enroll(t, "alice")
+	project, err := harness.db.CreateProject(context.Background(), "allowed", t.TempDir())
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	harness.authorizeProject(t, project.ID)
+	session, err := harness.db.CreateCodingSession(context.Background(), "Run me", project.ID, "Do work", "test", "test")
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	token := harness.login(t, "alice", testPassword, harness.code(harness.secret))
+
+	status, payload := harness.do(t, http.MethodPost, fmt.Sprintf("%s/sessions/%d/run", APIBasePath, session.ID), token, nil)
+	if status != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202 (body %s)", status, payload)
+	}
+	var response runSessionResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Session.State != state.SessionStateQueued || response.Execution.Status != state.ExecutionStatusQueued {
+		t.Fatalf("run response = %+v", response)
+	}
+	events, err := harness.db.ListAuthEvents(context.Background(), 20)
+	if err != nil {
+		t.Fatalf("list audit events: %v", err)
+	}
+	foundAudit := false
+	for _, event := range events {
+		if event.EventType == state.AuthEventSessionRunSubmitted && event.Outcome == "queued" {
+			foundAudit = true
+		}
+	}
+	if !foundAudit {
+		t.Fatal("session run audit event was not recorded")
+	}
+}
+
+func TestDuplicateRunReturnsConflictAndCreatesOneExecution(t *testing.T) {
+	harness := newHarness(t)
+	harness.enroll(t, "alice")
+	project, _ := harness.db.CreateProject(context.Background(), "allowed", t.TempDir())
+	harness.authorizeProject(t, project.ID)
+	session, _ := harness.db.CreateCodingSession(context.Background(), "Run once", project.ID, "Do work", "test", "test")
+	token := harness.login(t, "alice", testPassword, harness.code(harness.secret))
+	path := fmt.Sprintf("%s/sessions/%d/run", APIBasePath, session.ID)
+
+	firstStatus, firstPayload := harness.do(t, http.MethodPost, path, token, nil)
+	secondStatus, secondPayload := harness.do(t, http.MethodPost, path, token, nil)
+	if firstStatus != http.StatusAccepted {
+		t.Fatalf("first status = %d, body %s", firstStatus, firstPayload)
+	}
+	if secondStatus != http.StatusConflict {
+		t.Fatalf("second status = %d, want 409 (body %s)", secondStatus, secondPayload)
+	}
+	_, execution, err := harness.db.SessionExecutionStatus(context.Background(), session.ID)
+	if err != nil || execution == nil || execution.Status != state.ExecutionStatusQueued {
+		t.Fatalf("execution = %+v err=%v", execution, err)
+	}
+}
+
+func TestConcurrentDuplicateRunAcceptsExactlyOneRequest(t *testing.T) {
+	harness := newHarness(t)
+	harness.enroll(t, "alice")
+	project, _ := harness.db.CreateProject(context.Background(), "allowed", t.TempDir())
+	harness.authorizeProject(t, project.ID)
+	session, _ := harness.db.CreateCodingSession(context.Background(), "Run once", project.ID, "Do work", "test", "test")
+	token := harness.login(t, "alice", testPassword, harness.code(harness.secret))
+	path := fmt.Sprintf("%s/sessions/%d/run", APIBasePath, session.ID)
+
+	start := make(chan struct{})
+	statuses := make(chan int, 2)
+	var wait sync.WaitGroup
+	for range 2 {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			status, _ := harness.do(t, http.MethodPost, path, token, nil)
+			statuses <- status
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(statuses)
+
+	counts := map[int]int{}
+	for status := range statuses {
+		counts[status]++
+	}
+	if counts[http.StatusAccepted] != 1 || counts[http.StatusConflict] != 1 {
+		t.Fatalf("statuses = %v, want one 202 and one 409", counts)
+	}
+}
+
+func TestUnauthorizedAndRevokedWritesAreRefusedWithoutQueueing(t *testing.T) {
+	harness := newHarness(t)
+	harness.enroll(t, "alice")
+	project, _ := harness.db.CreateProject(context.Background(), "private", t.TempDir())
+	session, _ := harness.db.CreateCodingSession(context.Background(), "Hidden", project.ID, "Do work", "test", "test")
+	token := harness.login(t, "alice", testPassword, harness.code(harness.secret))
+
+	status, _ := harness.do(t, http.MethodPost, fmt.Sprintf("%s/projects/%d/sessions", APIBasePath, project.ID), token, map[string]string{"title": "No", "task": "No"})
+	if status != http.StatusForbidden {
+		t.Fatalf("unauthorized creation status = %d, want 403", status)
+	}
+	status, _ = harness.do(t, http.MethodPost, fmt.Sprintf("%s/sessions/%d/run", APIBasePath, session.ID), token, nil)
+	if status != http.StatusNotFound {
+		t.Fatalf("unauthorized run status = %d, want 404", status)
+	}
+	if harness.operations.queueCalls.Load() != 0 {
+		t.Fatalf("rejected requests made %d queue calls", harness.operations.queueCalls.Load())
+	}
+
+	harness.authorizeProject(t, project.ID)
+	accounts, _ := harness.db.ListAccounts(context.Background())
+	if err := harness.db.RevokeAccountProject(context.Background(), accounts[0].ID, project.ID); err != nil {
+		t.Fatalf("revoke project: %v", err)
+	}
+	status, _ = harness.do(t, http.MethodPost, fmt.Sprintf("%s/sessions/%d/run", APIBasePath, session.ID), token, nil)
+	if status != http.StatusNotFound || harness.operations.queueCalls.Load() != 0 {
+		t.Fatalf("revoked run status=%d queueCalls=%d", status, harness.operations.queueCalls.Load())
+	}
+}
+
+func TestSessionWriteValidationRejectsUnknownMissingAndUnsupportedFields(t *testing.T) {
+	harness := newHarness(t)
+	harness.enroll(t, "alice")
+	project, _ := harness.db.CreateProject(context.Background(), "allowed", t.TempDir())
+	harness.authorizeProject(t, project.ID)
+	session, _ := harness.db.CreateCodingSession(context.Background(), "Ready", project.ID, "Task", "test", "test")
+	token := harness.login(t, "alice", testPassword, harness.code(harness.secret))
+	createPath := fmt.Sprintf("%s/projects/%d/sessions", APIBasePath, project.ID)
+
+	for _, body := range []map[string]string{
+		{"title": "", "task": "Task"},
+		{"title": "Title", "task": ""},
+		{"title": "Title", "task": "Task", "model": "unsupported"},
+	} {
+		status, payload := harness.do(t, http.MethodPost, createPath, token, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("body %v returned %d, want 400 (payload %s)", body, status, payload)
+		}
+	}
+	status, payload := harness.do(t, http.MethodPost, createPath, token, map[string]string{
+		"title": "Title",
+		"task":  strings.Repeat("x", MaxRequestBytes+1),
+	})
+	if status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized create returned %d, want 413 (payload %s)", status, payload)
+	}
+
+	status, payload = harness.do(t, http.MethodPost, fmt.Sprintf("%s/sessions/%d/run", APIBasePath, session.ID), token, map[string]string{"command": "sh"})
+	if status != http.StatusBadRequest {
+		t.Fatalf("run options returned %d, want 400 (payload %s)", status, payload)
+	}
+	if harness.operations.queueCalls.Load() != 0 {
+		t.Fatalf("invalid requests made %d queue calls", harness.operations.queueCalls.Load())
+	}
+	if harness.operations.createCalls.Load() != 0 {
+		t.Fatalf("invalid requests made %d create calls", harness.operations.createCalls.Load())
+	}
+}
+
+func TestSessionWritesRequireValidUnexpiredAuthentication(t *testing.T) {
+	harness := newHarness(t)
+	harness.enroll(t, "alice")
+	project, _ := harness.db.CreateProject(context.Background(), "allowed", t.TempDir())
+	harness.authorizeProject(t, project.ID)
+	path := fmt.Sprintf("%s/projects/%d/sessions", APIBasePath, project.ID)
+	body := map[string]string{"title": "Title", "task": "Task"}
+
+	for _, token := range []string{"", "invalid"} {
+		status, _ := harness.do(t, http.MethodPost, path, token, body)
+		if status != http.StatusUnauthorized {
+			t.Fatalf("token %q returned %d, want 401", token, status)
+		}
+		status, _ = harness.do(t, http.MethodPost, APIBasePath+"/sessions/1/run", token, nil)
+		if status != http.StatusUnauthorized {
+			t.Fatalf("run token %q returned %d, want 401", token, status)
+		}
+	}
+	token := harness.login(t, "alice", testPassword, harness.code(harness.secret))
+	*harness.now = harness.now.Add(2 * time.Hour)
+	status, _ := harness.do(t, http.MethodPost, path, token, body)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("expired token returned %d, want 401", status)
+	}
+}
+
+func TestInvalidSessionWriteIdentifiersAreRejected(t *testing.T) {
+	harness := newHarness(t)
+	harness.enroll(t, "alice")
+	token := harness.login(t, "alice", testPassword, harness.code(harness.secret))
+
+	for _, path := range []string{
+		APIBasePath + "/projects/invalid/sessions",
+		APIBasePath + "/projects/0/sessions",
+		APIBasePath + "/sessions/-1/run",
+	} {
+		status, payload := harness.do(t, http.MethodPost, path, token, nil)
+		if status != http.StatusBadRequest {
+			t.Fatalf("%s returned %d, want 400 (body %s)", path, status, payload)
+		}
+	}
+}
+
 func TestOversizedRequestBodyIsRefused(t *testing.T) {
 	harness := newHarness(t)
 
@@ -420,6 +801,7 @@ func TestOversizedRequestBodyIsRefused(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(CompatibilityHeader, APIVersion)
 
 	response, err := harness.client.Do(request)
 	if err != nil {
@@ -445,6 +827,7 @@ func TestMalformedRequestBodyIsRefused(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set(CompatibilityHeader, APIVersion)
 
 	response, err := harness.client.Do(request)
 	if err != nil {
@@ -485,6 +868,7 @@ func TestNonJSONContentTypeIsRefused(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 	request.Header.Set("Content-Type", "text/plain")
+	request.Header.Set(CompatibilityHeader, APIVersion)
 
 	response, err := harness.client.Do(request)
 	if err != nil {
@@ -509,6 +893,7 @@ func TestMissingContentTypeIsRefused(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
+	request.Header.Set(CompatibilityHeader, APIVersion)
 
 	response, err := harness.client.Do(request)
 	if err != nil {

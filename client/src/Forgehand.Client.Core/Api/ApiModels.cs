@@ -55,6 +55,20 @@ public sealed record SessionSummaryResponse(
     [property: JsonPropertyName("created_at")] string CreatedAt,
     [property: JsonPropertyName("updated_at")] string UpdatedAt);
 
+public sealed record CreateSessionRequest(
+    [property: JsonPropertyName("title")] string Title,
+    [property: JsonPropertyName("task")] string Task);
+
+public sealed record ExecutionResponse(
+    [property: JsonPropertyName("id")] long Id,
+    [property: JsonPropertyName("session_id")] long SessionId,
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("queue_position")] int QueuePosition);
+
+public sealed record RunSessionResponse(
+    [property: JsonPropertyName("session")] SessionSummaryResponse Session,
+    [property: JsonPropertyName("execution")] ExecutionResponse Execution);
+
 internal sealed record ErrorEnvelope([property: JsonPropertyName("error")] ErrorDetail? Error);
 
 internal sealed record ErrorDetail([property: JsonPropertyName("code")] string? Code);

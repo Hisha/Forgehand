@@ -67,6 +67,23 @@ type sessionSummaryResponse struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
+type createSessionRequest struct {
+	Title string `json:"title"`
+	Task  string `json:"task"`
+}
+
+type executionResponse struct {
+	ID            int64  `json:"id"`
+	SessionID     int64  `json:"session_id"`
+	Status        string `json:"status"`
+	QueuePosition int    `json:"queue_position,omitempty"`
+}
+
+type runSessionResponse struct {
+	Session   sessionSummaryResponse `json:"session"`
+	Execution executionResponse      `json:"execution"`
+}
+
 // errorResponse is the single error envelope used by every endpoint.
 type errorResponse struct {
 	Error errorDetail `json:"error"`

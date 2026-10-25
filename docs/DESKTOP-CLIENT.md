@@ -1,4 +1,4 @@
-# Forgehand Desktop Client (Avalonia, Phase 1)
+# Forgehand Desktop Client (Avalonia, Phase 3)
 
 The desktop client is a native Avalonia application for Linux and Windows. It
 connects to the Forgehand daemon's authenticated remote API
@@ -12,13 +12,18 @@ the client is for loopback development use. See [Known limitations](#known-limit
 
 ## Status
 
-Phase 1 provides:
+The completed client provides:
 
 - Server address configuration, validated and persisted without credentials.
 - Password plus six-digit TOTP sign-in through `POST /api/v1/auth/login`.
 - The project list from `GET /api/v1/projects`, showing only what the daemon returns.
 - Sign-out through `POST /api/v1/auth/logout`, which returns to the login screen.
 - Connection status from `GET /api/v1/health`.
+- Explicit HTTP API compatibility status, including daemon version and build identity.
+- Authorized project navigation and read-only session inspection.
+- Session creation with the daemon-supported title and task fields.
+- Explicit, confirmed execution submission through the daemon scheduler.
+- Manual refresh of authoritative session state.
 
 ## Layout
 
@@ -145,6 +150,65 @@ from being sent to a different server than the one that issued it.
   location. System proxies are not used. TLS certificates are validated by the
   operating system. Validation is not disabled.
 - **Limits.** Requests time out after 15 seconds. Responses are capped at 1 MiB.
+- **Write isolation.** Creation and execution use only the authenticated HTTP
+  API. The client never opens the repository, SQLite database, Unix socket, or
+  a local worker process. Failed creation keeps the user's draft; navigation,
+  revocation, expiry, and logout cancel outstanding operations and prevent late
+  responses from restoring scoped data.
+- **Compatibility.** The client sends `Forgehand-API-Version: v1` on every
+  request and checks the health response before authentication. Missing or
+  mismatched HTTP API metadata fails closed. Session creation and execution
+  remain disabled until compatibility is confirmed, and a daemon-side
+  `incompatible_api` rejection immediately disables them again.
+
+## Compatibility and recovery
+
+The status bar distinguishes disconnected, connected-compatible,
+connected-incompatible, authentication-expired, and server-error states. For
+a reachable daemon it shows the daemon application version, build identity
+when available, HTTP API version, and compatibility result. A different build
+identity is visible but is not itself an HTTP incompatibility; the explicit
+HTTP API version is authoritative.
+
+When the daemon is incompatible, the client preserves safe health and read
+access, shows an explanation in the project workspace, and disables **New
+Session** and **Run Session**. After the daemon is upgraded or restarted, use
+**Check connection**. A matching health response re-enables those actions
+without restarting the desktop application.
+
+Use the existing local lifecycle commands on the daemon host:
+
+```sh
+forgehand service status
+forgehand service update
+forgehand service restart
+```
+
+The desktop application does not expose restart. The existing safe lifecycle
+flow depends on local Unix peer identity, inspection of the managed systemd
+user unit, confirmation that its PID matches the daemon, and checks for active
+or queued work. Reproducing those guarantees as an authenticated remote
+administrative operation requires a separately designed authorization scope,
+reauthentication policy, active-work safety contract, and audit record.
+Allowing the desktop client to execute `systemctl` or arbitrary commands would
+bypass those boundaries, so restart is deliberately deferred.
+
+## Session creation and execution
+
+Select an authorized project and choose **New Session**. Title and task are
+required. A successful create refreshes the project session list and selects
+the new `READY` session; it does not execute it.
+
+For a selected `READY` session, choose **Run Session**. The confirmation names
+the project, session, and task and explains that a coding worker will start on
+the Forgehand host. Only the confirmation submits
+`POST /api/v1/sessions/{id}/run`. The client displays the daemon-confirmed
+execution status and refreshes session details. A `409` means another caller or
+state change made the session ineligible; refresh shows the authoritative state.
+
+Progress observation is manual in this phase. **Refresh** reads existing session
+endpoints; there is no terminal streaming, interactive input, WebSocket, or
+client-side worker control.
 
 ## Known limitations
 
@@ -168,12 +232,12 @@ from being sent to a different server than the one that issued it.
   launched on Windows. An interactive sign-in with a real account and TOTP code was
   not performed by the author. Doing so requires that account's credentials.
 
-## Next milestone
+## Phase 3 limitations
 
-Phase 2 should add read-only views of the existing authorized endpoints:
-`GET /api/v1/projects/{id}/sessions` and `GET /api/v1/sessions/{id}`. It should
-also add the enrollment confirmation flow (`POST /api/v1/auth/enroll/confirm`) so
-that a pending account can finish setup without the local CLI. Both need UI and
-security review before implementation. Worker execution, session creation, and
-any write operation remain out of scope until the daemon's sensitive-operation
-reauthentication exists.
+- Progress is refreshed manually; there is no streaming or automatic polling.
+- Creation uses the daemon's configured provider and default model. The client
+  does not expose or invent provider/model catalogs.
+- Revocation blocks future remote operations and visibility but does not cancel
+  a worker already accepted by the daemon.
+- Session editing, deletion, cancellation, approval, and interactive worker
+  input remain out of scope.

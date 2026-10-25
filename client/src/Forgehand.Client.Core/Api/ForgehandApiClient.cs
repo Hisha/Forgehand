@@ -12,6 +12,7 @@ namespace Forgehand.Client.Core.Api;
 public sealed class ForgehandApiClient : IForgehandApi
 {
     public const string SupportedApiVersion = "v1";
+    public const string CompatibilityHeader = "Forgehand-API-Version";
 
     /// <summary>Upper bound on a response body. The API returns small JSON documents.</summary>
     public const int MaxResponseBytes = 1024 * 1024;
@@ -89,6 +90,21 @@ public sealed class ForgehandApiClient : IForgehandApi
         SendAsync<SessionSummaryResponse>(
             HttpMethod.Get, $"api/v1/sessions/{sessionId}", token, body: null, cancellationToken);
 
+    public Task<SessionSummaryResponse> CreateSessionAsync(
+        string token,
+        long projectId,
+        CreateSessionRequest request,
+        CancellationToken cancellationToken) =>
+        SendAsync<SessionSummaryResponse>(
+            HttpMethod.Post, $"api/v1/projects/{projectId}/sessions", token, request, cancellationToken);
+
+    public Task<RunSessionResponse> RunSessionAsync(
+        string token,
+        long sessionId,
+        CancellationToken cancellationToken) =>
+        SendAsync<RunSessionResponse>(
+            HttpMethod.Post, $"api/v1/sessions/{sessionId}/run", token, body: null, cancellationToken);
+
     public void Dispose()
     {
         _httpClient.Dispose();
@@ -131,6 +147,7 @@ public sealed class ForgehandApiClient : IForgehandApi
     {
         using var request = new HttpRequestMessage(method, path);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Add(CompatibilityHeader, SupportedApiVersion);
         if (token is not null)
         {
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
@@ -200,6 +217,9 @@ public sealed class ForgehandApiClient : IForgehandApi
             (HttpStatusCode.Forbidden, "account_disabled") => ApiFailure.AccountDisabled,
             (HttpStatusCode.Forbidden, "forbidden") => ApiFailure.Forbidden,
             (HttpStatusCode.NotFound, _) => ApiFailure.NotFound,
+            (HttpStatusCode.Conflict, "session_conflict") => ApiFailure.SessionConflict,
+            (HttpStatusCode.ServiceUnavailable, "execution_unavailable") => ApiFailure.ExecutionUnavailable,
+            (HttpStatusCode.UpgradeRequired, "incompatible_api") => ApiFailure.IncompatibleApi,
             (HttpStatusCode.TooManyRequests, "account_locked") => ApiFailure.AccountLocked,
             (HttpStatusCode.TooManyRequests, "throttled") => ApiFailure.Throttled,
             (HttpStatusCode.BadRequest, "invalid_request") => ApiFailure.InvalidRequest,
