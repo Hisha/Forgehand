@@ -119,6 +119,7 @@ transport from the Unix socket and shares no command dispatch with it.
 | Method | Path | Authentication | Effect |
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/health` | none | Daemon liveness, version, build identity, API version |
+| `GET` | `/api/v1/daemon/status` | administrator session | Read-only runtime, activity, executable-identity, and subsystem health snapshot |
 | `POST` | `/api/v1/auth/login` | password **and** one-time password or recovery code | Issues a session token |
 | `POST` | `/api/v1/auth/logout` | session | Revokes the session |
 | `POST` | `/api/v1/auth/enroll/confirm` | password **and** one-time password | Completes enrollment for a pending account and issues a session |

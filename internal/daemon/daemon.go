@@ -315,6 +315,7 @@ func runWithIdentity(realUID, effectiveUID int, capabilities uint64) error {
 }
 
 func runConfigured(settings Config) error {
+	startedAt := time.Now().UTC()
 	if err := state.EnsureDirAt(settings.StateDir); err != nil {
 		return err
 	}
@@ -448,7 +449,10 @@ func runConfigured(settings Config) error {
 
 	go dispatcher.run(ctx)
 
-	apiServer, err := startRemoteAPI(ctx, accounts, &remoteSessionOperations{db: stateDB, dispatcher: dispatcher})
+	statusProvider := newDaemonStatusProvider(stateDB, dispatcher, &workers, startedAt)
+	apiServer, err := startRemoteAPI(ctx, accounts, &remoteSessionOperations{
+		db: stateDB, dispatcher: dispatcher, statusProvider: statusProvider,
+	})
 	if err != nil {
 		return err
 	}

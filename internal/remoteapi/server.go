@@ -37,6 +37,9 @@ type Options struct {
 	// Sessions invokes the daemon's existing persistence and scheduling path.
 	// It may be nil in read-only embeddings; write routes then fail closed.
 	Sessions SessionOperations
+	// DaemonStatus reads operational state owned by the daemon. It may be nil
+	// in embeddings that do not expose the operational dashboard.
+	DaemonStatus DaemonStatusOperations
 }
 
 // Server serves the remote API.
@@ -45,6 +48,7 @@ type Server struct {
 	version       string
 	buildIdentity string
 	sessions      SessionOperations
+	daemonStatus  DaemonStatusOperations
 	handler       http.Handler
 }
 
@@ -59,10 +63,12 @@ func NewServer(options Options) (*Server, error) {
 		version:       options.Version,
 		buildIdentity: options.BuildIdentity,
 		sessions:      options.Sessions,
+		daemonStatus:  options.DaemonStatus,
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET "+APIBasePath+"/health", server.handleHealth)
+	mux.HandleFunc("GET "+APIBasePath+"/daemon/status", server.handleDaemonStatus)
 	mux.HandleFunc("POST "+APIBasePath+"/auth/login", server.handleLogin)
 	mux.HandleFunc("POST "+APIBasePath+"/auth/logout", server.handleLogout)
 	mux.HandleFunc("POST "+APIBasePath+"/auth/enroll/confirm", server.handleEnrollConfirm)
@@ -78,6 +84,32 @@ func NewServer(options Options) (*Server, error) {
 
 	server.handler = server.securityHeaders(server.enforceCompatibility(mux))
 	return server, nil
+}
+
+// handleDaemonStatus exposes read-only operational state to administrators.
+func (s *Server) handleDaemonStatus(w http.ResponseWriter, r *http.Request) {
+	if !requireEmptyBody(w, r) {
+		return
+	}
+	principal, ok := s.principal(w, r)
+	if !ok {
+		return
+	}
+	if principal.Account.Role != state.AccountRoleAdministrator {
+		writeError(w, http.StatusForbidden, "forbidden", "administrator access is required")
+		return
+	}
+	if s.daemonStatus == nil {
+		writeError(w, http.StatusServiceUnavailable, "status_unavailable", "daemon status is unavailable")
+		return
+	}
+
+	status, err := s.daemonStatus.DaemonStatus(r.Context())
+	if err != nil {
+		writeError(w, http.StatusServiceUnavailable, "status_unavailable", "daemon status is unavailable")
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
 }
 
 // enforceCompatibility rejects state-changing requests whose client does not

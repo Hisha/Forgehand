@@ -13,8 +13,16 @@ import (
 // authoritative session persistence and dispatcher. It contains no worker or
 // scheduling implementation of its own.
 type remoteSessionOperations struct {
-	db         *state.Database
-	dispatcher *dispatcher
+	db             *state.Database
+	dispatcher     *dispatcher
+	statusProvider remoteapi.DaemonStatusOperations
+}
+
+func (o *remoteSessionOperations) DaemonStatus(ctx context.Context) (remoteapi.DaemonStatusResponse, error) {
+	if o == nil || o.statusProvider == nil {
+		return remoteapi.DaemonStatusResponse{}, remoteapi.ErrExecutionUnavailable
+	}
+	return o.statusProvider.DaemonStatus(ctx)
 }
 
 func (o *remoteSessionOperations) CreateCodingSession(

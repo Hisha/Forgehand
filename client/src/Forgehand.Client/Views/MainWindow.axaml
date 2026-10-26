@@ -9,7 +9,7 @@
         MinWidth="820" MinHeight="580"
         Background="{DynamicResource WindowBackgroundBrush}">
 
-  <Grid RowDefinitions="Auto,Auto,Auto,*,Auto">
+  <Grid RowDefinitions="Auto,Auto,Auto,Auto,*,Auto">
 
     <Border Grid.Row="0" Classes="header">
       <Grid ColumnDefinitions="*,Auto">
@@ -51,16 +51,29 @@
       <TextBlock Text="{Binding Notice}" Foreground="{DynamicResource WarningTextBrush}" TextWrapping="Wrap" />
     </Border>
 
-    <Grid Grid.Row="3">
+    <Border Grid.Row="3" Classes="toolbar" IsVisible="{Binding IsSignedIn}">
+      <StackPanel Orientation="Horizontal" Spacing="8">
+        <Button x:Name="ProjectsNavigationButton" Content="Projects" Command="{Binding ShowProjectsCommand}" />
+        <Button x:Name="DaemonStatusNavigationButton" Content="Daemon Status"
+                Command="{Binding ShowDaemonStatusCommand}" IsVisible="{Binding CanViewDaemonStatus}" />
+      </StackPanel>
+    </Border>
+
+    <Grid Grid.Row="4">
       <Grid IsVisible="{Binding IsSignedOut}">
         <views:LoginView DataContext="{Binding Login}" />
       </Grid>
       <Grid IsVisible="{Binding IsSignedIn}">
-        <views:ProjectsView DataContext="{Binding Projects}" />
+        <Grid IsVisible="{Binding IsProjectsSelected}">
+          <views:ProjectsView DataContext="{Binding Projects}" />
+        </Grid>
+        <Grid IsVisible="{Binding IsDaemonStatusSelected}">
+          <views:DaemonStatusView DataContext="{Binding DaemonStatus}" />
+        </Grid>
       </Grid>
     </Grid>
 
-    <Border Grid.Row="4" Classes="statusbar">
+    <Border Grid.Row="5" Classes="statusbar">
       <StackPanel Orientation="Horizontal" Spacing="8">
         <Ellipse Classes="status-dot" Classes.connected="{Binding IsConnected}"
                  Classes.incompatible="{Binding IsIncompatible}" VerticalAlignment="Center" />

@@ -85,6 +85,31 @@ public sealed class MainWindowTests
     }
 
     [AvaloniaFact]
+    public async Task AdministratorCanOpenAndRefreshDaemonStatusDashboard()
+    {
+        var api = new StubApi();
+        var (window, shell, service) = CreateWindow(api);
+        await service.SignInAsync("alice", "pw", "123456", CancellationToken.None);
+
+        var navigation = window.FindControl<Button>("DaemonStatusNavigationButton")!;
+        Assert.True(navigation.IsEffectivelyVisible);
+        Assert.True(navigation.IsEnabled);
+        await shell.ShowDaemonStatusCommand.ExecuteAsync(null);
+
+        var view = window.GetVisualDescendants().OfType<DaemonStatusView>().Single();
+        Assert.True(view.IsEffectivelyVisible);
+        Assert.True(shell.DaemonStatus.HasStatus);
+        Assert.Equal("1", shell.DaemonStatus.ActiveWorkersText);
+        Assert.Equal("Running and installed executable match", shell.DaemonStatus.ExecutableComparisonText);
+        Assert.False(shell.DaemonStatus.HasRestartWarning);
+
+        await shell.SignOutCommand.ExecuteAsync(null);
+        Assert.False(shell.DaemonStatus.HasStatus);
+        Assert.False(view.IsEffectivelyVisible);
+        window.Close();
+    }
+
+    [AvaloniaFact]
     public async Task WorkspaceSelectionDisplaysSessionDetails()
     {
         var api = new StubApi
@@ -343,8 +368,18 @@ public sealed class MainWindowTests
 
         public ExecutionRecordResponse? ExecutionRecord { get; set; }
 
+        public DaemonStatusResponse DaemonStatus { get; set; } = new(
+            "ok", "2026-10-22T12:00:00Z",
+            new DaemonIdentityResponse("1.2.3", "build", null, "v1", "2026-10-22T11:00:00Z", 3600),
+            new DaemonActivityResponse(4, 1, 1, 2, 0, 8, 1),
+            new ExecutableStatusResponse("1:10", "1:10", "match", "same_file_identity", "2026-10-22T12:00:00Z", false),
+            new DaemonHealthResponse("ok", "ok", "ok"));
+
         public Task<HealthResponse> GetHealthAsync(CancellationToken cancellationToken) =>
             Task.FromResult(Health);
+
+        public Task<DaemonStatusResponse> GetDaemonStatusAsync(string token, CancellationToken cancellationToken) =>
+            Task.FromResult(DaemonStatus);
 
         public Task<SessionResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken) =>
             Task.FromResult(new SessionResponse(

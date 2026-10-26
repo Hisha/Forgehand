@@ -63,6 +63,16 @@ internal static class TestData
     public static SessionSummaryResponse SessionSummary(long id, long projectId, string title = "Investigate") => new(
         id, title, "RUNNING", projectId, "Inspect the failure", "task", "openai", "gpt-test",
         "2026-10-22T12:00:00Z", "2026-10-22T12:05:00Z");
+
+    public static DaemonStatusResponse DaemonStatus(bool restartRecommended = false) => new(
+        "ok", "2026-10-22T12:00:00Z",
+        new DaemonIdentityResponse("1.2.3", "build", "2026-10-20T12:00:00Z", "v1", "2026-10-22T11:00:00Z", 3600),
+        new DaemonActivityResponse(4, 1, 1, 2, 0, 8, 1),
+        new ExecutableStatusResponse("1:10", restartRecommended ? "1:11" : "1:10",
+            restartRecommended ? "mismatch" : "match",
+            restartRecommended ? "installed_executable_changed" : "same_file_identity",
+            "2026-10-22T12:00:00Z", restartRecommended),
+        new DaemonHealthResponse("ok", "ok", "ok"));
 }
 
 /// <summary>An in-memory API double for service and view model tests.</summary>
@@ -70,6 +80,9 @@ internal sealed class FakeForgehandApi : IForgehandApi
 {
     public Func<CancellationToken, Task<HealthResponse>> Health { get; set; } =
         _ => Task.FromResult(new HealthResponse("ok", "1.2.3", "build", "v1", "2026-10-22T12:00:00Z"));
+
+    public Func<string, CancellationToken, Task<DaemonStatusResponse>> DaemonStatus { get; set; } =
+        (_, _) => Task.FromResult(TestData.DaemonStatus());
 
     public Func<LoginRequest, Task<SessionResponse>> Login { get; set; } =
         _ => Task.FromResult(TestData.Session());
@@ -117,6 +130,9 @@ internal sealed class FakeForgehandApi : IForgehandApi
     public int RunSessionCalls { get; private set; }
 
     public Task<HealthResponse> GetHealthAsync(CancellationToken cancellationToken) => Health(cancellationToken);
+
+    public Task<DaemonStatusResponse> GetDaemonStatusAsync(string token, CancellationToken cancellationToken) =>
+        DaemonStatus(token, cancellationToken);
 
     public Task<SessionResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken)
     {

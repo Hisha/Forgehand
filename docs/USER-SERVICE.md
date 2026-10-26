@@ -54,6 +54,11 @@ different socket.
 
 ## Update
 
+The desktop **Daemon Status** view can report that the installed executable no
+longer matches the running process. That warning is advisory and deliberately
+does not restart the service. Complete the update with the normal service
+workflow below, then refresh the dashboard to verify that the identities match.
+
 First replace or build the executable at its stable location, or run a newer
 Forgehand executable from its new intended location. Then run:
 

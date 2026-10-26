@@ -12,6 +12,44 @@ public sealed record HealthResponse(
     [property: JsonPropertyName("api_version")] string ApiVersion,
     [property: JsonPropertyName("time")] string Time);
 
+public sealed record DaemonStatusResponse(
+    [property: JsonPropertyName("status")] string Status,
+    [property: JsonPropertyName("observed_at")] string ObservedAt,
+    [property: JsonPropertyName("identity")] DaemonIdentityResponse Identity,
+    [property: JsonPropertyName("activity")] DaemonActivityResponse Activity,
+    [property: JsonPropertyName("executable")] ExecutableStatusResponse Executable,
+    [property: JsonPropertyName("health")] DaemonHealthResponse Health);
+
+public sealed record DaemonIdentityResponse(
+    [property: JsonPropertyName("version")] string Version,
+    [property: JsonPropertyName("build_identity")] string BuildIdentity,
+    [property: JsonPropertyName("build_timestamp")] string? BuildTimestamp,
+    [property: JsonPropertyName("api_version")] string ApiVersion,
+    [property: JsonPropertyName("started_at")] string StartedAt,
+    [property: JsonPropertyName("uptime_seconds")] long UptimeSeconds);
+
+public sealed record DaemonActivityResponse(
+    [property: JsonPropertyName("worker_capacity")] int? WorkerCapacity,
+    [property: JsonPropertyName("active_workers")] int? ActiveWorkers,
+    [property: JsonPropertyName("running_sessions")] int? RunningSessions,
+    [property: JsonPropertyName("queued_executions")] int? QueuedExecutions,
+    [property: JsonPropertyName("pending_sessions")] int? PendingSessions,
+    [property: JsonPropertyName("completed_sessions")] int? CompletedSessions,
+    [property: JsonPropertyName("failed_sessions")] int? FailedSessions);
+
+public sealed record ExecutableStatusResponse(
+    [property: JsonPropertyName("running_file_identity")] string? RunningFileIdentity,
+    [property: JsonPropertyName("installed_file_identity")] string? InstalledFileIdentity,
+    [property: JsonPropertyName("comparison")] string Comparison,
+    [property: JsonPropertyName("reason")] string Reason,
+    [property: JsonPropertyName("checked_at")] string CheckedAt,
+    [property: JsonPropertyName("restart_recommended")] bool RestartRecommended);
+
+public sealed record DaemonHealthResponse(
+    [property: JsonPropertyName("database")] string Database,
+    [property: JsonPropertyName("dispatcher")] string Dispatcher,
+    [property: JsonPropertyName("workers")] string Workers);
+
 public sealed record LoginRequest(
     [property: JsonPropertyName("username")] string Username,
     [property: JsonPropertyName("password")] string Password,

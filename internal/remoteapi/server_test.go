@@ -29,6 +29,16 @@ type harness struct {
 	operations *testSessionOperations
 	now        *time.Time
 	secret     []byte
+	master     auth.MasterKey
+}
+
+type testDaemonStatus struct {
+	response DaemonStatusResponse
+	err      error
+}
+
+func (s *testDaemonStatus) DaemonStatus(context.Context) (DaemonStatusResponse, error) {
+	return s.response, s.err
 }
 
 type testSessionOperations struct {
@@ -115,11 +125,19 @@ func newHarness(t *testing.T) *harness {
 	}
 
 	operations := &testSessionOperations{db: db}
+	statusOperations := &testDaemonStatus{response: DaemonStatusResponse{
+		Status: "ok", ObservedAt: "2026-10-22T12:00:00Z",
+		Identity:   DaemonIdentityResponse{Version: "test-version", BuildIdentity: "test-build", APIVersion: APIVersion, StartedAt: "2026-10-22T11:00:00Z", UptimeSeconds: 3600},
+		Activity:   DaemonActivityResponse{WorkerCapacity: testIntPointer(4), ActiveWorkers: testIntPointer(1), RunningSessions: testIntPointer(1), QueuedExecutions: testIntPointer(2)},
+		Executable: ExecutableResponse{Comparison: "match", Reason: "same_file_identity", CheckedAt: "2026-10-22T12:00:00Z"},
+		Health:     DaemonHealthResponse{Database: "ok", Dispatcher: "ok", Workers: "ok"},
+	}}
 	api, err := NewServer(Options{
 		Service:       service,
 		Version:       "test-version",
 		BuildIdentity: "test-build",
 		Sessions:      operations,
+		DaemonStatus:  statusOperations,
 	})
 	if err != nil {
 		t.Fatalf("NewServer() returned error: %v", err)
@@ -135,7 +153,34 @@ func newHarness(t *testing.T) *harness {
 		service:    service,
 		operations: operations,
 		now:        &now,
+		master:     master,
 	}
+}
+
+func testIntPointer(value int) *int { return &value }
+
+func (h *harness) createUserAndLogin(t *testing.T, username string) string {
+	t.Helper()
+	hash, err := auth.HashPassword(testPassword)
+	if err != nil {
+		t.Fatalf("hash password: %v", err)
+	}
+	secret, _, err := auth.GenerateTOTPSecret()
+	if err != nil {
+		t.Fatalf("generate TOTP secret: %v", err)
+	}
+	ciphertext, err := h.master.EncryptSecret(username, secret)
+	if err != nil {
+		t.Fatalf("encrypt TOTP secret: %v", err)
+	}
+	account, err := h.db.CreateAccount(context.Background(), username, "", state.AccountRoleUser, hash.Encode(), string(auth.TOTPAlgorithmSHA1), ciphertext)
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if err := h.db.ActivateAccount(context.Background(), account.ID, -1); err != nil {
+		t.Fatalf("activate user: %v", err)
+	}
+	return h.login(t, username, testPassword, h.code(secret))
 }
 
 func (h *harness) authorizeProject(t *testing.T, projectID int64) {
@@ -264,6 +309,42 @@ func TestHealthIsAvailableWithoutAuthentication(t *testing.T) {
 	}
 	if response.Version != "test-version" {
 		t.Fatalf("version = %q, want %q", response.Version, "test-version")
+	}
+}
+
+func TestDaemonStatusRequiresAdministratorAndReturnsOperationalSnapshot(t *testing.T) {
+	harness := newHarness(t)
+
+	status, payload := harness.do(t, http.MethodGet, APIBasePath+"/daemon/status", "", nil)
+	if status != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated status = %d, want 401 (body %s)", status, payload)
+	}
+
+	userToken := harness.createUserAndLogin(t, "operator")
+	status, payload = harness.do(t, http.MethodGet, APIBasePath+"/daemon/status", userToken, nil)
+	if status != http.StatusForbidden {
+		t.Fatalf("non-admin status = %d, want 403 (body %s)", status, payload)
+	}
+
+	adminHarness := newHarness(t)
+	secret := adminHarness.enroll(t, "admin")
+	token := adminHarness.login(t, "admin", testPassword, adminHarness.code(secret))
+	status, payload = adminHarness.do(t, http.MethodGet, APIBasePath+"/daemon/status", token, nil)
+	if status != http.StatusOK {
+		t.Fatalf("admin status = %d, want 200 (body %s)", status, payload)
+	}
+	var response DaemonStatusResponse
+	if err := json.Unmarshal(payload, &response); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if response.Identity.APIVersion != APIVersion || response.Identity.UptimeSeconds != 3600 {
+		t.Fatalf("unexpected identity: %#v", response.Identity)
+	}
+	if response.Activity.ActiveWorkers == nil || *response.Activity.ActiveWorkers != 1 || response.Activity.QueuedExecutions == nil || *response.Activity.QueuedExecutions != 2 {
+		t.Fatalf("unexpected activity: %#v", response.Activity)
+	}
+	if response.Executable.Comparison != "match" || response.Health.Database != "ok" {
+		t.Fatalf("unexpected operational status: %#v", response)
 	}
 }
 

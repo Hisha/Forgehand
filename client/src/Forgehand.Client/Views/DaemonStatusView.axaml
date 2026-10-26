@@ -1,0 +1,81 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:Forgehand.Client.Core.ViewModels;assembly=Forgehand.Client.Core"
+             x:Class="Forgehand.Client.Views.DaemonStatusView"
+             x:DataType="vm:DaemonStatusViewModel">
+  <Grid RowDefinitions="Auto,*" Margin="22">
+    <Grid ColumnDefinitions="*,Auto" Margin="0,0,0,16">
+      <StackPanel Spacing="3">
+        <TextBlock Text="Daemon Status" Classes="heading" />
+        <TextBlock Text="Read-only operational visibility from the connected daemon" Classes="muted" />
+      </StackPanel>
+      <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+        <TextBlock Text="{Binding LastRefreshText}" Classes="muted small" VerticalAlignment="Center" />
+        <ProgressBar x:Name="DaemonStatusLoading" IsIndeterminate="True" Width="70" IsVisible="{Binding IsLoading}" />
+        <Button x:Name="RefreshDaemonStatusButton" Content="Refresh" Command="{Binding RefreshCommand}" />
+      </StackPanel>
+    </Grid>
+
+    <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+      <StackPanel Spacing="14">
+        <Border Classes="error" IsVisible="{Binding HasError}">
+          <TextBlock Text="{Binding Error}" TextWrapping="Wrap" />
+        </Border>
+
+        <Border Classes="notice" IsVisible="{Binding HasRestartWarning}">
+          <StackPanel Spacing="3">
+            <TextBlock Text="Restart recommended" FontWeight="SemiBold" Foreground="{DynamicResource WarningTextBrush}" />
+            <TextBlock Text="The installed Forgehand executable differs from the one currently running. Restart the daemon when convenient to run the installed build."
+                       TextWrapping="Wrap" Foreground="{DynamicResource WarningTextBrush}" />
+          </StackPanel>
+        </Border>
+
+        <Grid ColumnDefinitions="*,*" ColumnSpacing="14" IsVisible="{Binding HasStatus}">
+          <Border Classes="card" Padding="18">
+            <StackPanel Spacing="9">
+              <TextBlock Text="Identity" Classes="title" />
+              <TextBlock Text="Version" Classes="label" /><TextBlock Text="{Binding VersionText}" TextWrapping="Wrap" />
+              <TextBlock Text="Build identity" Classes="label" /><TextBlock Text="{Binding BuildText}" Classes="mono" TextWrapping="Wrap" />
+              <TextBlock Text="Build timestamp" Classes="label" /><TextBlock Text="{Binding BuildTimestampText}" />
+              <TextBlock Text="HTTP API" Classes="label" /><TextBlock Text="{Binding ApiVersionText}" />
+              <TextBlock Text="Started" Classes="label" /><TextBlock Text="{Binding StartedText}" />
+              <TextBlock Text="Uptime" Classes="label" /><TextBlock Text="{Binding UptimeText}" />
+            </StackPanel>
+          </Border>
+
+          <Border Grid.Column="1" Classes="card" Padding="18">
+            <Grid RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto,Auto" ColumnDefinitions="*,Auto" RowSpacing="9">
+              <TextBlock Grid.ColumnSpan="2" Text="Activity" Classes="title" Margin="0,0,0,3" />
+              <TextBlock Grid.Row="1" Text="Worker capacity" Classes="muted" /><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding WorkerCapacityText}" />
+              <TextBlock Grid.Row="2" Text="Active workers" Classes="muted" /><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding ActiveWorkersText}" />
+              <TextBlock Grid.Row="3" Text="Running sessions" Classes="muted" /><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding RunningSessionsText}" />
+              <TextBlock Grid.Row="4" Text="Queued executions" Classes="muted" /><TextBlock Grid.Row="4" Grid.Column="1" Text="{Binding QueuedExecutionsText}" />
+              <TextBlock Grid.Row="5" Text="Pending input" Classes="muted" /><TextBlock Grid.Row="5" Grid.Column="1" Text="{Binding PendingSessionsText}" />
+              <TextBlock Grid.Row="6" Text="Completed sessions" Classes="muted" /><TextBlock Grid.Row="6" Grid.Column="1" Text="{Binding CompletedSessionsText}" />
+              <TextBlock Grid.Row="7" Text="Failed sessions" Classes="muted" /><TextBlock Grid.Row="7" Grid.Column="1" Text="{Binding FailedSessionsText}" />
+            </Grid>
+          </Border>
+        </Grid>
+
+        <Grid ColumnDefinitions="*,*" ColumnSpacing="14" IsVisible="{Binding HasStatus}">
+          <Border Classes="card" Padding="18">
+            <StackPanel Spacing="9">
+              <TextBlock Text="Executable" Classes="title" />
+              <TextBlock x:Name="ExecutableComparisonText" Text="{Binding ExecutableComparisonText}" TextWrapping="Wrap" />
+              <TextBlock Text="Running file identity" Classes="label" /><TextBlock Text="{Binding RunningIdentityText}" Classes="mono" TextWrapping="Wrap" />
+              <TextBlock Text="Installed file identity" Classes="label" /><TextBlock Text="{Binding InstalledIdentityText}" Classes="mono" TextWrapping="Wrap" />
+            </StackPanel>
+          </Border>
+          <Border Grid.Column="1" Classes="card" Padding="18">
+            <Grid RowDefinitions="Auto,Auto,Auto,Auto" ColumnDefinitions="*,Auto" RowSpacing="9">
+              <TextBlock Grid.ColumnSpan="2" Text="Subsystem health" Classes="title" Margin="0,0,0,3" />
+              <TextBlock Grid.Row="1" Text="State database" Classes="muted" /><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding DatabaseHealthText}" />
+              <TextBlock Grid.Row="2" Text="Dispatcher" Classes="muted" /><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding DispatcherHealthText}" />
+              <TextBlock Grid.Row="3" Text="Worker subsystem" Classes="muted" /><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding WorkerHealthText}" />
+            </Grid>
+          </Border>
+        </Grid>
+      </StackPanel>
+    </ScrollViewer>
+  </Grid>
+</UserControl>

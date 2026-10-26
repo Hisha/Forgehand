@@ -147,6 +147,13 @@ public sealed class ForgehandService : IDisposable
             cancellationToken);
     }
 
+    public async Task<DaemonStatusResponse> GetDaemonStatusAsync(CancellationToken cancellationToken)
+    {
+        return await WithSessionAsync(
+            (api, token, cancellation) => api.GetDaemonStatusAsync(token, cancellation),
+            cancellationToken);
+    }
+
     public async Task<IReadOnlyList<SessionSummaryResponse>> GetProjectSessionsAsync(
         long projectId,
         CancellationToken cancellationToken)

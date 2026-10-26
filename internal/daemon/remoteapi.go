@@ -52,14 +52,19 @@ func startRemoteAPI(
 	}
 
 	var operations remoteapi.SessionOperations
+	var daemonStatus remoteapi.DaemonStatusOperations
 	if len(operationOptions) > 0 {
 		operations = operationOptions[0]
+		if status, ok := operationOptions[0].(remoteapi.DaemonStatusOperations); ok {
+			daemonStatus = status
+		}
 	}
 	api, err := remoteapi.NewServer(remoteapi.Options{
 		Service:       service,
 		Version:       version.Version,
 		BuildIdentity: version.BuildIdentity(),
 		Sessions:      operations,
+		DaemonStatus:  daemonStatus,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create remote API server: %w", err)

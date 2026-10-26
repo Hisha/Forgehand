@@ -563,6 +563,57 @@ public sealed class WorkspaceViewModelTests
     }
 }
 
+public sealed class DaemonStatusViewModelTests
+{
+    [Fact]
+    public async Task RefreshShowsAuthoritativeValuesAndConfirmedRestartWarning()
+    {
+        var api = new FakeForgehandApi
+        {
+            DaemonStatus = (_, _) => Task.FromResult(TestData.DaemonStatus(restartRecommended: true)),
+        };
+        var service = new ForgehandService(ServerEndpoint.Default, _ => api);
+        await service.SignInAsync("alice", "pw", "123456", CancellationToken.None);
+        var viewModel = new DaemonStatusViewModel(service);
+
+        await viewModel.RefreshCommand.ExecuteAsync(null);
+
+        Assert.True(viewModel.HasStatus);
+        Assert.True(viewModel.HasRestartWarning);
+        Assert.Equal("4", viewModel.WorkerCapacityText);
+        Assert.Equal("1", viewModel.RunningSessionsText);
+        Assert.Contains("differs", viewModel.ExecutableComparisonText);
+        Assert.StartsWith("Last refreshed", viewModel.LastRefreshText);
+    }
+
+    [Fact]
+    public async Task RefreshFailureIsSafeAndClearRejectsLateResponse()
+    {
+        var completion = new TaskCompletionSource<DaemonStatusResponse>();
+        var api = new FakeForgehandApi
+        {
+            DaemonStatus = (_, _) => completion.Task,
+        };
+        var service = new ForgehandService(ServerEndpoint.Default, _ => api);
+        await service.SignInAsync("alice", "pw", "123456", CancellationToken.None);
+        var viewModel = new DaemonStatusViewModel(service);
+
+        var refresh = viewModel.RefreshCommand.ExecuteAsync(null);
+        viewModel.Clear();
+        completion.SetResult(TestData.DaemonStatus());
+        await refresh;
+
+        Assert.False(viewModel.HasStatus);
+        Assert.False(viewModel.IsLoading);
+
+        api.DaemonStatus = (_, _) => Task.FromException<DaemonStatusResponse>(
+            ForgehandApiException.For(ApiFailure.ServerError));
+        await viewModel.RefreshCommand.ExecuteAsync(null);
+        Assert.True(viewModel.HasError);
+        Assert.Contains("daemon", viewModel.Error, StringComparison.OrdinalIgnoreCase);
+    }
+}
+
 public sealed class ShellViewModelTests : IDisposable
 {
     private readonly string _settingsPath = Path.Combine(

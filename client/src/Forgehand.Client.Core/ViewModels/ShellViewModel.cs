@@ -34,6 +34,7 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
         _settingsStore = settingsStore;
         Login = new LoginViewModel(service, _lifetime.Token);
         Projects = new ProjectsViewModel(service);
+        DaemonStatus = new DaemonStatusViewModel(service);
         Login.PropertyChanged += OnLoginPropertyChanged;
         _service.SessionChanged += OnSessionChanged;
         _service.CompatibilityChanged += OnCompatibilityChanged;
@@ -47,10 +48,17 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
 
     public ProjectsViewModel Projects { get; }
 
+    public DaemonStatusViewModel DaemonStatus { get; }
+
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(SignOutCommand))]
     [NotifyPropertyChangedFor(nameof(IsSignedOut))]
+    [NotifyPropertyChangedFor(nameof(CanViewDaemonStatus))]
     private bool _isSignedIn;
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsDaemonStatusSelected))]
+    private bool _isProjectsSelected = true;
 
     [ObservableProperty]
     [NotifyCanExecuteChangedFor(nameof(ApplyEndpointCommand))]
@@ -83,6 +91,11 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
     private string _sessionText = string.Empty;
 
     public bool IsSignedOut => !IsSignedIn;
+
+    public bool IsDaemonStatusSelected => !IsProjectsSelected;
+
+    public bool CanViewDaemonStatus => IsSignedIn &&
+        (_service.Account?.Role is "administrator" or "admin");
 
     public bool HasEndpointError => EndpointError is not null;
 
@@ -169,6 +182,16 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
         }
     }
 
+    [RelayCommand]
+    private void ShowProjects() => IsProjectsSelected = true;
+
+    [RelayCommand(CanExecute = nameof(CanViewDaemonStatus))]
+    private async Task ShowDaemonStatusAsync()
+    {
+        IsProjectsSelected = false;
+        await DaemonStatus.RefreshCommand.ExecuteAsync(null);
+    }
+
     private bool CanChangeEndpoint() => !IsEndpointLocked;
 
     private bool CanCheckConnection() => !IsChecking && !Login.IsBusy;
@@ -189,20 +212,27 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
     private void OnSessionChanged(SessionChange change)
     {
         IsSignedIn = _service.IsSignedIn;
+        ShowDaemonStatusCommand.NotifyCanExecuteChanged();
+        DaemonStatus.NotifySessionChanged();
         switch (change)
         {
             case SessionChange.SignedIn:
                 Notice = null;
                 SessionText = DescribeSession();
                 if (_service.DaemonHealth is { } health) ShowCompatibleStatus(health);
+                IsProjectsSelected = true;
                 _ = Projects.LoadAsync();
                 break;
             case SessionChange.SignedOut:
                 Projects.Clear();
+                DaemonStatus.Clear();
+                IsProjectsSelected = true;
                 SessionText = string.Empty;
                 break;
             case SessionChange.Expired:
                 Projects.Clear();
+                DaemonStatus.Clear();
+                IsProjectsSelected = true;
                 SessionText = string.Empty;
                 Notice = "Your session has expired. Sign in again to continue.";
                 Connection = ConnectionState.AuthenticationExpired;
@@ -225,6 +255,7 @@ public sealed partial class ShellViewModel : ObservableObject, IDisposable
         _service.CompatibilityChanged -= OnCompatibilityChanged;
         Login.PropertyChanged -= OnLoginPropertyChanged;
         _lifetime.Cancel();
+        DaemonStatus.Dispose();
         _service.Dispose();
     }
 

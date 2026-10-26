@@ -1,4 +1,4 @@
-# Forgehand Desktop Client (Avalonia, Phase 4)
+# Forgehand Desktop Client (Avalonia, Phase 5A)
 
 The desktop client is a native Avalonia application for Linux and Windows. It
 connects to the Forgehand daemon's authenticated remote API
@@ -26,6 +26,7 @@ The completed client provides:
 - Manual refresh of authoritative session state.
 - Per-session execution history, execution diagnostics, and persisted model results.
 - Explicit copy-to-clipboard for a selected result.
+- An administrator-only, manually refreshed daemon operational status dashboard.
 
 ## Layout
 
@@ -126,6 +127,17 @@ back to the default and shows a notice.
 
 The server address cannot be changed while signed in. This keeps a bearer token
 from being sent to a different server than the one that issued it.
+
+## Daemon status
+
+Administrators can open **Daemon Status** after authentication. The dashboard
+is read-only and reports daemon/build identity, start time and uptime, live
+worker activity, durable queue/history counts, executable replacement status,
+and basic subsystem availability. Missing measurements are shown as unavailable
+or unknown. A restart warning is shown only when file identity confirms that
+the installed executable has changed since this process started. Use the
+documented service commands to restart; the desktop client does not expose
+lifecycle controls.
 
 ## Security behavior
 

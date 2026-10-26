@@ -41,6 +41,19 @@ public sealed class ForgehandApiClient : IForgehandApi
     public Task<HealthResponse> GetHealthAsync(CancellationToken cancellationToken) =>
         SendAsync<HealthResponse>(HttpMethod.Get, "api/v1/health", token: null, body: null, cancellationToken);
 
+    public async Task<DaemonStatusResponse> GetDaemonStatusAsync(string token, CancellationToken cancellationToken)
+    {
+        var status = await SendAsync<DaemonStatusResponse>(
+            HttpMethod.Get, "api/v1/daemon/status", token, body: null, cancellationToken);
+        if (status.Identity is null || status.Activity is null || status.Executable is null || status.Health is null ||
+            status.Identity.UptimeSeconds < 0 ||
+            status.Executable.Comparison is not ("match" or "mismatch" or "unknown"))
+        {
+            throw ForgehandApiException.For(ApiFailure.UnexpectedResponse, _endpoint);
+        }
+        return status;
+    }
+
     public async Task<SessionResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken)
     {
         var session = await SendAsync<SessionResponse>(

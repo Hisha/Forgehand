@@ -17,6 +17,25 @@ public sealed class ForgehandApiClientTests
     }
 
     [Fact]
+    public async Task DaemonStatusUsesAuthenticatedReadRouteAndParsesUnknownCounts()
+    {
+        var handler = new ScriptedHttpHandler(_ => ScriptedHttpHandler.Json(HttpStatusCode.OK,
+            """{"status":"degraded","observed_at":"2026-10-22T12:00:00Z","identity":{"version":"1.2.3","build_identity":"build","api_version":"v1","started_at":"2026-10-22T11:00:00Z","uptime_seconds":3600},"activity":{"worker_capacity":4,"active_workers":1,"running_sessions":1,"queued_executions":null,"pending_sessions":0,"completed_sessions":8,"failed_sessions":1},"executable":{"comparison":"unknown","reason":"file_identity_unavailable","checked_at":"2026-10-22T12:00:00Z","restart_recommended":false},"health":{"database":"unavailable","dispatcher":"ok","workers":"ok"}}"""));
+        using var client = CreateClient(handler);
+
+        var status = await client.GetDaemonStatusAsync("secret-token", CancellationToken.None);
+
+        var request = Assert.Single(handler.Requests);
+        Assert.Equal(HttpMethod.Get, request.Method);
+        Assert.Equal("/api/v1/daemon/status", request.Path);
+        Assert.Equal("Bearer secret-token", request.Authorization);
+        Assert.Null(status.Activity.QueuedExecutions);
+        Assert.Equal(1, status.Activity.ActiveWorkers);
+        Assert.Equal("unknown", status.Executable.Comparison);
+        Assert.False(status.Executable.RestartRecommended);
+    }
+
+    [Fact]
     public async Task LoginSendsCredentialsAndParsesSession()
     {
         var handler = new ScriptedHttpHandler(_ => ScriptedHttpHandler.Json(HttpStatusCode.OK, TestData.SessionJson));

@@ -5,6 +5,8 @@ public interface IForgehandApi : IDisposable
 {
     Task<HealthResponse> GetHealthAsync(CancellationToken cancellationToken);
 
+    Task<DaemonStatusResponse> GetDaemonStatusAsync(string token, CancellationToken cancellationToken);
+
     Task<SessionResponse> LoginAsync(LoginRequest request, CancellationToken cancellationToken);
 
     Task LogoutAsync(string token, CancellationToken cancellationToken);
