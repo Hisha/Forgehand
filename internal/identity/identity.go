@@ -70,12 +70,15 @@ var usernamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{2,63}$`)
 // Service performs account authentication, session issuance, and project
 // authorization.
 type Service struct {
-	db          *state.Database
-	masterKey   auth.MasterKey
-	throttle    *auth.LoginThrottle
-	sessionTTL  time.Duration
-	idleTimeout time.Duration
-	now         func() time.Time
+	db                        *state.Database
+	masterKey                 auth.MasterKey
+	throttle                  *auth.LoginThrottle
+	sensitiveThrottle         *auth.LoginThrottle
+	sessionTTL                time.Duration
+	idleTimeout               time.Duration
+	sensitiveAuthorizationTTL time.Duration
+	sensitiveAuthorizations   *sensitiveAuthorizationStore
+	now                       func() time.Time
 }
 
 // Options configures a Service.
@@ -91,6 +94,12 @@ type Options struct {
 	IdleTimeout time.Duration
 	// Throttle bounds repeated login attempts from one network peer.
 	Throttle *auth.LoginThrottle
+	// SensitiveThrottle independently bounds failed step-up attempts from one
+	// network peer.
+	SensitiveThrottle *auth.LoginThrottle
+	// SensitiveAuthorizationTTL is the lifetime of a successful, single-use
+	// sensitive-operation authorization. The default is 60 seconds.
+	SensitiveAuthorizationTTL time.Duration
 	// Now overrides the time source. It exists for tests.
 	Now func() time.Time
 }
@@ -112,16 +121,25 @@ func NewService(options Options) (*Service, error) {
 	if options.Throttle == nil {
 		options.Throttle = auth.NewLoginThrottle()
 	}
+	if options.SensitiveThrottle == nil {
+		options.SensitiveThrottle = newSensitiveOperationThrottle()
+	}
+	if options.SensitiveAuthorizationTTL <= 0 {
+		options.SensitiveAuthorizationTTL = DefaultSensitiveAuthorizationTTL
+	}
 	if options.Now == nil {
 		options.Now = time.Now
 	}
 	return &Service{
-		db:          options.DB,
-		masterKey:   options.MasterKey,
-		throttle:    options.Throttle,
-		sessionTTL:  options.SessionTTL,
-		idleTimeout: options.IdleTimeout,
-		now:         options.Now,
+		db:                        options.DB,
+		masterKey:                 options.MasterKey,
+		throttle:                  options.Throttle,
+		sensitiveThrottle:         options.SensitiveThrottle,
+		sessionTTL:                options.SessionTTL,
+		idleTimeout:               options.IdleTimeout,
+		sensitiveAuthorizationTTL: options.SensitiveAuthorizationTTL,
+		sensitiveAuthorizations:   newSensitiveAuthorizationStore(),
+		now:                       options.Now,
 	}, nil
 }
 
@@ -509,7 +527,12 @@ func (s *Service) AuthenticateToken(ctx context.Context, token string) (Principa
 	if err != nil {
 		return Principal{}, ErrUnauthorized
 	}
+	return s.authenticateSession(ctx, session)
+}
 
+// authenticateSession applies the shared session and account checks used by
+// bearer authentication and sensitive-operation revalidation.
+func (s *Service) authenticateSession(ctx context.Context, session state.AccountSession) (Principal, error) {
 	now := s.now()
 	if session.RevokedAt != nil {
 		return Principal{}, ErrUnauthorized
@@ -792,8 +815,12 @@ func (s *Service) verifyTOTP(
 		return 0, ErrInvalidCredentials
 	}
 
-	if err := s.db.UpdateAccountTOTPCounter(ctx, account.ID, counter); err != nil {
+	consumed, err := s.db.ConsumeAccountTOTPCounter(ctx, account.ID, counter)
+	if err != nil {
 		return 0, err
+	}
+	if !consumed {
+		return 0, ErrInvalidCredentials
 	}
 	return counter, nil
 }

@@ -36,20 +36,23 @@ const (
 // Authentication audit event types. These records are durable, attributable,
 // and never contain a credential.
 const (
-	AuthEventAccountCreated      = "auth.account.created"
-	AuthEventAccountActivated    = "auth.account.activated"
-	AuthEventAccountDisabled     = "auth.account.disabled"
-	AuthEventEnrollmentConfirmed = "auth.enrollment.confirmed"
-	AuthEventLoginSucceeded      = "auth.login.succeeded"
-	AuthEventLoginFailed         = "auth.login.failed"
-	AuthEventLoginThrottled      = "auth.login.throttled"
-	AuthEventRecoveryCodeUsed    = "auth.recovery.used"
-	AuthEventSessionIssued       = "auth.session.issued"
-	AuthEventSessionRevoked      = "auth.session.revoked"
-	AuthEventProjectGranted      = "auth.project.granted"
-	AuthEventProjectRevoked      = "auth.project.revoked"
-	AuthEventSessionCreated      = "remote.session.created"
-	AuthEventSessionRunSubmitted = "remote.session.run_submitted"
+	AuthEventAccountCreated                  = "auth.account.created"
+	AuthEventAccountActivated                = "auth.account.activated"
+	AuthEventAccountDisabled                 = "auth.account.disabled"
+	AuthEventEnrollmentConfirmed             = "auth.enrollment.confirmed"
+	AuthEventLoginSucceeded                  = "auth.login.succeeded"
+	AuthEventLoginFailed                     = "auth.login.failed"
+	AuthEventLoginThrottled                  = "auth.login.throttled"
+	AuthEventRecoveryCodeUsed                = "auth.recovery.used"
+	AuthEventSessionIssued                   = "auth.session.issued"
+	AuthEventSessionRevoked                  = "auth.session.revoked"
+	AuthEventProjectGranted                  = "auth.project.granted"
+	AuthEventProjectRevoked                  = "auth.project.revoked"
+	AuthEventSessionCreated                  = "remote.session.created"
+	AuthEventSessionRunSubmitted             = "remote.session.run_submitted"
+	AuthEventSensitiveAuthorizationSucceeded = "auth.sensitive_authorization.succeeded"
+	AuthEventSensitiveAuthorizationFailed    = "auth.sensitive_authorization.failed"
+	AuthEventSensitiveAuthorizationThrottled = "auth.sensitive_authorization.throttled"
 )
 
 // Account is a remote-access identity. It carries no secret material: the
@@ -392,7 +395,7 @@ func (d *Database) ActivateAccount(ctx context.Context, id int64, counter int64)
 UPDATE accounts
 SET status = ?,
     totp_confirmed = 1,
-    totp_last_counter = ?,
+    totp_last_counter = MAX(totp_last_counter, ?),
     failed_attempts = 0,
     locked_until = NULL,
     activated_at = ?,
@@ -444,26 +447,26 @@ WHERE id = ?
 	return nil
 }
 
-// UpdateAccountTOTPCounter records the highest accepted one-time code
-// counter. It is used to reject a replayed code.
-func (d *Database) UpdateAccountTOTPCounter(ctx context.Context, id int64, counter int64) error {
+// ConsumeAccountTOTPCounter atomically records counter when it is newer than
+// the account's last accepted one-time code counter. The conditional update is
+// the replay boundary: concurrent callers presenting the same code cannot both
+// consume it.
+func (d *Database) ConsumeAccountTOTPCounter(ctx context.Context, id int64, counter int64) (bool, error) {
 	result, err := d.db.ExecContext(ctx, `
 UPDATE accounts
 SET totp_last_counter = ?,
     updated_at = ?
 WHERE id = ?
-`, counter, time.Now().UTC().Format(time.RFC3339Nano), id)
+  AND totp_last_counter < ?
+`, counter, time.Now().UTC().Format(time.RFC3339Nano), id, counter)
 	if err != nil {
-		return fmt.Errorf("update account one-time counter: %w", err)
+		return false, fmt.Errorf("consume account one-time counter: %w", err)
 	}
 	affected, err := result.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("update account one-time counter: %w", err)
+		return false, fmt.Errorf("consume account one-time counter: %w", err)
 	}
-	if affected == 0 {
-		return fmt.Errorf("account %d does not exist", id)
-	}
-	return nil
+	return affected == 1, nil
 }
 
 // RecordAccountLoginFailure increments the account's failure counter and locks

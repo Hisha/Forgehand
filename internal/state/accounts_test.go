@@ -3,6 +3,7 @@ package state
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -105,6 +106,89 @@ func TestActivateAccountMarksAccountActive(t *testing.T) {
 	}
 	if updated.ActivatedAt == nil {
 		t.Fatal("the activated account has no activation time")
+	}
+}
+
+func TestConsumeAccountTOTPCounterIsAtomic(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	account, err := db.CreateAccount(ctx, "alice", "", AccountRoleUser, "hash", "SHA1", "ciphertext")
+	if err != nil {
+		t.Fatalf("CreateAccount() returned error: %v", err)
+	}
+
+	const counter = int64(42)
+	start := make(chan struct{})
+	results := make(chan bool, 2)
+	errors := make(chan error, 2)
+	var ready sync.WaitGroup
+	ready.Add(2)
+	for range 2 {
+		go func() {
+			ready.Done()
+			<-start
+			consumed, consumeErr := db.ConsumeAccountTOTPCounter(ctx, account.ID, counter)
+			results <- consumed
+			errors <- consumeErr
+		}()
+	}
+	ready.Wait()
+	close(start)
+
+	successes := 0
+	for range 2 {
+		if err := <-errors; err != nil {
+			t.Fatalf("ConsumeAccountTOTPCounter() returned error: %v", err)
+		}
+		if <-results {
+			successes++
+		}
+	}
+	if successes != 1 {
+		t.Fatalf("concurrent counter consumption succeeded %d times, want 1", successes)
+	}
+
+	for _, replay := range []int64{counter - 1, counter} {
+		consumed, err := db.ConsumeAccountTOTPCounter(ctx, account.ID, replay)
+		if err != nil {
+			t.Fatalf("ConsumeAccountTOTPCounter(%d) returned error: %v", replay, err)
+		}
+		if consumed {
+			t.Fatalf("ConsumeAccountTOTPCounter(%d) accepted an old or replayed counter", replay)
+		}
+	}
+
+	consumed, err := db.ConsumeAccountTOTPCounter(ctx, account.ID, counter+1)
+	if err != nil {
+		t.Fatalf("ConsumeAccountTOTPCounter(fresh) returned error: %v", err)
+	}
+	if !consumed {
+		t.Fatal("ConsumeAccountTOTPCounter(fresh) rejected a newer counter")
+	}
+}
+
+func TestActivateAccountDoesNotRegressConsumedTOTPCounter(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDatabase(t)
+
+	account, err := db.CreateAccount(ctx, "alice", "", AccountRoleUser, "hash", "SHA1", "ciphertext")
+	if err != nil {
+		t.Fatalf("CreateAccount() returned error: %v", err)
+	}
+	consumed, err := db.ConsumeAccountTOTPCounter(ctx, account.ID, 43)
+	if err != nil || !consumed {
+		t.Fatalf("ConsumeAccountTOTPCounter() = (%t, %v), want (true, nil)", consumed, err)
+	}
+	if err := db.ActivateAccount(ctx, account.ID, 42); err != nil {
+		t.Fatalf("ActivateAccount() returned error: %v", err)
+	}
+	updated, err := db.GetAccount(ctx, account.ID)
+	if err != nil {
+		t.Fatalf("GetAccount() returned error: %v", err)
+	}
+	if updated.TOTPLastCounter != 43 {
+		t.Fatalf("last counter = %d, want 43", updated.TOTPLastCounter)
 	}
 }
 

@@ -51,13 +51,16 @@ func newTestHarness(t *testing.T) *testHarness {
 
 	throttle := auth.NewLoginThrottle()
 	throttle.SetClock(func() time.Time { return harness.now })
+	sensitiveThrottle := newSensitiveOperationThrottle()
+	sensitiveThrottle.SetClock(func() time.Time { return harness.now })
 
 	service, err := NewService(Options{
-		DB:         db,
-		MasterKey:  master,
-		SessionTTL: time.Hour,
-		Throttle:   throttle,
-		Now:        func() time.Time { return harness.now },
+		DB:                db,
+		MasterKey:         master,
+		SessionTTL:        time.Hour,
+		Throttle:          throttle,
+		SensitiveThrottle: sensitiveThrottle,
+		Now:               func() time.Time { return harness.now },
 	})
 	if err != nil {
 		t.Fatalf("NewService() returned error: %v", err)
