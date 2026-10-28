@@ -94,6 +94,12 @@ func queueSessionForExecution(
 	sessionID int64,
 	resources ...string,
 ) (state.SessionExecution, error) {
+	permit, err := acquireExecutionAdmission(dispatcher)
+	if err != nil {
+		return state.SessionExecution{}, err
+	}
+	defer permit.release()
+
 	totalSteps, err := executionStepCount(ctx, db, sessionID)
 	if err != nil {
 		return state.SessionExecution{}, err

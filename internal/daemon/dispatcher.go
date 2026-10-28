@@ -2,8 +2,10 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"sync"
 
 	"github.com/Hisha/Forgehand/internal/state"
 )
@@ -23,6 +25,10 @@ type dispatcher struct {
 	task       *taskRuntime
 	wake       chan struct{}
 	done       chan struct{}
+	lifecycle  *lifecycleCoordinator
+	healthMu   sync.Mutex
+	running    bool
+	uncertain  bool
 }
 
 func newDispatcher(
@@ -65,7 +71,15 @@ func (d *dispatcher) capacity() int {
 // promptly. When run returns it closes done so callers can wait for the loop to
 // exit before tearing down the database it uses.
 func (d *dispatcher) run(ctx context.Context) {
-	defer close(d.done)
+	d.healthMu.Lock()
+	d.running = true
+	d.healthMu.Unlock()
+	defer func() {
+		d.healthMu.Lock()
+		d.running = false
+		d.healthMu.Unlock()
+		close(d.done)
+	}()
 
 	d.dispatch(ctx)
 
@@ -86,12 +100,27 @@ func (d *dispatcher) dispatch(ctx context.Context) {
 		if ctx.Err() != nil {
 			return
 		}
+		var permit *lifecyclePermit
+		if d.lifecycle != nil {
+			var err error
+			permit, err = d.lifecycle.acquire(permitDispatch)
+			if err != nil {
+				if errors.Is(err, errLifecycleConflict) {
+					return
+				}
+				d.markUncertain()
+				return
+			}
+		}
 		if d.workers.ownerCount() >= d.maxWorkers {
+			permit.release()
 			return
 		}
 
 		execution, ok, err := d.db.ClaimNextQueuedExecution(ctx, d.workers.heldResources())
 		if err != nil {
+			permit.release()
+			d.markUncertain()
 			// A cancelled dispatch is expected during shutdown; do not treat it
 			// as a scheduling fault.
 			if ctx.Err() == nil {
@@ -99,11 +128,15 @@ func (d *dispatcher) dispatch(ctx context.Context) {
 			}
 			return
 		}
+		d.markCertain()
 		if !ok {
+			permit.release()
 			return
 		}
 
 		if err := launchExecutionWorker(ctx, d.db, d.workers, d.model, d.task, execution, d.notify); err != nil {
+			permit.release()
+			d.markUncertain()
 			fmt.Fprintf(
 				os.Stderr,
 				"forgehand: launch execution %d: %v\n",
@@ -122,5 +155,27 @@ func (d *dispatcher) dispatch(ctx context.Context) {
 			}
 			return
 		}
+		permit.release()
 	}
+}
+
+func (d *dispatcher) markUncertain() {
+	d.healthMu.Lock()
+	d.uncertain = true
+	d.healthMu.Unlock()
+}
+
+func (d *dispatcher) markCertain() {
+	d.healthMu.Lock()
+	d.uncertain = false
+	d.healthMu.Unlock()
+}
+
+func (d *dispatcher) restartReady() bool {
+	if d == nil {
+		return false
+	}
+	d.healthMu.Lock()
+	defer d.healthMu.Unlock()
+	return d.running && !d.uncertain
 }

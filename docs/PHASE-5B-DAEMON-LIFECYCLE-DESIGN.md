@@ -1,6 +1,9 @@
 # Forgehand Phase 5B — Controlled Daemon Lifecycle Management
 
-Status: design only; no Phase 5B implementation is included with this document.
+Status: Phase 5B.1 sensitive-operation authorization and Phase 5B.2 daemon
+lifecycle coordination are implemented. HTTP restart endpoints, desktop
+controls, service-manager invocation, and replacement verification remain
+proposed for Phase 5B.3 or later.
 
 This document uses **Current** for behavior present in the repository and **Proposed** for Phase 5B behavior. Line references describe the source at the time of this investigation and are included to make the conclusions auditable.
 
@@ -112,35 +115,111 @@ An installed/running executable mismatch reported by Phase 5A is not itself a re
 
 ## 5. Race-condition mitigation
 
-### Proposed coordinator
+### Phase 5B.2 execution-admission inventory
 
-Add one daemon-owned lifecycle coordinator shared by every operation that can create or claim executable work. It is an admission gate, not a second scheduler.
+This inventory was completed before the Phase 5B.2 coordinator was
+implemented. The durable `session_executions` queue is the common execution
+boundary, but not every producer previously passed through a common daemon
+operation.
+
+| Entry point | Daemon/state path | Executable effect before Phase 5B.2 | Previous synchronization |
+| --- | --- | --- | --- |
+| Local CLI `session run` (`cmd/forgehand/main.go`, `runSession`) and TUI work-plan launch (`internal/tui/tui.go`, `startWorkPlanCmd`) | `internal/daemon/daemon.go`, `handleConnection` command `session-run` -> `internal/daemon/remote_sessions.go`, `queueSessionForExecution` -> `internal/state/queue.go`, `QueueSessionExecution` | Creates a durable `QUEUED` execution for coding, investigation, work-plan, or ordinary sessions and wakes the dispatcher. | The SQLite transaction atomically checked `READY` and queued, but no lifecycle synchronization surrounded it. |
+| Local CLI `session resume` (`cmd/forgehand/main.go`, `resumeSession`) | `handleConnection` command `session-resume` -> `QueueResumeExecution` or `QueueResumeAfterHumanInput` | Requeues an `INTERRUPTED` execution or an answered `WAITING_FOR_USER` execution. | Each state transition was transactional and idempotent, but bypassed any daemon lifecycle gate. |
+| Task CLI `task start` (`cmd/forgehand/main.go`, `startTaskSession`) | `handleConnection` command `task-start` -> `CreateSessionWithDetails` -> `QueueSessionExecution` | Creates the task session and immediately creates executable queued work. | Session creation and enqueue were separate database operations with no lifecycle synchronization. |
+| Task CLI approval/rejection (`cmd/forgehand/main.go`, task action request using `task-approve` / `task-reject`) | `handleConnection` commands `task-approve` and `task-reject` -> `AnswerHumanInput` -> `QueueResumeAfterHumanInput` | Answers the durable interaction and requeues the task execution. | Interaction answering and requeueing used database transactions independently and bypassed lifecycle coordination. |
+| TUI qualification create/retry (`internal/tui/tui.go`, `startQualificationCmd` and `qualificationActionCmd`) | `handleConnection` commands `qualification-create` / `qualification-retry` -> `CreateQualificationJob` / `RetryQualificationJob` | Atomically creates or requeues a qualification session, execution, and job in `QUEUED`. | Each state operation was transactional, but neither shared synchronization with dispatcher claims. |
+| HTTP session run (`internal/remoteapi/server.go`, `handleRunSession`) | `internal/daemon/remote_sessions.go`, `remoteSessionOperations.QueueSessionExecution` -> `queueSessionForExecution` | Creates the same durable queued execution as the local `session-run` path. | It shared the queue helper and database transaction with local submission, but had no lifecycle barrier. The HTTP create-session handler only creates a `READY` session and does not itself admit execution. |
+| Dispatcher startup/wake/completion (`internal/daemon/dispatcher.go`, `run`, `dispatch`, `notify`) | `internal/state/queue.go`, `ClaimNextQueuedExecution` -> `internal/daemon/daemon.go`, `launchExecutionWorker` | Changes an eligible execution and session from `QUEUED` to `RUNNING`, registers live ownership/resources, and starts its worker goroutine. It dispatches coding, investigation, work-plan, qualification, task, and fake-worker kinds. | A single dispatcher goroutine and the SQLite claim transaction prevented ordinary duplicate claims. The worker registry separately serialized ownership and shutdown, but neither synchronized with restart readiness. |
+| Crash recovery at daemon startup (`internal/daemon/daemon.go`, `runConfigured`) | `InterruptRunningExecutions`, `RecoverRunningWorkPlanTasks`, and `ReconcileInterruptedQualificationJobs`; the dispatcher's initial `dispatch` then claims surviving queued work | Reconciles orphaned running state and resumes dispatch of already-durable queued work. It does not silently requeue interrupted executions. | Startup ownership plus SQLite transactions; no concurrent request admission exists before the socket listeners, but initial dispatch still needs the same lifecycle claim boundary. |
+
+Session creation through local `session-start` (including work-plan creation) or
+HTTP `handleCreateProjectSession` produces `READY` non-executable state and is
+not closed by the Phase 5B.2 barrier. The exception is `task-start`, whose
+single user operation also queues work; it is guarded before the session is
+created. Inspection, result retrieval, cancellation, and interaction-answer
+operations that do not resume execution remain outside the admission gate.
+
+The inventory found three previously separate synchronization domains: SQLite
+transactions protected individual durable transitions; the single dispatcher
+serialized normal claims; and `workerGroup.mu` protected in-process ownership,
+resources, and shutdown. Qualification producers, resume producers, and task
+approval producers called persistence directly and bypassed the shared
+`queueSessionForExecution` helper. None of the three domains previously formed
+an atomic boundary with lifecycle readiness.
+
+### Implemented Phase 5B.2 coordinator
+
+`internal/daemon/lifecycle.go` now owns the one daemon lifecycle coordinator.
+It is an admission gate around the existing dispatcher, not a second scheduler.
+Phase 5B.2 implements only these in-memory states:
 
 ```text
 RUNNING
-  | confirm begins; close gate
+  | preparation begins; close gate
   v
-RESTART_PREPARING -- safety/service check fails --> RUNNING + wake dispatcher
-  | all checks pass and authorization consumed
+RESTART_PREPARING -- safety check fails / owner aborts --> RUNNING + wake dispatcher
+  | owning caller commits the internal transition
   v
-RESTART_COMMITTED / accepted -- manager rejects before enqueue --> RUNNING + wake dispatcher
-  | systemd job enqueued
-  v
-SHUTTING_DOWN -- replacement starts --> REPLACEMENT_VERIFIED
+RESTART_COMMITTED (internal and testable only; no process action)
 ```
 
-Admission and dispatcher rules:
+Ordinary daemon shutdown is separately represented as `SHUTTING_DOWN` and
+closes admission, but it retains the existing worker cancellation and joining
+behavior. No Phase 5B.2 method invokes systemd, sends a signal, closes a
+listener, or terminates the daemon.
+
+Implemented admission and dispatcher rules:
 
 - Local Unix-socket operations and remote HTTP operations that enqueue, resume, or otherwise create runnable execution state must acquire an admission permit before their database transaction and hold it through notification of the dispatcher.
 - The dispatcher must acquire a dispatch permit before `ClaimNextQueuedExecution` and hold it through worker ownership/launch. This closes the gap between a zero-count query and a concurrent `QUEUED -> RUNNING` claim.
-- Confirmation atomically changes `RUNNING` to `RESTART_PREPARING`, prevents new permits, and waits for prior permits to drain. It then queries durable counts and in-memory owners while the gate remains closed.
-- Any database error, unknown dispatcher state, unowned `RUNNING` row, permit-drain timeout, or service-inspection error is fail-closed.
-- If confirmation is rejected before the systemd job is enqueued, restore `RUNNING` and notify the dispatcher so work cannot remain stranded.
-- Once systemd accepts the restart job, never reopen the gate in the old process. systemd owns the lifecycle from that point.
+- Preparation changes `RUNNING` to `RESTART_PREPARING` while holding the
+  lifecycle mutex, which prevents new permits. It then waits for permits that
+  already crossed the boundary to finish before reading readiness state.
+- Readiness combines live `workerGroup` ownership with one SQLite read
+  transaction over queued, running, waiting, running-work-plan,
+  running-qualification, and unknown execution state. `WAITING_FOR_USER` is
+  safe only when no live owner exists. A durable `RUNNING` row is rejected even
+  when it has no live owner; it is not treated as proof of a live worker.
+- Missing or uncertain dispatcher state, stopped workers, database failure,
+  unknown execution status, shutdown, active work, and queued work all fail
+  closed. Unsafe, failed, or context-cancelled preparation restores `RUNNING`
+  and wakes the dispatcher.
+- Preparation returns an opaque internal owner value. Only that owner can
+  abort or commit it. An unrelated caller cannot abort it, only one preparation
+  can exist, and `RESTART_COMMITTED` cannot be aborted.
 
-The preparation endpoint performs authentication and an advisory preflight, but does not close the gate for the token's lifetime. Holding the gate while a user reads a dialog would let an authenticated administrator stall all execution admission for up to the authorization TTL. Confirmation performs the authoritative gated recheck.
+Synchronization and lock ordering are deliberately small. The lifecycle mutex
+is acquired only to change lifecycle state, acquire/release a permit, or copy
+dependency pointers; it is released before SQLite, dispatcher, or worker
+operations. An admission permit is a counter, not a held mutex, so database
+transactions may be slow without blocking lifecycle-state inspection under a
+lock. Dispatcher order is: acquire lifecycle dispatch permit; snapshot worker
+resources; claim in SQLite; register worker ownership/resources; launch; then
+release the permit. Readiness order after permits drain is: snapshot lifecycle;
+snapshot worker ownership; inspect dispatcher health; query SQLite. No code
+holds `workerGroup.mu` while acquiring the lifecycle mutex, and no lifecycle
+lock is held across worker execution. This avoids a lifecycle -> worker ->
+database lock cycle.
 
-Only one global restart request may be outstanding in `prepared` or any later nonterminal state. Authorization consumption and the durable request transition must use compare-and-swap semantics. A repeated confirmation for the same request returns its recorded state; it must never enqueue a second systemd restart. A different concurrent request receives `409 restart_in_progress`. Preparation does not close admission, so the maximum operational effect of an abandoned preparation is a short delay before another restart can be prepared.
+The dispatcher reports uncertainty after a claim or launch failure and becomes
+certain again only after a successful claim inspection. Abort notification
+causes ordinary queue draining to resume. Existing worker capacity, resource
+ownership, crash recovery, and execution semantics are unchanged.
+
+The existing local CLI/TUI service restart command is intentionally unchanged:
+it still performs its established pre-check and may honor explicit local
+authorization to interrupt work. It does not yet enter this coordinator. A
+future local lifecycle integration must use this same coordinator, with an
+explicitly distinct local policy layered above it; it must not add a second
+restart state machine. All local CLI/TUI *execution admission* already uses the
+new barrier.
+
+The HTTP prepare/confirm model below remains proposed. Phase 5B.3 must decide
+when the future confirmation path invokes the implemented atomic preparation,
+perform service ownership validation, add durable idempotent request state,
+and enqueue the fixed service-manager operation. It must not hold admission
+closed while a user reads a confirmation dialog.
 
 ## 6. Recommended systemd coordination mechanism
 
@@ -396,8 +475,8 @@ Also cover unit failure, durable status reconciliation, and response-loss behavi
 
 ## 12. Implementation milestones
 
-1. **Identity foundation:** implement atomic TOTP-counter consumption, shared sensitive-operation step-up, throttle, redacted audit events, and one-time authorization storage.
-2. **Lifecycle coordinator:** inventory every enqueue/resume/claim path, add shared admission/dispatch permits, durable safety queries, state transitions, and race tests. Do not expose an endpoint until the inventory is complete.
+1. **Identity foundation (implemented in Phase 5B.1):** atomic TOTP-counter consumption, shared sensitive-operation step-up, throttle, redacted audit events, and one-time authorization storage.
+2. **Lifecycle coordinator (implemented in Phase 5B.2):** complete admission inventory, shared admission/dispatch permits, durable safety queries, internal state transitions, and race tests. No restart endpoint or process action is included.
 3. **Service ownership and enqueue:** strengthen effective user-unit inspection and add the fixed non-blocking restart operation with injected-runner tests.
 4. **Durable request state and startup reconciliation:** add request persistence, daemon instance identity, idempotent transitions, replacement verification, retention, and failure recovery.
 5. **Remote API:** add prepare, confirm, and status endpoints with compatibility/auth/role enforcement and stable errors.
@@ -411,14 +490,14 @@ Each milestone should remain separately reviewable. The remote confirm route mus
 1. **Response delivery race:** even non-blocking `systemctl` can cause immediate `SIGTERM` before HTTP flush. The API intentionally makes reconnect/status authoritative. Direct D-Bus cannot eliminate the process-lifetime race; a separate helper could, but is not recommended.
 2. **systemctl versus D-Bus:** fixed `systemctl --no-block` is the smallest extension of current code. D-Bus offers job identifiers and signals but adds dependency and lifecycle complexity. Revisit only if job-level diagnostics materially improve supportability.
 3. **Durable schema shape:** lifecycle persistence requires a migration and retention policy. It must not retain secrets, but it must retain enough non-secret identity to make retries and audits meaningful.
-4. **Complete admission inventory:** executions are not the only possible producers of runnable work. Qualification and work-plan recovery/queue paths must be audited. Missing one path invalidates the atomic safety guarantee.
+4. **Admission inventory maintenance:** Phase 5B.2 audited the current execution, resume, task, work-plan, qualification, HTTP, CLI/TUI, dispatcher, and recovery paths. Future features that create or claim executable work must join the same admission boundary; the inventory must be updated when such a producer is added.
 5. **Daemon instance identity:** build, PID, and start time are not independently collision-proof. Reuse the durable daemon-run ID and/or add a random per-start instance UUID exposed by status.
 6. **Effective unit inspection:** current status examines only a limited set of systemd properties and path equality. Exact properties for environment, drop-ins, fragment identity, reload state, and installed-file identity need a Linux/systemd implementation and tests.
 7. **Session continuity:** account sessions are persisted, but the client must tolerate expiry/revocation during restart. Reauthentication must never repeat confirmation automatically.
 8. **TOTP concurrency is broader than restart:** fixing the counter only in a restart-specific path would leave login semantics inconsistent. The shared identity implementation should receive the atomic fix and regression coverage.
 9. **Unreachable failed replacement:** if the new daemon never starts, the HTTP API cannot report definitive failure. The desktop can only time out to `unknown` and direct the administrator to local systemd/journal diagnostics unless an external coordinator is later introduced.
 10. **Platform scope:** lifecycle control is Linux user-systemd functionality. The API and Avalonia client need an explicit unsupported response/state on other platforms rather than hidden or partially functioning controls.
-11. **Local CLI/TUI policy (decided for Phase 5B.1):** preserve the existing local restart behavior, including its explicitly authorized interruption capability, for now. The future remote/Avalonia path will never force interruption of active or queued work. Both paths must eventually coordinate through the same daemon-owned lifecycle mechanism so their differing policies cannot create conflicting transitions. Phase 5B.1 does not change the local CLI/TUI behavior.
+11. **Local CLI/TUI policy (preserved through Phase 5B.2):** preserve the existing local restart behavior, including its explicitly authorized interruption capability, for now. The future remote/Avalonia path will never force interruption of active or queued work. Both paths must eventually coordinate through the Phase 5B.2 daemon-owned mechanism so their differing policies cannot create conflicting transitions. Phase 5B.2 gates local execution admission but does not change local restart commands.
 12. **Same-user trust boundary:** the user service, daemon, state, and desktop client all run as the same OS user. This design provides application authentication, intent confirmation, race safety, and auditability; it is not privilege separation.
 
 The recommended implementation is intentionally narrow: no backend scheduler redesign, no privileged service, no arbitrary process control, and no automatic cancellation or retry of work. Its central invariant is that only the daemon can close its own admission boundary, prove quiescence, and ask its already-trusted user service manager to replace it.

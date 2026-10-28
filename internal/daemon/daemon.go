@@ -226,6 +226,12 @@ func (w *workerGroup) ownerCount() int {
 	return len(w.owners)
 }
 
+func (w *workerGroup) lifecycleSnapshot() (owners int, stopped bool) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.owners), w.stopped
+}
+
 func (w *workerGroup) stopAndWait() {
 	w.mu.Lock()
 	w.stopped = true
@@ -392,12 +398,6 @@ func runConfigured(settings Config) error {
 	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
 	defer signal.Stop(signals)
 
-	go func() {
-		<-signals
-		cancel()
-		listener.Close()
-	}()
-
 	fmt.Printf("Forgehand daemon running\n")
 	fmt.Printf("Socket: %s\n", settings.SocketPath)
 	fmt.Printf("PID: %d\n", os.Getpid())
@@ -426,7 +426,17 @@ func runConfigured(settings Config) error {
 	}
 
 	var workers workerGroup
+	lifecycle := newLifecycleCoordinator(stateDB, &workers)
 	dispatcher := newDispatcher(stateDB, &workers, settings.MaxConcurrentWorkers, model, task)
+	dispatcher.lifecycle = lifecycle
+	lifecycle.setDispatcher(dispatcher)
+
+	go func() {
+		<-signals
+		lifecycle.beginShutdown()
+		cancel()
+		listener.Close()
+	}()
 
 	apiConfig, _, err := config.API()
 	if err != nil {
@@ -436,6 +446,7 @@ func runConfigured(settings Config) error {
 	accounts := newAccountManager(settings.StateDir, stateDB, apiConfig.SessionTTL)
 
 	defer func() {
+		lifecycle.beginShutdown()
 		cancel()
 		workers.stopAndWait()
 		// Join the dispatcher so it cannot touch the database while it is
@@ -940,6 +951,12 @@ func handleConnection(
 		if modelID == "" {
 			modelID = disp.model.defaultModel
 		}
+		permit, err := acquireExecutionAdmission(disp)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		defer permit.release()
 		job, err := stateDB.CreateQualificationJob(context.Background(), modelID, disp.model.configuration, capability, request.Repetitions, len(planner.RepresentativeQualificationCases())*request.Repetitions)
 		if err != nil {
 			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
@@ -981,6 +998,12 @@ func handleConnection(
 		_ = encoder.Encode(ipc.Response{OK: true, Qualification: &encoded, Canceled: true})
 
 	case "qualification-retry":
+		permit, err := acquireExecutionAdmission(disp)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		defer permit.release()
 		job, err := stateDB.RetryQualificationJob(context.Background(), request.QualificationID)
 		if err != nil {
 			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
@@ -1114,6 +1137,12 @@ func handleConnection(
 		})
 
 	case "session-resume":
+		permit, err := acquireExecutionAdmission(disp)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		defer permit.release()
 		session, _, err := stateDB.SessionExecutionStatus(
 			context.Background(),
 			request.SessionID,
@@ -1402,6 +1431,12 @@ func handleConnection(
 			})
 			return
 		}
+		permit, err := acquireExecutionAdmission(disp)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		defer permit.release()
 		if _, err := stateDB.GetProject(context.Background(), request.ProjectID); err != nil {
 			_ = encoder.Encode(ipc.Response{
 				OK:      false,
@@ -1692,6 +1727,12 @@ func handleConnection(
 			})
 			return
 		}
+		permit, err := acquireExecutionAdmission(disp)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		defer permit.release()
 		_, applied, err := stateDB.AnswerHumanInput(
 			context.Background(),
 			interaction.ID,
@@ -1794,6 +1835,12 @@ func handleConnection(
 			})
 			return
 		}
+		permit, err := acquireExecutionAdmission(disp)
+		if err != nil {
+			_ = encoder.Encode(ipc.Response{OK: false, Message: err.Error()})
+			return
+		}
+		defer permit.release()
 		_, applied, err := stateDB.AnswerHumanInput(
 			context.Background(),
 			interaction.ID,
